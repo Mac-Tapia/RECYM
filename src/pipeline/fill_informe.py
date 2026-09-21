@@ -197,7 +197,7 @@ def _lf_status_ok(raw):
 
 def _meta_cliente(settings):
     """Cabecera del informe: prioriza OCR (informe_meta.json), luego spot loads."""
-    feeder = settings.get("feeder_id") or "PA217"
+    feeder = settings.get("feeder_id") or settings.get("active_feeder") or ""
     meta = {
         "cliente": "",
         "ubicacion": settings.get("region") or "Electro Dunas",
@@ -208,7 +208,7 @@ def _meta_cliente(settings):
         "set": settings.get("substation") or "",
         "tension_kv": _num(settings.get("voltage_ll_kv"), 22.9),
         "transformador": settings.get("transformer") or "",
-        "expediente": settings.get("expediente") or ("RECYM-%s" % feeder),
+        "expediente": settings.get("expediente") or (("RECYM-%s" % feeder) if feeder else "RECYM"),
         "meta_source": "defaults",
     }
     ocr = load_informe_meta(settings) or {}

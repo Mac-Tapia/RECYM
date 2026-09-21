@@ -85,14 +85,24 @@ def _suffix():
             return arg.split("=", 1)[1].strip()
     return os.environ.get("RECYM_DIAG_SUFFIX", "").strip()
 
-def main():
-    s = load_settings()
+def main(settings=None):
+    """settings opcional: si viene de la UI, no re-leer RECYM_FEEDER/activo."""
+    s = settings or load_settings()
     api = load_json("config/cympy_api_map.json")
     c = require_cympy(s)
     a = CymPyAdapter(c, api, s)
     a.open_study()
 
     net = s.get("network_id")
+    if not net:
+        raise RuntimeError("Falta network_id para NetworkDiagnostic (feeder=%s)" % s.get("feeder_id"))
+    # Asegurar red cargada (estudios multi-red / ELD)
+    try:
+        loaded = [str(x) for x in list(c.study.ListNetworks())]
+        if str(net) not in loaded:
+            c.study.LoadNetwork(str(net), c.enums.LoadNetworkOption.NoDependencies)
+    except Exception as ex:
+        print("AVISO LoadNetwork %s: %s" % (net, ex))
     nd = c.study.NetworkDiagnostic()
     nd.Run([str(net)])
     print("[%s] NetworkDiagnostic OK" % s["feeder_id"])

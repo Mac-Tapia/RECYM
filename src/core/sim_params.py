@@ -42,7 +42,7 @@ def try_repair_loadflow_defaults(cympy):
         cfg = list(lf.ParametersConfigurations.GetValues())[0]
     except Exception as ex:
         return {"ok": False, "error": str(ex), "notes": notes}
-    for mode in (LFMode.VoltageDropUnbalanced, LFMode.VoltageDropBalanced):
+    for mode in (LFMode.VoltageDropBalanced, LFMode.VoltageDropUnbalanced):
         try:
             cfg.AnalysisMode = mode
             notes.append("AnalysisMode=" + mode.name)

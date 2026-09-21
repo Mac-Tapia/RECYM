@@ -354,45 +354,79 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
         except Exception:
             warn_path = None
 
-        lf = comtypes.client.CreateObject("Cymdist.LoadFlow")
-        try:
-            # 1 = VoltageDropUnbalanced (enum CYMDIST COM)
-            lf.SetCalculationMethod(1)
-        except Exception:
-            pass
-        try:
-            lf.NumberOfIterations = 20
-            lf.CalculationTolerance = 0.1
-            lf.FlatStart = 1
-            lf.BalanceVoltageDrop = 0
-            lf.EquipmentRating = 1
-        except Exception:
-            pass
-
-        lf.RunFromID(net)
-
         src = _guess_source_node(net, settings)
         topo = {}
-        for kw in (
-            "KWTOT", "KVARTOT", "KWLOSS", "KVARLOSS",
-            "Vpu", "VpuA", "VpuB", "VpuC", "VLN", "VLL",
-            "I", "Ia", "Ib", "Ic",
-        ):
+        run_ret = None
+        method_used = None
+        # Enum COM (IN112 Electro Dunas): 0=VD deseq. suele fallar (260019);
+        # 1=VD equilibrada converge. Reintentar con más iteraciones / tolerancia.
+        method_candidates = settings.get("loadflow_com_methods") or (1, 0, 2)
+        param_sets = (
+            {"NumberOfIterations": 50, "CalculationTolerance": 1.0, "FlatStart": 1},
+            {"NumberOfIterations": 100, "CalculationTolerance": 2.0, "FlatStart": 1},
+            {"NumberOfIterations": 20, "CalculationTolerance": 0.1, "FlatStart": 1},
+        )
+
+        def _topo_ok(t):
+            raw = t.get("KWTOT")
+            if raw is None:
+                return False
+            sraw = str(raw)
+            if sraw.startswith("ERR:") or "Invalid Simulation" in sraw:
+                return False
             try:
-                topo[kw] = lf.QueryResultNode(kw, src)
-            except Exception as ex:
-                topo[kw] = "ERR:%s" % ex
+                float(sraw.replace(",", "."))
+                return True
+            except Exception:
+                return False
+
+        for method in method_candidates:
+            for params in param_sets:
+                lf = comtypes.client.CreateObject("Cymdist.LoadFlow")
+                try:
+                    lf.SetCalculationMethod(int(method))
+                except Exception:
+                    continue
+                try:
+                    lf.NumberOfIterations = int(params["NumberOfIterations"])
+                    lf.CalculationTolerance = float(params["CalculationTolerance"])
+                    lf.FlatStart = int(params["FlatStart"])
+                    lf.EquipmentRating = 1
+                except Exception:
+                    pass
+                try:
+                    run_ret = lf.RunFromID(net)
+                except Exception as ex_run:
+                    run_ret = ex_run
+                    continue
+                topo = {}
+                for kw in (
+                    "KWTOT", "KVARTOT", "KWLOSS", "KVARLOSS",
+                    "Vpu", "VpuA", "VpuB", "VpuC", "VLN", "VLL",
+                    "I", "Ia", "Ib", "Ic",
+                ):
+                    try:
+                        topo[kw] = lf.QueryResultNode(kw, src)
+                    except Exception as ex:
+                        topo[kw] = "ERR:%s" % ex
+                if _topo_ok(topo):
+                    method_used = method
+                    break
+            if method_used is not None:
+                break
 
         warnings = []
+        log_errors = []
         try:
             app.CloseLogFile()
         except Exception:
             pass
-        if warn_path and os.path.isfile(warn_path) and os.path.getsize(warn_path) > 0:
+        for path_key, bucket in ((warn_path, warnings), (log_path, log_errors)):
+            if not path_key or not os.path.isfile(path_key) or os.path.getsize(path_key) <= 0:
+                continue
             try:
-                raw = open(warn_path, "rb").read()
+                raw = open(path_key, "rb").read()
                 text = None
-                # Prefer Windows-1252 / UTF-8 (CYME warn files); utf-16 only with BOM.
                 if len(raw) >= 2 and raw[:2] == b"\xff\xfe":
                     text = raw.decode("utf-16")
                 elif len(raw) >= 2 and raw[:2] == b"\xfe\xff":
@@ -408,7 +442,7 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
                     for line in text.splitlines():
                         line = line.strip()
                         if line:
-                            warnings.append(line)
+                            bucket.append(line)
             except Exception:
                 pass
 
@@ -422,17 +456,39 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
             except Exception:
                 saved = False
 
-        return {
-            "ok": True,
+        ok = bool(method_used is not None and _topo_ok(topo))
+        # Errores fatales en log aunque topo parezca numerico
+        fatal_codes = ("260019", "480067", "480118", "130013")
+        blob = "\n".join(log_errors + warnings)
+        if any(code in blob for code in fatal_codes) and not ok:
+            pass
+        if any(("Código : %s" % c) in blob or ("Codigo : %s" % c) in blob for c in ("260019", "480067")):
+            # Si el log reporta no-solucion / dual-source, no marcar OK
+            if not _topo_ok(topo):
+                ok = False
+
+        result = {
+            "ok": ok,
             "engine": "COM",
             "network_id": net,
             "source_node": src,
             "topo": topo,
             "saved": saved,
             "warnings": warnings,
+            "log_errors": log_errors,
             "warn_file": warn_path,
+            "log_file": log_path,
             "cymdist_open": bool(leave_open),
+            "calculation_method": method_used,
+            "run_return": str(run_ret),
         }
+        if not ok:
+            result["error"] = (
+                "LoadFlow COM sin solucion valida (KWTOT invalido). "
+                "method=%s ret=%s. %s"
+                % (method_used, run_ret, (log_errors[:1] or warnings[:1] or [""])[0])
+            )
+        return result
     except Exception as ex:
         return {"ok": False, "error": str(ex), "engine": "COM"}
     finally:

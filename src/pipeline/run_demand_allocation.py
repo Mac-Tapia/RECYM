@@ -70,14 +70,33 @@ def compute_head_pq(mode, p_kw, q_kvar=None, cosfi=None, i_a=None, v_ll_kv=None)
 
 def set_network_demand(cympy, network_id, p_kw, q_kvar):
     """
-    Escribe demanda en CYMDIST = Propiedades de la red > Demanda:
+    Escribe demanda física en CYMDIST = Propiedades de la red > Demanda:
     Ingresar demanda + Conectado + Total + tipo kW-kvar → casilleros (P, Q).
+    Solo API CymPy (nada inventado).
     """
     from cympy.properties import properties as props
 
-    net = str(network_id)
+    net = str(network_id or "").strip()
+    if not net:
+        raise RuntimeError("Falta network_id para escribir Demanda de cabecera en CYMDIST")
     p_kw = float(p_kw)
     q_kvar = float(q_kvar)
+
+    # Asegurar red cargada/activa en el estudio físico
+    try:
+        loaded = [str(x) for x in list(cympy.study.ListNetworks())]
+    except Exception:
+        loaded = []
+    if net not in loaded:
+        try:
+            opt = cympy.enums.LoadNetworkOption.NoDependencies
+            cympy.study.LoadNetwork(net, opt)
+            print("LoadNetwork OK:", net)
+        except Exception as ex:
+            raise RuntimeError(
+                "No se pudo cargar la red %s en el estudio CYMDIST: %s" % (net, ex)
+            )
+
     lap = props.LoadAllocation()
     la = lap._cympyObject
     meter = cympy.study.Meter()
@@ -86,6 +105,7 @@ def set_network_demand(cympy, network_id, p_kw, q_kvar):
     meter.LoadValueType = cympy.enums.LoadValueType.KW_KVAR
     meter.DemandTotal = cympy.study.LoadValue(p_kw, q_kvar)
     la.SetDemand(net, meter)
+    print("SetDemand OK", net, "P=", p_kw, "Q=", q_kvar)
     return {
         "network_id": net,
         "P_kW": p_kw,
@@ -93,12 +113,13 @@ def set_network_demand(cympy, network_id, p_kw, q_kvar):
         "Connected": True,
         "Total": True,
         "Tipo": "kW-kvar",
+        "api": "cympy.LoadAllocation.SetDemand",
     }
 
 def sync_control_excel_cabecera(settings, p_kw, q_kvar, cosfi=None, fecha=None):
-    """Refleja medicion UI en Control_Simulacion (misma fuente unica de cabecera)."""
+    """Refleja medicion UI en Control_Simulacion SOLO si el Excel existe (opcional)."""
     book = control_path(settings)
-    if not os.path.isfile(book):
+    if not book or not os.path.isfile(book):
         return None
     from core.excel_io import write_kv
     updates = {
@@ -116,15 +137,24 @@ def sync_control_excel_cabecera(settings, p_kw, q_kvar, cosfi=None, fecha=None):
     return book
 
 def apply_cabecera_medicion(settings, p_kw, q_kvar, save=True):
-    """Abre estudio, escribe casilleros Demanda CYMDIST y guarda."""
+    """Escribe cabecera física en CYMDIST vía API (rápido: sin backup en cada guardado)."""
     api = load_json("config/cympy_api_map.json")
     c = require_cympy(settings)
     a = CymPyAdapter(c, api, settings)
-    a.open_study()
+    # force_backup=False: guardar medición no debe demorar por copia del .zxst
+    a.open_study(force_backup=False)
     info = set_network_demand(c, settings.get("network_id"), p_kw, q_kvar)
+    info["study_path"] = settings.get("study_path")
+    info["feeder_id"] = settings.get("feeder_id")
     if save and settings.get("save_after_fix", True):
-        a.save_study()
-        info["saved"] = True
+        try:
+            a.save_study()
+            info["saved"] = True
+            print("Estudio guardado:", settings.get("study_path"))
+        except Exception as ex_save:
+            print("AVISO Save estudio (SetDemand ya aplicado):", ex_save)
+            info["saved"] = False
+            info["save_error"] = str(ex_save)
     else:
         info["saved"] = False
     return info

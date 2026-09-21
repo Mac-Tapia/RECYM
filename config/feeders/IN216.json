@@ -1,0 +1,16 @@
+{
+  "name": "IN216",
+  "description": "Auto desde BD/estudio (sin config/feeders previa)",
+  "network_id": "NET_2030_954207_IN216",
+  "study_file": "ELD.zxst",
+  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\ELD.zxst",
+  "voltage_ll_kv": 22.9,
+  "region": "",
+  "substation": "",
+  "enabled": true,
+  "control_workbook": "",
+  "catalog_workbook": "",
+  "output_dir": "",
+  "notes": "Sintetizado automáticamente para diagnóstico de red BD",
+  "synthesized": true
+}

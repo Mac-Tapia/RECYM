@@ -793,7 +793,10 @@ class CymPyAdapter(object):
                 self.cympy.study.Save(path)
             else:
                 self.cympy.study.Save()
-        # Persistir tambien en BD proyecto (necesario para que el simbolo aparezca al reabrir)
+        # Persistir tambien en BD proyecto (necesario para que el simbolo aparezca al reabrir).
+        # En estudios de trabajo aislados (1 red) NO tocar SaveProject: borraría redes del proyecto BD.
+        if self.settings.get("skip_db_project_save") or self.settings.get("isolated_work_study"):
+            return
         try:
             import cympy.db as db
             db.Update()
@@ -863,7 +866,7 @@ class CymPyAdapter(object):
             % (load_id, s_kva, last_err)
         )
 
-    def open_tie_at_loop_node(self, node_id, network_id=None):
+    def open_tie_at_loop_node(self, node_id, network_id=None, search_all_networks=False):
         """
         Corrige 220048: abre un seccionador/switch cerrado que toque el nodo de bucle.
         Preferencia: dispositivos con ClosedPhase no vacío en secciones incidentes.
@@ -871,19 +874,38 @@ class CymPyAdapter(object):
         c = self.cympy
         net = str(network_id or (self.settings or {}).get("network_id") or "")
         node_id = str(node_id).rstrip(".,;")
+        # Token intermediario (p.ej. 907891) para match parcial
+        token = ""
+        parts = [p for p in node_id.replace("-", "_").split("_") if p.isdigit() and len(p) >= 4]
+        if parts:
+            token = parts[-1] if len(parts) == 1 else parts[0]
+
+        nets = []
+        if search_all_networks or not net:
+            try:
+                nets = [str(n) for n in list(c.study.ListNetworks())]
+            except Exception:
+                nets = [net] if net else []
+        else:
+            nets = [net]
+
         # Mapear secciones que tocan el nodo
         section_ids = set()
         try:
-            for sec in list(c.study.ListSections(net) if net else c.study.ListSections()):
-                try:
-                    frm = str(getattr(sec, "FromNodeID", None) or sec.GetValue("FromNodeID") or "")
-                    to = str(getattr(sec, "ToNodeID", None) or sec.GetValue("ToNodeID") or "")
-                except Exception:
-                    frm = to = ""
-                if frm == node_id or to == node_id:
-                    sid = str(getattr(sec, "ID", None) or getattr(sec, "SectionID", None) or "")
-                    if sid:
-                        section_ids.add(sid)
+            for n in nets:
+                for sec in list(c.study.ListSections(n) if n else c.study.ListSections()):
+                    try:
+                        frm = str(getattr(sec, "FromNodeID", None) or sec.GetValue("FromNodeID") or "")
+                        to = str(getattr(sec, "ToNodeID", None) or sec.GetValue("ToNodeID") or "")
+                    except Exception:
+                        frm = to = ""
+                    hit = (frm == node_id or to == node_id)
+                    if not hit and token:
+                        hit = (token in frm) or (token in to)
+                    if hit:
+                        sid = str(getattr(sec, "ID", None) or getattr(sec, "SectionID", None) or "")
+                        if sid:
+                            section_ids.add(sid)
         except Exception as ex:
             raise RuntimeError("No se listaron secciones para nodo bucle %s: %s" % (node_id, ex))
 
@@ -896,50 +918,218 @@ class CymPyAdapter(object):
                 dtype = getattr(c.enums.DeviceType, dtype_name)
             except Exception:
                 continue
-            try:
-                devices = list(c.study.ListDevices(dtype, net) if net else c.study.ListDevices(dtype))
-            except Exception:
-                continue
-            for d in devices:
+            for n in nets:
                 try:
-                    sec = str(getattr(d, "SectionID", None) or d.GetValue("SectionID") or "")
+                    devices = list(c.study.ListDevices(dtype, n) if n else c.study.ListDevices(dtype))
                 except Exception:
-                    sec = ""
-                if sec and sec not in section_ids:
                     continue
-                dev_id = str(getattr(d, "DeviceNumber", None) or "")
-                # Intentar abrir: ClosedPhase vacío / Status Open
-                for field, open_val in (
-                    ("ClosedPhase", ""),
-                    ("ClosedPhase", "None"),
-                    ("Status", "Open"),
-                    ("NormalStatus", "Open"),
-                ):
+                for d in devices:
                     try:
-                        before = d.GetValue(field)
-                        before_s = str(before or "").strip()
-                        # Ya abierto
-                        if field == "ClosedPhase" and before_s in ("", "None", "NONE"):
-                            continue
-                        if field in ("Status", "NormalStatus") and before_s.lower() == "open":
-                            continue
-                        d.SetValue(open_val, field)
-                        after = d.GetValue(field)
-                        return {
-                            "device": dev_id,
-                            "type": dtype_name,
-                            "section": sec,
-                            "field": field,
-                            "before": before_s,
-                            "after": str(after or ""),
-                        }
-                    except Exception as ex:
-                        tried.append("%s.%s: %s" % (dev_id, field, ex))
+                        sec = str(getattr(d, "SectionID", None) or d.GetValue("SectionID") or "")
+                    except Exception:
+                        sec = ""
+                    if sec and sec not in section_ids:
                         continue
+                    dev_id = str(getattr(d, "DeviceNumber", None) or "")
+                    for field, open_val in (
+                        ("ClosedPhase", ""),
+                        ("ClosedPhase", "None"),
+                        ("Status", "Open"),
+                        ("NormalStatus", "Open"),
+                    ):
+                        try:
+                            before = d.GetValue(field)
+                            before_s = str(before or "").strip()
+                            if field == "ClosedPhase" and before_s in ("", "None", "NONE"):
+                                continue
+                            if field in ("Status", "NormalStatus") and before_s.lower() == "open":
+                                continue
+                            d.SetValue(open_val, field)
+                            after = d.GetValue(field)
+                            return {
+                                "device": dev_id,
+                                "type": dtype_name,
+                                "section": sec,
+                                "field": field,
+                                "before": before_s,
+                                "after": str(after or ""),
+                                "network": n,
+                            }
+                        except Exception as ex:
+                            tried.append("%s.%s: %s" % (dev_id, field, ex))
+                            continue
         raise RuntimeError(
             "No se encontró seccionador cerrado en nodo bucle %s. Intentos: %s"
             % (node_id, "; ".join(tried[:8]) or "ninguno")
         )
+
+    def fix_dual_source_voltage(self, node_id, network_id=None, target_kv=22.9):
+        """
+        Corrige 480067: nodo alimentado por ≥2 fuentes con tensiones distintas.
+
+        Estrategia (alimentador único):
+          1) Desconectar fuentes cuya tensión LL difiere >15% de target_kv
+             (p.ej. 10 kV cuando el feeder es 22.9 kV).
+          2) Si no hay fuentes desconectables, abrir seccionador/enlace en el nodo
+             (misma lógica que open_tie_at_loop_node / 220048).
+        """
+        c = self.cympy
+        net = str(network_id or (self.settings or {}).get("network_id") or "")
+        node_id = str(node_id or "").rstrip(".,;")
+        target = float(target_kv or 22.9)
+        tol = max(1.0, abs(target) * 0.15)
+
+        notes = []
+        disconnected = []
+
+        try:
+            dtype = c.enums.DeviceType.Source
+        except Exception:
+            dtype = None
+        sources = []
+        nets = []
+        try:
+            nets = [str(n) for n in list(c.study.ListNetworks())]
+        except Exception:
+            nets = [net] if net else []
+        if not nets and net:
+            nets = [net]
+        if dtype is not None:
+            # Importante: el .zxst multi-red mezcla fuentes 10 kV y 22.9 kV.
+            # Hay que listar fuentes de TODAS las redes del estudio.
+            for n in (nets or [""]):
+                try:
+                    lst = list(c.study.ListDevices(dtype, n) if n else c.study.ListDevices(dtype))
+                except Exception as ex:
+                    notes.append("ListSources(%s): %s" % (n, ex))
+                    continue
+                for d in lst:
+                    sources.append((n, d))
+
+        def _read_vll(dev):
+            for fld in (
+                "OperatingVoltage", "NominalVoltage", "RatedVoltage",
+                "Voltage", "DesiredVoltage",
+            ):
+                try:
+                    v = float(str(dev.GetValue(fld)).replace(",", "."))
+                    if v > 0.1:
+                        # Si parece LN del target (p.ej. 13.2 ≈ 22.9/√3), convertir a LL.
+                        # NO convertir 10 kV LL (quedaría ~17.3 y se confundiría con MT).
+                        if target >= 18:
+                            v_as_ll = v * (3.0 ** 0.5)
+                            if abs(v_as_ll - target) + 0.5 < abs(v - target) and 5.0 < v < 16.0:
+                                return v_as_ll
+                        return v
+                except Exception:
+                    continue
+            # Fases A/B/C (LN)
+            vals = []
+            for fld in ("OperatingVoltageA", "OperatingVoltageB", "OperatingVoltageC"):
+                try:
+                    vals.append(float(str(dev.GetValue(fld)).replace(",", ".")))
+                except Exception:
+                    pass
+            if vals:
+                vln = sum(vals) / float(len(vals))
+                if target >= 18 and 5.0 < vln < 16.0:
+                    return vln * (3.0 ** 0.5)
+                return vln
+            return None
+
+        for net_id, d in sources:
+            sid = str(getattr(d, "DeviceNumber", None) or getattr(d, "ID", None) or "")
+            vll = _read_vll(d)
+            if vll is None:
+                notes.append("%s@%s:sin_V" % (sid, net_id[-12:]))
+                continue
+            if abs(vll - target) <= tol:
+                notes.append("%s:keep_V=%.2f" % (sid, vll))
+                continue
+            # Desconectar fuente secundaria (otra red / otra tensión)
+            done = False
+            for field, val in (
+                ("ConnectionStatus", "Disconnected"),
+                ("Status", "Open"),
+                ("NormalStatus", "Open"),
+                ("ClosedPhase", ""),
+            ):
+                try:
+                    before = d.GetValue(field)
+                    d.SetValue(val, field)
+                    after = d.GetValue(field)
+                    disconnected.append({
+                        "source": sid,
+                        "network": net_id,
+                        "v_ll": vll,
+                        "field": field,
+                        "before": str(before),
+                        "after": str(after),
+                    })
+                    done = True
+                    break
+                except Exception:
+                    continue
+            if not done:
+                notes.append("%s:no_disconnect_V=%.2f" % (sid, vll))
+
+        if disconnected:
+            return {
+                "ok": True,
+                "method": "disconnect_mismatch_sources",
+                "node_id": node_id,
+                "target_kv": target,
+                "disconnected": disconnected,
+                "before": "; ".join("%s@%.2fkV" % (x["source"], x["v_ll"]) for x in disconnected),
+                "after": "Disconnected %d fuente(s) fuera de ±%.1f kV de %.2f" % (
+                    len(disconnected), tol, target),
+                "notes": notes,
+            }
+
+        if str(node_id or "").strip() in ("", "*", "ALL"):
+            return {
+                "ok": True,
+                "method": "disconnect_mismatch_sources",
+                "node_id": node_id,
+                "target_kv": target,
+                "disconnected": [],
+                "before": "",
+                "after": "Sin fuentes fuera de tolerancia (nada que desconectar)",
+                "notes": notes,
+            }
+
+        # Fallback: abrir enlace en el nodo (todas las redes; match parcial de ID)
+        try:
+            tie = self.open_tie_at_loop_node(node_id, net)
+            return {
+                "ok": True,
+                "method": "open_tie",
+                "node_id": node_id,
+                "target_kv": target,
+                "tie": tie,
+                "before": "%s.%s=%s" % (tie.get("device"), tie.get("field"), tie.get("before")),
+                "after": "OpenTie %s -> %s" % (tie.get("field"), tie.get("after")),
+                "notes": notes,
+            }
+        except Exception as ex_tie:
+            # Segundo intento: buscar secciones en todas las redes por substring del nodo
+            try:
+                tie2 = self.open_tie_at_loop_node(node_id, None, search_all_networks=True)
+                return {
+                    "ok": True,
+                    "method": "open_tie_all_nets",
+                    "node_id": node_id,
+                    "target_kv": target,
+                    "tie": tie2,
+                    "before": "%s.%s=%s" % (tie2.get("device"), tie2.get("field"), tie2.get("before")),
+                    "after": "OpenTie %s -> %s" % (tie2.get("field"), tie2.get("after")),
+                    "notes": notes + ["fallback_all_nets"],
+                }
+            except Exception as ex_tie2:
+                raise RuntimeError(
+                    "480067: no se desconectaron fuentes ni se abrió enlace en %s. "
+                    "Notas=%s Tie=%s / %s" % (node_id, "; ".join(notes[:8]), ex_tie, ex_tie2)
+                )
 
     def connect_database(self, mdb_path=None, connection_name=None):
         """Conecta la BD Access compartida Electro Dunas (.mdb)."""

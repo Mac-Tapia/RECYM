@@ -193,6 +193,8 @@ def run_load_flow(settings=None, scenario=None):
             result["warnings"] = com.get("warnings") or []
             result["warn_file"] = com.get("warn_file")
             result["cymdist_open"] = com.get("cymdist_open")
+            result["calculation_method"] = com.get("calculation_method")
+            result["log_errors"] = com.get("log_errors") or []
     else:
         if adapter is None:
             c = require_cympy(s)

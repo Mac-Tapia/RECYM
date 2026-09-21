@@ -2,10 +2,11 @@
 cd /d "%~dp0.."
 set PYTHONIOENCODING=utf-8
 set "PY=%CD%\.tools\python37-win32\python.exe"
-if not defined RECYM_FEEDER set RECYM_FEEDER=PA217
+REM No forzar PA217: usa active_feeder de config/settings.json (estudio aplicado en §1).
+REM Para override puntual: set RECYM_FEEDER=IN112
 if not defined RECYM_UI_PORT set RECYM_UI_PORT=5055
-echo === RECYM UI v4: demanda + clientes SED + SpotLoad + informe entrega ===
-echo Alimentador: %RECYM_FEEDER%
+echo === RECYM UI: demanda + clientes SED + SpotLoad + informe entrega ===
+echo Alimentador: (settings.json active_feeder / UI §1)
 echo Puerto: %RECYM_UI_PORT%
 echo.
 echo Inventario de cargas...

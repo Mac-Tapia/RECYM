@@ -3,7 +3,7 @@
     "source": "CYME cymdist.cymsg [DiagnosticTool] + LoadFlow/Simulation relevantes",
     "manual_support": "docs/cymdist/EquipmentModeling.txt (flujo biblioteca→asignacion para 220047)",
     "policy": "En etapa diagnostico se proponen TODAS las entradas Error/Warning/Hint; auto_apply=true se corrige en bulk_fix.",
-    "n_codes": 62
+    "n_codes": 63
   },
   "codes": {
     "220000": {
@@ -530,10 +530,10 @@
       "code": "220052",
       "section": "DiagnosticTool",
       "message": "El voltaje de base del nodo %s no coincide con la lista de voltajes de base de red predeterminada.",
-      "action": "set_base_voltage",
+      "action": "ensure_valid_base_voltages",
       "auto_apply": true,
-      "tipo_default": "Node",
-      "fix_note": "Base del nodo en lista ValidBaseVoltages",
+      "tipo_default": "StudyParam",
+      "fix_note": "Agregar UserDefinedBaseVoltage del nodo a ValidBaseVoltages (Add+SetValue; Add solo trunca decimales)",
       "source": "cymdist.cymsg [DiagnosticTool]"
     },
     "220053": {
@@ -624,6 +624,16 @@
       "auto_apply": true,
       "tipo_default": "ShuntCapacitor",
       "fix_note": "RatedVoltage condensador vs red",
+      "source": "cymdist.cymsg [Simulation]"
+    },
+    "480067": {
+      "code": "480067",
+      "section": "Simulation",
+      "message": "Nodo %s esta conectado a mas de una fuente y las tensiones de entrada son diferentes (%s vs %s). Verifique por favor...",
+      "action": "fix_dual_source_voltage",
+      "auto_apply": true,
+      "tipo_default": "Node",
+      "fix_note": "Aislar fuente secundaria (tension distinta) o abrir enlace; conservar fuente a tension del alimentador",
       "source": "cymdist.cymsg [Simulation]"
     }
   }

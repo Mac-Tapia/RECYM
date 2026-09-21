@@ -368,22 +368,26 @@ def build_feeder_clientes_table(settings, feeder_id, clientes_file=None, suminis
     }
     return enriched, meta
 
-def score_sed_load(load_id, sed):
-    """Mayor score = mejor match SED → LoadID."""
+def score_sed_load(load_id, sed, section_id=""):
+    """Mayor score = mejor match SED → LoadID (o SectionID)."""
     lid = str(load_id or "").upper()
+    sec = str(section_id or "").upper()
     sed = norm_sed(sed)
-    if not sed or sed not in lid:
+    if not sed:
+        return -1
+    hay = lid if sed in lid else (sec if sed in sec else "")
+    if not hay:
         return -1
     # exact trailing _SED
-    if lid.endswith("_" + sed) or lid.endswith(sed):
-        return 100
+    if hay.endswith("_" + sed) or hay.endswith(sed):
+        return 100 if hay is lid or hay == lid else 90
     # _SED-2 / _SED-11 variants
-    m = re.search(r"_" + re.escape(sed) + r"(-\d+)?$", lid)
+    m = re.search(r"_" + re.escape(sed) + r"(-\d+)?$", hay)
     if m:
         if m.group(1):
             return 70
         return 95
-    if "_" + sed + "-" in lid or "_" + sed + "_" in lid:
+    if "_" + sed + "-" in hay or "_" + sed + "_" in hay:
         return 50
     return 10
 
@@ -395,8 +399,13 @@ def resolve_sed_to_loads(loads, sed, primary_only=True):
     """
     scored = []
     for L in loads:
-        lid = L.get("LoadID") if isinstance(L, dict) else str(L)
-        sc = score_sed_load(lid, sed)
+        if isinstance(L, dict):
+            lid = L.get("LoadID")
+            sec = L.get("SectionID") or ""
+        else:
+            lid = str(L)
+            sec = ""
+        sc = score_sed_load(lid, sed, section_id=sec)
         if sc >= 0:
             scored.append((sc, str(lid)))
     scored.sort(key=lambda x: (-x[0], x[1]))

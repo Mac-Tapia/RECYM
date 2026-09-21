@@ -29,9 +29,9 @@ def catalog_path():
     return os.path.join(root, "config", "diagnostic_corrections_catalog.json")
 
 
-def load_catalog():
+def load_catalog(force=False):
     global _CATALOG
-    if _CATALOG is not None:
+    if _CATALOG is not None and not force:
         return _CATALOG
     path = catalog_path()
     data = load_json(path) if os.path.isfile(path) else {}
@@ -93,6 +93,8 @@ def propose_row(diag_row, settings, ctx=None):
         auto = False
     if action == "open_tie_switch" and not settings.get("auto_fix_loop_nodes", True):
         auto = False
+    if action == "fix_dual_source_voltage" and not settings.get("auto_fix_dual_source", True):
+        auto = False
     if action == "raise_connected_kva" and not settings.get("auto_fix_load_capacity", True):
         auto = False
 
@@ -136,6 +138,15 @@ def propose_row(diag_row, settings, ctx=None):
     elif action == "open_tie_switch":
         row["Tipo"] = "Node"
         row["Activo"] = bool(auto and obj_id)
+
+    elif action == "fix_dual_source_voltage":
+        row["Tipo"] = "Node"
+        row["BaseVoltage_kV"] = vbase
+        row["Activo"] = bool(auto and obj_id)
+        if not obj_id:
+            row["Activo"] = False
+            row["Accion_Sugerida"] = "revisar"
+            row["Observacion"] = "480067 sin nodo parseable. " + obs
 
     elif action in ("fix_lf_warnings", "ensure_valid_base_voltages",
                     "enable_diagnostic_checks", "fix_diagnostic_limits",
@@ -265,6 +276,16 @@ def apply_action(adapter, settings, row):
         info = adapter.open_tie_at_loop_node(obj_id, settings.get("network_id"))
         before = "%s.%s=%s" % (info.get("device"), info.get("field"), info.get("before"))
         after = "%s=%s" % (info.get("field"), info.get("after"))
+        return action, before, after
+
+    if action == "fix_dual_source_voltage":
+        info = adapter.fix_dual_source_voltage(
+            obj_id,
+            settings.get("network_id"),
+            float(row.get("BaseVoltage_kV") or vll),
+        )
+        before = info.get("before") or ""
+        after = info.get("after") or str(info)
         return action, before, after
 
     if action == "fix_lf_warnings":
