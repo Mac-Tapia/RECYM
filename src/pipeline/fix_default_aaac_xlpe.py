@@ -229,17 +229,41 @@ def apply_mdb_updates(mdb, targets, dry_run=False):
     return results
 
 
-def verify_no_source_change(mdb, before_sample):
-    """Comprueba que NominalKVLL de fuentes no cambió."""
-    rows = _ace_query(
+def verify_no_source_change(mdb, before_rows):
+    """Comprueba TODAS las filas de CYMEQSOURCE (NominalKVLL / DesiredKVLL)."""
+    after_rows = _ace_query(
         mdb,
-        "SELECT TOP 5 EquipmentId, NominalKVLL, DesiredKVLL FROM [CYMEQSOURCE]",
+        "SELECT EquipmentId, NominalKVLL, DesiredKVLL FROM [CYMEQSOURCE]",
     )
-    return {"before": before_sample, "after": rows, "ok": True}
+    before_map = {
+        (r.get("EquipmentId") or ""): (r.get("NominalKVLL"), r.get("DesiredKVLL"))
+        for r in (before_rows or [])
+    }
+    after_map = {
+        (r.get("EquipmentId") or ""): (r.get("NominalKVLL"), r.get("DesiredKVLL"))
+        for r in (after_rows or [])
+    }
+    drift = []
+    for eid, bv in before_map.items():
+        if eid and after_map.get(eid) != bv:
+            drift.append({"EquipmentId": eid, "before": bv, "after": after_map.get(eid)})
+    # IDs nuevos o eliminados
+    if set(before_map) != set(after_map):
+        drift.append({
+            "EquipmentId": "(set)",
+            "before": sorted(before_map.keys()),
+            "after": sorted(after_map.keys()),
+        })
+    return {
+        "before": before_rows,
+        "after": after_rows,
+        "drift": drift,
+        "ok": len(drift) == 0,
+    }
 
 
-def refresh_eld_study(settings, targets):
-    """Reabre ELD, carga redes, verifica muestra, guarda (no cambia fuentes)."""
+def refresh_eld_study(settings, targets, mdb=None):
+    """Reabre ELD, carga redes, verifica muestra + conteo MDB, guarda (no cambia fuentes)."""
     import cympy
     import cympy.db as db
     import cympy.study as study
@@ -256,19 +280,25 @@ def refresh_eld_study(settings, targets):
     # Verificar muestra PA217
     net = "NET_2030_179_PA217"
     sample = {"oh": [], "ug": [], "sources": []}
+    oh_id = (targets.get("OverheadLine") or {}).get("id") or ""
+    cab_id = (targets.get("Cable") or {}).get("id") or ""
     if net in list(study.ListNetworks()):
         oh = list(cympy.study.ListDevices(cympy.enums.DeviceType.OverheadLine, net))[:5]
         ug = list(cympy.study.ListDevices(cympy.enums.DeviceType.Underground, net))[:5]
         for d in oh:
-            sample["oh"].append({
-                "DeviceNumber": d.DeviceNumber,
-                "LineID": str(d.GetValue("LineID") or ""),
-            })
+            lid = str(d.GetValue("LineID") or "")
+            sample["oh"].append({"DeviceNumber": d.DeviceNumber, "LineID": lid})
+            if lid.upper() == "DEFAULT" or (oh_id and lid != oh_id):
+                raise RuntimeError(
+                    "PA217 OH %s tiene LineID=%s (esperado %s)" % (d.DeviceNumber, lid, oh_id)
+                )
         for d in ug:
-            sample["ug"].append({
-                "DeviceNumber": d.DeviceNumber,
-                "CableID": str(d.GetValue("CableID") or ""),
-            })
+            cid = str(d.GetValue("CableID") or "")
+            sample["ug"].append({"DeviceNumber": d.DeviceNumber, "CableID": cid})
+            if cid.upper() == "DEFAULT" or (cab_id and cid != cab_id):
+                raise RuntimeError(
+                    "PA217 UG %s tiene CableID=%s (esperado %s)" % (d.DeviceNumber, cid, cab_id)
+                )
         srcs = list(cympy.study.ListDevices(cympy.enums.DeviceType.Source, net))[:3]
         for s in srcs:
             row = {"DeviceNumber": s.DeviceNumber}
@@ -279,28 +309,33 @@ def refresh_eld_study(settings, targets):
                     pass
             sample["sources"].append(row)
 
-    # Contar DEFAULT residuales en memoria
-    n_def_oh = 0
-    n_def_ug = 0
-    for net_id in list(study.ListNetworks())[:5]:  # muestra 5 redes
-        for d in cympy.study.ListDevices(cympy.enums.DeviceType.OverheadLine, net_id):
-            if str(d.GetValue("LineID") or "").upper() == "DEFAULT":
-                n_def_oh += 1
-        for d in cympy.study.ListDevices(cympy.enums.DeviceType.Underground, net_id):
-            if str(d.GetValue("CableID") or "").upper() == "DEFAULT":
-                n_def_ug += 1
-
     study.Save(study_path, False)
     try:
         db.Update()
     except Exception as ex:
         print("[fix-default] AVISO db.Update:", ex)
 
+    # Conteos globales post-refresh desde MDB (fuente de verdad)
+    mdb_counts = None
+    if mdb and os.path.isfile(mdb):
+        try:
+            db.DisconnectDatabase()
+        except Exception:
+            pass
+        mdb_counts = count_defaults(mdb)
+        residual = (
+            int(mdb_counts.get("OH_DEFAULT") or 0)
+            + int(mdb_counts.get("UG_DEFAULT") or 0)
+            + int(mdb_counts.get("SEC_DEFAULT") or 0)
+        )
+        if residual > 0:
+            raise RuntimeError("Tras refresh siguen DEFAULT en MDB: %s" % mdb_counts)
+
     return {
         "sample": sample,
-        "residual_DEFAULT_oh_sample5nets": n_def_oh,
-        "residual_DEFAULT_ug_sample5nets": n_def_ug,
+        "mdb_counts_after_refresh": mdb_counts,
         "targets": targets,
+        "n_networks_loaded": len(nets),
     }
 
 

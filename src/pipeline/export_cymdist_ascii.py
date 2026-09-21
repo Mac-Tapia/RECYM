@@ -120,6 +120,11 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     try:
+        try:
+            from core.cymdist_com import pause_cymdist_for_cympy
+            pause_cymdist_for_cympy(settings)
+        except Exception as ex:
+            print("AVISO pause CYMDIST:", ex)
         export_ascii(
             settings,
             out_dir=args.out,
