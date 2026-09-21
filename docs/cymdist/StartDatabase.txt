@@ -1,0 +1,176 @@
+--- PAGE 1 ---
+  
+CYME  
+Software para el análisis de redes eléctricas 
+Pub. No: IL917136ES 
+Efectivo: octubre de 2018 
+ 
+ 
+ 
+ 
+Tutorial 
+Primeros pasos con una base de datos 
+– CYME 8.0 
+ 
+ En el paquete de instalación de CYME se proporciona una base de datos del tutorial para ser utilizada con este tutorial. Las 
+explicaciones dadas a continuación se basan en el uso de esta base de datos. 
+1. Definir la Configuración en CYME 
+ Los archivos de configuración de CYME sirven para guardar los diferentes parámetros de la aplicación tales como las 
+opciones de visualización, los parámetros de cálculo, las configuraciones de las bases de datos, etc. Por la tanto, es 
+importante instalar los archivos de configuración que utilizará CYME. 
+Usted puede crear su propia configuración que podrá luego distribuir a los demás usuarios, y en consecuencia 
+promover el uso de estándares. 
+ a. En la carpeta de instalación de CYME, abra el archivo 
+ejecutable Cymconfig.exe. 
+ 
+ b. Se abre el cuadro de 
+diálogo CYME 
+Configuration Setup. 
+Busque la Versión CYME 
+correcta y luego pulse el 
+botón para crear una nueva 
+colección de archivos de 
+configuración. Ingrese el 
+nombre de la configuración 
+que desee usar con este 
+Tutorial y después pulse el 
+botón OK. 
+ 
+--- PAGE 2 ---
+Pub. No: IL917136ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 2 
+ 
+ c. Para seleccionar otra ruta o hacer una copia de las carpetas que contienen los archivos de configuración, pulse el 
+botón Browse 
+  que se encuentra en la parte inferior del cuadro de diálogo. Por omisión, los archivos pueden 
+encontrarse en la ruta C:\ProgramData\CYME. 
+Después de haber seleccionado la carpeta, pulse el botón Folder. Esto le hará volver al cuadro de diálogo CYME 
+Configuration Setup. 
+ d. Su nueva configuración estará completada. 
+ Para cerrar la instalación de la configuración de CYME y guardar la nueva configuración recién creada, pulse el botón 
+OK. Al presionar el botón Start CYME de este cuadro de diálogo se iniciará la aplicación con la configuración recién 
+seleccionada. 
+2. Definir la Base de datos 
+ Al iniciar la aplicación CYME, lo primero que debe hacer es conectarse a una base de datos que contenga las redes, 
+los equipos y los datos sobre la carga. También puede crear una nueva base de datos que podrá poblar importando 
+datos.  
+ a. En la pestaña Bases de datos de la Barra del Exploración, pulse la 
+opción Crear la conexión de la base de datos. 
+O, en el menú principal, seleccionar Base de datos > Crea. Ambos 
+métodos llevan al Asistente de la Base de datos CYME. Seleccione 
+“Base de datos única” como el modo de Base de datos y luego 
+pulse.
+ . 
+ 
+ b. El Asistente le mostrará las opciones de Tipos de base de datos. Escoja “Microsoft Access” y pulse 
+ . 
+ c. El Asistente le mostrará entonces la 
+opción disponible de Microsoft 
+Access Database. Recorra la lista 
+hasta localizar su archivo o escriba 
+el nombre del Archivo de base de 
+datos con la ruta completa como se 
+indica en la imagen. 
+Nota: Puede ser que su carpeta de 
+instalación de CYME se encuentre 
+en otra unidad que el disco C:\.  
+Busque \Tutorial\Samples\. 
+ 
+ d. Una vez que el nombre y la ruta completa del archivo de Base de datos han sido seleccionados, es decir: 
+\Tutorial\Samples\Tutorial.mdb, pulse 
+ . 
+  Nota: Si usted ingresa un nuevo nombre de archivo *.mdb, CYME creará automáticamente una base de datos 
+vacía para Ud. 
+ e. Luego el Asistente le pedirá que confirme los parámetros de la configuración de la base de datos. Cerciórese que 
+ingresó los ajustes y datos correctos y pulse Siguiente. 
+ f. Finalmente, ingrese el nombre de la configuración de la base de datos. Por omisión, el nombre del archivo de la 
+base de datos a utilizar está seleccionado. Después de haber ingresado el nombre, pulse Terminar. 
+--- PAGE 3 ---
+Pub. No: IL917136ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 3 
+ 
+ Al pulsar Terminar, el Asistente de la base de datos de CYME se cierra y su 
+nueva configuración de base de datos se agrega a la pestaña Bases de 
+datos de la Barra de exploración. 
+El “Nombre de configuración de la base de datos” es el nombre que aparece 
+en la pestaña Bases de datos de la Barra de exploración o en el cuadro de 
+lista desplegable de la barra de herramientas Base de datos. 
+ 
+ 
+ Es posible cambiar la configuración de la base de datos a medida que los proyectos y los estudios cambian. Ver el 
+cuadro de diálogo Base de datos > Administrador de la base de datos. 
+3. Primeros pasos con CYME 
+ 
+ 
+Al abrir CYME, el fondo de la ventana es gris y la mayoría de los iconos de la barra de herramientas y de los 
+comandos del menú están desactivados. Para activar todas las funciones de la aplicación e iniciar un estudio, 
+haga clic sobre el icono Nuevo estudio o seleccione el menú Archivo > Nuevo estudio. 
+4. Carga de circuitos 
+ 
+a. En la barra de herramientas, pulse el icono Seleccionar redes 
+ . El cuadro de diálogo Seleccionar redes se 
+obre permitiendo seleccionar los alimentadores que desee cargar y ver. 
+ b. Marque/ 
+Desmarque el 
+recuadro de 
+selección 
+ 
+para cargar/ 
+descargar todos los 
+circuitos en la 
+ventana del 
+diagrama unifilar, 
+luego presionar 
+aceptar. 
+ 
+ c. Marque/ 
+Desmarque el 
+recuadro de 
+selección 
+ luego 
+presionar Aceptar. 
+ Nota: Sírvase leer el capítulo Red del Manual de Referencia acerca de las opciones de filtrado disponibles en el cuadro 
+de diálogo Seleccionar redes. 
+--- PAGE 4 ---
+Pub. No: IL917136ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 4 
+ 
+ d. Para cargar o mostrar un circuito especifico, marque únicamente 
+el recuadro correspondiente al alimentador deseado de la lista, 
+ en este caso, y pulse Aceptar.  
+Su pantalla CYME debería parecerse a la imagen siguiente si 
+cargó solamente el alimentador GA04. 
+ 
+ e. También se pueden cargar redes (circuitos) hacia el estudio 
+utilizando la pestaña Explorador de la Barra de Exploración. 
+ 
+5. Guardar/Cerrar un Estudio, y Actualizar redes 
+ 
+a. En la barra de herramientas, pulse el icono Guardar estudio 
+  en la barra de herramientas Principal, o escoja 
+el comando Archivo>Guardar estudio como. 
+ b. Ingrese un nombre de archivo de estudio (“Tutorial” por ejemplo) en el campo Nombre de archivo (File name) y 
+pulse Grabar (Save). 
+ c. Para abrir un estudio, usted necesita primero cerrar el estudio activo. Para esto, seleccione el menú 
+Archivo>Cerrar estudio. 
+La ventana principal de CYME se desactivará entonces (tornándose gris) así como la mayoría de los botones de 
+las barras de herramientas y de las opciones de los menús. 
+ d. Guardar un estudio auto-contenido – La segunda manera de guardar los cambios hechos a los circuitos es de 
+guardar un estudio auto-contenido. 
+Las etapas para guardar y abrir un estudio auto-contenido son exactamente las mismas que con un solo estudio. 
+La única diferencia es que al abrir un estudio auto-contenido usted no necesita estar conectado a la base de datos 
+que fue creada simultáneamente. El estudio es autónomo, lo que significa que contiene todas las informaciones 
+para reproducir la red que fue cargada cuando el estudio fue guardado. 
+ e. Actualizar la red – La tercera manera de guardar los cambios hechos a los circuitos con CYMDIST es 
+actualizando la base de datos con el comando Archivo>Base de datos>Actualizar red. Esto grabará de manera 
+permanente en la base de datos todas las modificaciones realizadas. 
+ 

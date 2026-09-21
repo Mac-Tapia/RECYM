@@ -1,0 +1,105 @@
+{
+  "ok": false,
+  "delivery_ready": false,
+  "error": "Informe incompleto para entrega. Falta: loadflow_proyectado, informe_meta_ocr (cliente + potencia_kw via PDF §5), proyectado_tension.png, proyectado_cargabilidad.png. Complete: PDF OCR en §5 (cliente+potencia), Flujo situacional, Flujo proyectado; las graficas LF se generan solas.",
+  "missing": [
+    "loadflow_proyectado",
+    "informe_meta_ocr (cliente + potencia_kw via PDF §5)",
+    "proyectado_tension.png",
+    "proyectado_cargabilidad.png"
+  ],
+  "filled_at": "2026-09-21T02:08:51",
+  "feeder_id": "PA217",
+  "meta": {
+    "cliente": "Nueva SpotLoad x1 — PA217",
+    "ubicacion": "Electro Dunas",
+    "solicitud": "Factibilidad y Punto de Diseño",
+    "potencia_txt": "1500KW",
+    "potencia_kw": 1500.0,
+    "alimentador": "PA217",
+    "set": "",
+    "tension_kv": 22.9,
+    "transformador": "",
+    "expediente": "RECYM-PA217",
+    "meta_source": "defaults"
+  },
+  "meta_source": "defaults",
+  "paths": {
+    "feeder_id": "PA217",
+    "plantilla_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe",
+    "doc_dir": "D:\\Proyectos\\ELDICA\\RECYM\\doc",
+    "informe_plantilla": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe\\informe.docx",
+    "justificacion_plantilla": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe\\justificacion.xlsx",
+    "informe_doc": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe.docx",
+    "justificacion_doc": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\justificacion.xlsx",
+    "loadflow_situacional": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_situacional.json",
+    "loadflow_proyectado": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_proyectado.json",
+    "loadflow_result": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_result.json",
+    "assemble_manifest": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\assemble_manifest.json"
+  },
+  "images_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images",
+  "image_slots": {
+    "topologia.png": "word/media/image1.png",
+    "situacional_tension.png": "word/media/image3.png",
+    "situacional_cargabilidad.png": "word/media/image5.png",
+    "proyectado_tension.png": "word/media/image7.png",
+    "proyectado_cargabilidad.png": "word/media/image9.png",
+    "trafo_cargabilidad.png": "word/media/image10.png"
+  },
+  "required_lf_images": [
+    "situacional_tension.png",
+    "situacional_cargabilidad.png",
+    "proyectado_tension.png",
+    "proyectado_cargabilidad.png"
+  ],
+  "charts_generated": [],
+  "charts": {
+    "ok": false,
+    "generated": [],
+    "skipped": [
+      {
+        "file": "situacional_tension.png",
+        "reason": "manual_newer_than_lf"
+      },
+      {
+        "file": "situacional_cargabilidad.png",
+        "reason": "manual_newer_than_lf"
+      }
+    ],
+    "pending": [
+      "proyectado_tension.png",
+      "proyectado_cargabilidad.png"
+    ],
+    "errors": [],
+    "present": [
+      "situacional_tension.png",
+      "situacional_cargabilidad.png"
+    ],
+    "missing": [
+      "proyectado_tension.png",
+      "proyectado_cargabilidad.png"
+    ],
+    "images_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images"
+  },
+  "scenarios_used": {
+    "situacional": true,
+    "proyectado": false,
+    "situacional_metrics": {
+      "kw": 6389.0,
+      "kvar": 3082.0,
+      "kva": 7093.521339927018,
+      "fp_pct": 90.06810149478923,
+      "kw_loss": 0.0,
+      "vpu": 0.9983873650615362,
+      "v_pct_a": 99.83873650615362,
+      "v_pct_b": 99.83873650615362,
+      "v_pct_c": 99.83873650615362,
+      "i_a": 178.84045655498772
+    },
+    "proyectado_metrics": null
+  },
+  "notes": [
+    "charts generated: 0 skipped: 2"
+  ],
+  "aviso_imagenes": "Graficas LF se generan desde loadflow_*.json. Override opcional: capturas CYMDIST en D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images (mismos nombres)."
+}

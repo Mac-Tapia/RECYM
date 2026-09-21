@@ -1,0 +1,43 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "RECYM: check environment",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/core/check_environment.py",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.tools/python37-win32/python.exe",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "RECYM: pipeline PA217",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/pipeline/run_all.py",
+      "args": ["--feeder", "PA217"],
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.tools/python37-win32/python.exe",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "RECYM: demand UI",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/ui/demand_app.py",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.tools/python37-win32/python.exe",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "RECYM: test CYMDIST connection",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/core/test_cymdist_connection.py",
+      "args": ["--feeder", "PA217"],
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.tools/python37-win32/python.exe",
+      "console": "integratedTerminal"
+    }
+  ]
+}

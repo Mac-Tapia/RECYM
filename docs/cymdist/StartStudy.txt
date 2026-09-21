@@ -1,0 +1,193 @@
+--- PAGE 1 ---
+  
+CYME  
+Software para el análisis de redes eléctricas 
+Pub. No: IL917137ES 
+Efectivo: octubre de 2018 
+ 
+ 
+ 
+ 
+Tutorial 
+Cómo comenzar un estudio 
+– CYME 8.0 
+ 
+ Este tutorial debe ser utilizado con el archivo de estudio autónomo (.sxst) que lo acompaña. Las explicaciones de abajo se basan en el 
+uso de dicho archivo. 
+1. Cómo comenzar un estudio en el programa CYME 
+ Al abrir CYME, el fondo de la ventana es gris y la mayoría de los iconos de la barra de herramientas y de los comandos 
+del menú están desactivados. Es posible trabajar con un estudio autónomo, es decir un archivo de estudio que contiene 
+la red y el equipo requeridos en el momento que se guardó el archivo de estudio. 
+ a. Para activar el estudio autónomo, haga clic en el botón 
+Abrir estudio 
+  de la barra de herramientas 
+Principal. Puede usar el comando Archivo > Abrir 
+estudio. 
+Seleccione el archivo de estudio StartStudy.sxst 
+provisto con este tutorial (\Tutorial\How-to de la carpeta 
+de Instalación de CYME) y pulse Abrir. 
+ 
+ b. CYME carga todas las redes contenidas en el archivo 
+de estudio autónomo, es decir las redes del diagrama 
+unifilar que se habían cargado en el momento en que 
+se guardó el estudio. 
+2. Ocultar/Mostrar redes 
+ a. En la barra de herramientas Principal, pulse el icono Seleccionar redes 
+ .  
+ 
+--- PAGE 2 ---
+Pub. No: IL917137ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 2 
+ 
+ b. El cuadro de diálogo Seleccionar redes se abre permitiéndole seleccionar las redes que desee mostrar u ocultar. 
+Seleccione o deseleccione las casillas para que se muestren u oculten las redes contenidas en el archivo de 
+estudio. 
+ c. Escoja que se muestre solamente GA04. El espacio de trabajo de CYME solo mostrará la red GA04 como se ve en 
+la imagen de la derecha y pulse Aceptar. 
+  
+ 
+ 
+  Usted también puede cargar redes en el estudio utilizando la 
+Barra de Exploración. Presione la pestaña Explorador de la 
+barra de exploración, pulse el botón derecho en el nombre de la 
+red para que surja el menú de salto que permite al usuario 
+Mostrar u Ocultar la red. 
+ 
+ 
+--- PAGE 3 ---
+Pub. No: IL917137ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 3 
+ 
+3. Guardar, Cerrar y Fusionar un estudio 
+ Guardar un 
+estudio 
+En la barra de menús, seleccione Archivo > Guardar como estudio autónomo. Puede escribir en 
+el archivo existente o buscar otro emplazamiento donde guardar un nuevo archivo autónomo. 
+ Cerrar un 
+estudio 
+Para cerrar el estudio en vigencia, diríjase a la barra de menús y seleccione Archivo>Cerrar 
+estudio. La ventana principal de CYME se desactivará (tornándose gris) así como la mayoría de 
+los botones de las barras de herramientas y de las opciones de los menús. 
+ Fusionar un 
+estudio 
+Para fusionar dos estudios, diríjase a la barra de menús y seleccione Archivo > Fusionar un 
+estudio o pulse en el icono 
+  en la barra de herramientas Principal. Seleccione el segundo 
+archivo de estudio que desee fusionar al estudio que ya se encuentra abierto y presione Abrir. 
+4. Navegar dentro de CYME 
+ CYME propone varios modos de navegar entre los datos y los gráficos que aparecen en el espacio de trabajo. 
+Las herramientas de navegación de uso más sencillos y más general son Pan/Zoom y Buscar. 
+Empiece por cargar la red GA04 del archivo StartStudy.sxst. 
+ Pan y Zoom 
+ 
+ Pan – Pulse el botón derecho del ratón una sola vez y manténgalo presionado (el cursor indicará “Pan”). 
+Mueva el ratón y suelte el botón. La imagen en la pantalla se moverá como si la hubiera arrastrado. 
+ 
+ 
+Zoom – Haga doble clic con el botón derecho del ratón y manténgalo presionado. El cursor indicará 
+“Zoom”. Mueva el ratón de modo a que un cuadro delimite el área deseada y suelte el botón.  
+  Zoom – Si su ratón tiene una rueda de desplazamiento, gire la rueda hacia adelante o hacia atrás para 
+agrandar o reducir la imagen. El centro del área que agrandará o reducirá (el enfoque del zoom) 
+corresponderá a la ubicación del cursor en la pantalla. Permanecerá visible mientras cambia el nivel del 
+zoom. 
+ 
+ 
+Herramientas del Zoom – Usted puede seleccionar Acercar o Alejar de la Barra de acción en la vista 
+principal para agrandar o reducir el tamaño de los componentes de la red y el nivel de los detalles que 
+aparecen en la pantalla. Encajar en ventana permite volver a la pantalla original mientras que Agrandar 
+permite seleccionar y agrandar una parte pequeña de la red. En el Manual de Referencia encontrará un 
+resumen de todas las herramientas del Zoom. 
+--- PAGE 4 ---
+Pub. No: IL917137ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 4 
+ 
+ Búsqueda de un tramo, de un nudo o de un equipo 
+ a. El comando de menú Editar > Opciones y resultados de búsqueda (Ctrl+F) constituye una forma fácil de buscar 
+un tramo, un nudo o un equipo. Activa la pestaña Buscar del Explorador. 
+ 
+b. Pulse en el botón Opciones de búsqueda 
+  para que se muestren las opciones de búsqueda disponibles. 
+ c. Para efectuar una búsqueda a través de los elementos y equipos de la red cargada, seleccione la opción Buscar 
+en el inventario de redes y deseleccione las otras opciones. 
+En el menú de la barra de búsqueda (
+ ), seleccione Mostrar las categorías de dispositivos. 
+ d. Para encontrar un tramo o dispositivo en la pantalla, inscriba el ID en el cuadro combinado y pulse en el botón 
+Buscar. 
+ e. 
+Inscriba 8460 y luego pulse el botón Buscar 
+ . Una nueva sección 
+aparecerá en el área de la pestaña Buscar que agrupa los resultados 
+por elementos de la topología y por dispositivos, como se muestra en el 
+ejemplo de la derecha. 
+Pulse el botón derecho sobre un elemento contenido en cualquiera de 
+los directorios y seleccione la opción Localizar del menú contextual. 
+Esta acción agranda y centra el elemento seleccionado en la pantalla. 
+ 
+--- PAGE 5 ---
+Pub. No: IL917137ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 5 
+ 
+ f. Usted puede también efectuar búsquedas inscribiendo ID parciales. 
+Inscriba la cadena 46 y pulse el botón Buscar. Los resultados mostrados en la lista corresponden a todos los 
+elementos y dispositivos de la red cuyos ID contienen esa cadena. 
+ g. Haga clic con el botón derecho sobre cualquier directorio de dispositivo o seleccione la opción Dibujar círculo 
+alrededor del símbolo. Verá en la pantalla que todos los interruptores hallados presentarán un círculo alrededor. 
+Nota: Vea el capítulo Buscar en el Manual de referencia de CYME para más información sobre las opciones de 
+búsqueda. 
+  
+ 
+ h. Vuelva al menú contextual del directorio del dispositivo para deseleccionar la opción de forma a que se retiren los 
+círculos para la próxima etapa de este tutorial. 
+ También se puede buscar un componente usando la pestaña Explorador de la Barra de exploración. Esta pestaña da 
+acceso a todos los elementos y dispositivos de red en la red cargada. 
+Usted puede recorrer los directorios para hallar el elemento o dispositivo que busca. Haga clic con el botón derecho 
+sobre su ID y seleccione la opción Localizar para agrandarlo. 
+La pestaña Explorador contiene también una función de búsqueda. 
+--- PAGE 6 ---
+Pub. No: IL917137ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 6 
+ 
+ a. Inscriba una cadena en el campo 
+Buscar y pulse en el botón Buscar 
+(
+ ). El software se dirigirá a la 
+primera instancia de la lista que 
+corresponde a la cadena inscrita. 
+Vuelva a pulsar sobre el botón Buscar 
+para dirigirse a la siguiente instancia. 
+ 
+ b. También se puede filtrar la lista para 
+que sólo muestre los resultados y/o los 
+resalte. 
+Pulse en el botón Opciones de 
+búsqueda y en el cuadro de diálogo 
+que se abre, seleccione la opción 
+Filtrar los resultados. 
+ c. Inscriba la cadena 460 en el campo 
+Buscar y pulse en el botón Filtrar 
+resultados (
+ ). Los resultados 
+contenidos en la lista son todos los 
+elementos de red y dispositivos cuyos 
+ID contienen esa cadena. 
+Los componentes pueden ser 
+localizados y sus símbolos indicados 
+con un círculo igual que con la pestaña 
+Buscar. 
+ 
+ 

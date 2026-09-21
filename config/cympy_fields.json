@@ -1,0 +1,36 @@
+{
+  "OverheadLine": {
+    "device_type": "OverheadLine",
+    "equipment_field": "LineID",
+    "section_field": "DeviceNumber",
+    "confirmed": true,
+    "source": "cympy.properties.OverheadLine / enums.DeviceType"
+  },
+  "Cable": {
+    "device_type": "Underground",
+    "equipment_field": "CableID",
+    "section_field": "DeviceNumber",
+    "confirmed": true,
+    "source": "cympy.properties Underground"
+  },
+  "Switch": {
+    "device_type": "Switch",
+    "equipment_field": "DeviceID",
+    "section_field": "DeviceNumber",
+    "confirmed": true,
+    "source": "cympy.properties.Switch"
+  },
+  "Transformer": {
+    "device_type": "Transformer",
+    "equipment_field": "DeviceID",
+    "section_field": "DeviceNumber",
+    "confirmed": true,
+    "source": "cympy.properties.Transformer"
+  },
+  "Node": {
+    "api_mode": "SetValueNode",
+    "base_voltage_field": "UserDefinedBaseVoltage",
+    "confirmed": true,
+    "source": "cympy.dm.Describe('Node')"
+  }
+}

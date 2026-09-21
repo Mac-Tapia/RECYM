@@ -1,0 +1,15 @@
+{
+  "name": "PA217",
+  "description": "Alimentador PA217 - Electro Dunas",
+  "network_id": "NET_2030_179_PA217",
+  "study_file": "PA217.zxst",
+  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\PA217.zxst",
+  "voltage_ll_kv": 22.9,
+  "region": "",
+  "substation": "",
+  "enabled": true,
+  "control_workbook": "data\\input\\feeders\\PA217\\Control_Simulacion.xlsx",
+  "catalog_workbook": "data\\input\\feeders\\PA217\\Catalogo_Maestro.xlsx",
+  "output_dir": "data\\output\\feeders\\PA217",
+  "notes": "Estudio en projects_dir; BD compartida en database_mdb"
+}

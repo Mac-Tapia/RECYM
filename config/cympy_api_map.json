@@ -1,0 +1,111 @@
+{
+  "_meta": {
+    "source": "Descubierto desde cympy 9.2 r1 instalado (properties.py / sim.py / study.py / enums.py)",
+    "cympy_version": "CYME 9.2 r1",
+    "confirmed_by": "inspeccion_local_instalacion",
+    "notes": [
+      "OverheadLine usa LineID; Underground (Cable) usa CableID; Switch/Transformer usan DeviceID.",
+      "Cargas SpotLoad: polimórfico LoadValue (KW_KVAR / KW_PF / KVA_PF). Usar Execute LoadValue.SetType(LoadValueKW_KVAR) luego LoadValue.KW/KVAR.",
+      "Nodos: study.SetValueNode / GetValueNode con UserDefinedBaseVoltage (NominalVoltage inválido en esta BD).",
+      "LockDuringLoadAllocation valores: Locked / Unlocked.",
+      "CustomerLoads[0].ConnectionStatus: Connected / Disconnected (excluir carga existente del modelo fisico).",
+      "RecloserPlacement y RegulatorPlacement NO estan expuestos como clases Simulation en esta API; solo CapacitorPlacement."
+    ]
+  },
+  "objects": {
+    "OverheadLine": {
+      "device_type": "OverheadLine",
+      "equipment_field": "LineID",
+      "confirmed": true
+    },
+    "Cable": {
+      "device_type": "Underground",
+      "equipment_field": "CableID",
+      "confirmed": true
+    },
+    "Switch": {
+      "device_type": "Switch",
+      "equipment_field": "DeviceID",
+      "confirmed": true
+    },
+    "Sectionalizer": {
+      "device_type": "Sectionalizer",
+      "equipment_field": "DeviceID",
+      "confirmed": true
+    },
+    "Transformer": {
+      "device_type": "Transformer",
+      "equipment_field": "DeviceID",
+      "confirmed": true
+    },
+    "Load": {
+      "device_type": "SpotLoad",
+      "value_base": "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0].LoadValue",
+      "value_type": "LoadValueKW_KVAR",
+      "p_field": "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0].LoadValue.KW",
+      "q_field": "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0].LoadValue.KVAR",
+      "kwh_field": "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0].KWH",
+      "status_field": "CustomerLoads[0].CustomerLoadModels[0].LockDuringLoadAllocation",
+      "lock_value": "Locked",
+      "connection_status_field": "CustomerLoads[0].ConnectionStatus",
+      "connected_value": "Connected",
+      "disconnected_value": "Disconnected",
+      "connected_kva_field": "CustomerLoads[0].ConnectedKVA",
+      "add_device": "study.AddDevice(LoadID, DeviceType.SpotLoad, SectionID)",
+      "phases_default": "ABC",
+      "note_new_load": "Carga concentrada trifasica: solo KW/KVAR (sin EA). SectionID/LoadID derivados del nodo.",
+      "note_260044": "Si S>ConnectedKVA: raise_load_connected_kva sube CustomerLoads[0].ConnectedKVA.",
+      "confirmed": true
+    },
+    "Node": {
+      "api_mode": "SetValueNode",
+      "base_voltage_field": "UserDefinedBaseVoltage",
+      "confirmed": true
+    }
+  },
+  "commands": {
+    "open_study": {
+      "callable": "study.Open",
+      "confirmed": true
+    },
+    "save_study": {
+      "callable": "study.Save",
+      "confirmed": true
+    },
+    "load_allocation": {
+      "callable": "sim.LoadAllocation",
+      "method": "Run",
+      "confirmed": true
+    },
+    "load_flow": {
+      "callable": "sim.LoadFlow",
+      "method": "Run",
+      "confirmed": true
+    },
+    "optimal_recloser": {
+      "callable": "",
+      "confirmed": false,
+      "note": "No hay clase Simulation RecloserPlacement en CymPy 9.2 r1 de esta instalacion"
+    },
+    "optimal_regulator": {
+      "callable": "",
+      "confirmed": false,
+      "note": "No hay clase Simulation RegulatorPlacement en CymPy 9.2 r1 de esta instalacion"
+    },
+    "optimal_capacitor": {
+      "callable": "sim.CapacitorPlacement",
+      "method": "Run",
+      "confirmed": true
+    }
+  },
+  "result_keywords": {
+    "network_kw": "KWTOT",
+    "network_kvar": "KVARTOT",
+    "network_loss_kw": "KWLOSS",
+    "vmin_pu": "VMINPU",
+    "vmax_pu": "VMAXPU",
+    "imax_a": "IMAX",
+    "confirmed": false,
+    "note": "Keywords QueryInfoTopo a validar contra estudio abierto; diagnose usa fallbacks seguros"
+  }
+}

@@ -1,0 +1,462 @@
+--- PAGE 1 ---
+  
+CYME  
+Software para el análisis de redes eléctricas 
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+ 
+ 
+Tutorial 
+Modelización de equipos 
+– CYME 8.0 
+ 
+ Este tutorial le da las pautas para crear equipos con el programa CYME. Se proporciona un fichero de estudio autónomo (.sxst) que 
+puede utilizarse con este tutorial. Las explicaciones de abajo se basan en el uso de dicho fichero. 
+ La modelización de equipos constituye la primera etapa de la modelización de un sistema. Este tutorial da ejemplos de 
+cómo ingresar los datos de diversos equipos. La base de datos de los equipos se encuentra en el menú Equipos de 
+CYME 7.2. 
+1. General 
+ a. En este tutorial abra el estudio EquipmentModeling.sxst 
+(Ayuda>Tutoriales). 
+ 
+ b. Cada cuadro de diálogo de un equipo tiene la misma 
+presentación. Por ejemplo, abra el cuadro de diálogo 
+Transformador con dos devanados por medio del menú 
+Equipos. A la mano izquierda se muestra la Lista de equipos 
+que ya existen en la base de datos. Pulse en cualquiera de los 
+nombres de los equipos para ver sus parámetros en las 
+distintas pestañas situadas a la derecha del cuadro de diálogo. 
+ c. 
+Para crear un nuevo Nombre de equipo, pulse el botón 
+  
+situado en la barra de herramientas de la lista de equipos. El 
+cuadro de diálogo Nombre del equipo se abrirá para que 
+usted pueda ingresar un nombre para el nuevo equipo. 
+ d. Se puede hacer una Copia de un equipo desde la biblioteca de 
+los equipos. También se puede Eliminar y Renombrar 
+cualquier Nombre de equipo definido por el usuario. Pulse el 
+botón derecho en el Nombre del equipo y escoja el comando 
+apropiado en el menú de salto. Consulte el capítulo 
+Propiedades y Parámetros del Manual de Referencia de los 
+Equipos para ver la descripción de los parámetros de los 
+cuadros de diálogo de cada equipo. 
+  
+ 
+ 
+--- PAGE 2 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 2 
+ 
+2. Cómo crear una Fuente o Equivalente de fuente 
+ a. En la barra de menús, 
+escoja Equipos > 
+Equivalente de fuente. 
+Obtendrá el siguiente 
+cuadro de diálogo que 
+permite crear nuevas 
+fuentes e ingresar los 
+valores de datos 
+apropiados como la 
+capacidad (para señalar 
+sobrecargas), la tensión 
+nominal y de servicio, la 
+configuración y el valor de 
+la impedancia equivalente. 
+ 
+ b. Si la impedancia del equivalente de fuente no está disponible, podrá calcularla con uno de los dos métodos de 
+cálculo disponibles. 
+  Método de cálculo 1 
+Se utiliza el primer método de cálculo 
+cuando se conocen los datos de prueba de 
+cortocircuito. En el cuadro de grupo 
+Equivalente de la fuente, escoja Nivel de 
+cortocircuito como Modo de cálculo e 
+introduzca los datos.  
+   
+  Método de cálculo 2 
+El segundo método calcula la impedancia 
+equivalente a partir de la suma de la 
+impedancia del o de los transformadores 
+de la subestación y de la red de 
+transporte. En el cuadro de grupo 
+Equivalente de la fuente, escoja 
+Impedancias equivalentes como Modo 
+de cálculo. 
+• Pulse el botón Calcular al lado de la 
+opción Calcular usando los detalles 
+de la fuente e ingrese la impedancia 
+primaria o la potencia de cortocircuito. 
+• Escoja la Conexión de los 
+transformadores y en el cuadro de 
+grupo Ramales del transformador, 
+presione el botón Agregar e inscriba la 
+información relativa a cada ramal del 
+transformador de la subestación. 
+Después de haber ingresado la 
+información, presione el botón Aceptar 
+para que el programa calcule la 
+impedancia equivalente. 
+ 
+--- PAGE 3 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 3 
+ 
+  Para los Estudios de análisis armónicos, 
+pulse en la pestaña Armónicos para 
+ingresar la Curva envolvente de armónico 
+que represente a la fuente de la compañía 
+eléctrica. De forma predeterminada, el 
+envolvente de la impedancia de 
+equivalente de fuente se calcula a partir 
+del nivel de cortocircuito trifásico en MVA 
+calculado. 
+ 
+3. Cómo crear un Generador síncrono 
+ a. Para crear un generador, escoja Equipos > Generador. Existen tres tipos de generadores disponibles: el 
+generador síncrono, el generador de inducción (o asíncrono) y el generador con acoplamiento electrónico. 
+Seleccione el Generador síncrono. 
+ b. Rellene los campos correspondientes a la capacidad de la unidad, a sus impedancias y a su configuración. 
+ c. Si desconoce la impedancia en régimen permanente, transitoria y subtransitoria de la unidad generadora, puede 
+obtener una estimación usando la función de Estimación. Seleccione los campos más apropiados y pulse el botón 
+ para calcular la impedancia de la máquina mediante las curvas de impedancia típicas. 
+  
+ 
+--- PAGE 4 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 4 
+ 
+  • Para los Estudios de estabilidad 
+transitoria se deben introducir los datos 
+adicionales requeridos en la pestaña 
+Circuito equivalente. Esto incluye la 
+Inercia de todas las masas rotativas H, la 
+Constante de amortiguación KD, las 
+Impedancias Xd, Xq, Xl, X’d, X’q, X”d, X”q 
+y las Constantes de tiempo T’do, T’qo, 
+T”do y T”qo.  
+• El software incluye cinco modelos estándar 
+de generadores que se pueden seleccionar 
+presionando el botón de la lista desplegable 
+Modelo. 
+• También se puede pedir que se muestre el 
+diagrama de bloque del modelo del generador 
+pulsando en el botón Mostrar el diagrama 
+. 
+ 
+  • En la pestaña Armónicos puede introducir 
+la impedancia de secuencia inversa. De 
+forma predeterminada, esta impedancia se 
+ha configurado para que sea igual a la 
+impedancia subtransitoria del generador. 
+También se puede configurar el Modelo del 
+efecto pelicular en esta pestaña. 
+ 
+4. Cómo crear un Motor 
+ a. Para crear un motor, escoja Equipos > Motor. Existen dos tipos de motores disponibles: el Motor de inducción (o 
+asíncrono) y el Motor síncrono. Seleccione Motor de inducción. 
+ b. Introduzca los datos indicados a continuación para los análisis de Flujo de potencia, de Cortocircuito y de 
+Armónicos del motor. 
+• Datos nominales (Datos de la placa del fabricante) del motor: la Potencia mecánica, la Potencia nominal, la 
+Tensión nominal, el Rendimiento y el Factor de potencia en marcha. 
+  • La Impedancia de régimen subtransitorio del motor se calcula de forma predeterminada a partir de los 
+datos del rotor bloqueado. También puede especificar “Calcular a partir del circuito equivalente” del motor o 
+introducir cualquier valor seleccionando la opción “Definido por el usuario”. 
+--- PAGE 5 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 5 
+ 
+  • Datos del rotor bloqueado como el Factor de potencia (en arranque) y el KVA/HP o la Corriente del rotor 
+bloqueado. (Al introducir un valor el otro valor se calcula automáticamente). 
+Presione el botón 
+  para acceder a la tabla Lista de códigos NEMA. 
+Presione el botón 
+  para seleccionar un factor de potencia predeterminado. 
+  
+ 
+  Nota: Si se estiman e introducen correctamente los parámetros del circuito equivalente, la impedancia 
+subtransitoria calculada a partir de los datos del rotor bloqueado y usando el método de circuito equivalente 
+debería dar aproximadamente la misma. 
+--- PAGE 6 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 6 
+ 
+  • Para los análisis de Estabilidad transitoria y de Arranque de motor dinámico se requieren datos adicionales 
+en la pestaña Circuito equivalente, como: 
+  o Tipo de rotor: Circuito simple, Circuito 
+doble y circuito con Barras profundas. 
+o La impedancia del Circuito equivalente 
+incluyendo la impedancia del Estator 
+(Rs y Xs), la impedancia del Rotor (Rr 
+and Xr) en relación al lado del estator y 
+el ramal de magnetización (Rm and 
+Xm). 
+o Factor de jaula que representa la 
+variación de la impedancia del rotor con 
+un deslizamiento. En este modelo se 
+aplica una función lineal. Introduzca 0 
+para ignorar este efecto. 
+o Inercia del motor que no incluye la 
+inercia de la carga mecánica. 
+• Los métodos de estimación de las 
+impedancias son: Rotor bloqueado / Prueba 
+a plena carga, Rotor bloqueado / Prueba 
+en vacío, Condiciones nominales 
+conocidas, Condiciones de arranque 
+conocidas, A partir de datos nominales y A 
+partir de características de rendimiento. 
+Para ver más detalles, consulte el Manual del 
+usuario sobre el Arranque de los motores. 
+ 
+5. Cómo crear un Transformador 
+ a. Escoja el menú Equipos > Transformador. Tendrá seis opciones: Transformador con dos devanados, 
+Autotransformador con dos devanados, Transformador desfasador, Transformador con tres devanados, 
+Autotransformador con tres devanados y Transformador de puesta a tierra. 
+ b. Seleccione el 
+Transformador con dos 
+devanados. 
+ 
+ c. Rellene los campos 
+correspondientes a la 
+capacidad nominal del 
+transformador, a sus 
+impedancias, a su tipo y a 
+su conexión. En caso de 
+haber una impedancia de 
+puesta a tierra, ingrésela 
+también. 
+ d. Si el transformador tiene 
+un conmutador o 
+cambiador de 
+derivaciones (tomas) en 
+carga (LTC), oprima la 
+pestaña LTC y marque la 
+casilla de opción 
+Conmutador en carga. 
+--- PAGE 7 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 7 
+ 
+ e. El Conmutador en carga del transformador sirve 
+principalmente para controlar la tensión de una 
+barra de la red con límites especificados. Esto se 
+consigue ajustando la posición de su toma del 
+conmutador en carga.  
+Ancho de banda inferior y superior en % indica 
+el intervalo de las tensiones deseadas en la barra 
+controlada. También tendrá que definir el 
+Número de tomas disponibles en el Cambiador 
+de tomas (LTC) y el Rango máximo y mínimo 
+del cambiador de tomas (LTC). 
+ 
+6. Cómo crear una Línea 
+ Se puede ya sea seleccionar un conductor o crear uno en la base de datos de los equipos. Se sugiere tener un 
+inventario de los conductores y del espaciado (distancia) entre los conductores antes de construir las líneas eléctricas 
+aéreas y los cables. Esto facilita su creación ya que podrá elejir los conductores enel inventario de conductores de los 
+cuadros de diálogo de las líneas aéreas y de los cables. A continuación se describen los pasos para crear una línea o 
+cable. 
+ 1. Creación de conductores 
+El primer paso para crear una 
+línea o cable consiste en tener 
+los conductores listos. 
+• Escoja Equipos > 
+Conductor para acceder a la 
+base de datos de los 
+conductores. 
+ 
+  • Para este ejercicio, pulse el 
+botón 
+ , cree un nuevo 
+conductory nómbrelo: 
+NUEVO_CONDUCTOR. 
+ 
+--- PAGE 8 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 8 
+ 
+  • Introduzca los datos como se muestra a la 
+derecha. 
+• Puesto que las medidas de la distancia se 
+proporcionan en sistema anglosajón de 
+unidades, asegúrese que el sistema de 
+unidades se haya fijado a Ingl. Para 
+cambiarlo, escoja Archivo > Preferencias y 
+presione la pestaña Unidades. También 
+puede cambiarlo en la barra de herramientas 
+Unidades del sistema. 
+• Pulse Aceptar para guardar los datos y salir 
+de la ventana. 
+ 
+ b. Creación de una tabla de “Distancia Línea aérea” 
+• Si posee información sobre la DMG y la altura promedio, ingréselas 
+directamente. 
+Pero si no cuenta con dicha información, puede usar la configuración 
+detallada. Escoja una configuración de torre y escriba todas las distancias 
+respectivas o escoja un modelo genérico en el cual las coordenadas de los 
+conductores y del neutro están ingresados.  
+En nuestro ejemplo, se desconocen los valores de la DMG y de la altura 
+promedio. A la derecha se muestran las distancias de los conductores con 
+respecto al punto en que el poste toca el suelo. 
+ 
+  • Escoja Equipos > Línea aérea 
+>Espaciamiento de la línea de simple 
+circuito. Espaciamiento para los dobles 
+circuitos también está disponible en la 
+categoría Líneas aéreas. 
+• Pulse el botón 
+  y cree un nuevo 
+espaciamiento: NUEVO_ESPACIMIENTO. 
+Escoja Configuración detallada y la 
+Configuración de torre Genérica. Inscriba las 
+posiciones del conductor como se muestra aquí. 
+• Pulse Aceptar para salir. 
+ 
+--- PAGE 9 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 9 
+ 
+ c. Creación de una línea  
+  • Seleccione Equipos > Línea aérea > Equilibrada. 
+• El tipo equilibrado usa el mismo conductor para todas las fases mientras que el tipo desequilibrado usa un 
+conductor diferente para cada una de las tres fases. 
+  • Las listas desplegables de los conductores de 
+Fase y de los conductores de Neutro 
+muestran todos los conductores creados en la 
+base de datos de los conductores. Del mismo 
+modo, la lista desplegable Distancia muestra 
+todas las distancias creadas en la base de 
+datos. Pulse en el botón 
+  y cree una 
+nueva línea llamada 
+NUEVA_LINEA_AEREA. 
+• Seleccione el conductor creado 
+anteriormente, NUEVO_CONDUCTOR, para 
+la Fase y el Neutro. 
+• Bajo Distancia, seleccione 
+NUEVO_ESPACIMIENTO. 
+• La opción Calculado de conductores y 
+espaciamiento calcula las impedancias 
+según los conductores y el espaciamiento 
+seleccionados. 
+• . 
+• Pulse Aceptar para cerrar el cuadro de 
+diálogo. 
+  
+--- PAGE 10 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 10 
+ 
+7. Cómo crear un Cable 
+ a. En la barra de menús, escoja Equipos > Cable para acceder a la base de datos de los cables. 
+ b. Puede ingresar los parámetros del cable en la pestaña General, si los conoce. 
+Si los desconoce, pulse el botón Detalles para introducir los detalles sobre la Construcción del cable y calcular las 
+impedancias equivalentes. 
+ c. 
+Como ejemplo, cree un nuevo cable pulsando el botón 
+  y llámelo NUEVO_CABLE. Pulse Aceptar. 
+ d. Se desconocen los datos que se deben ingresar en la pestaña General salvo el tipo de cable que será el Tripolar 
+con neutros concéntricos y aislamiento PVC. Pulse el botón 
+ . 
+ e. Ingrese los datos sobre el cable como sigue y como se ilustra en la figura de abajo: 
+• Cobre, 3/0 AWG, Estándar concéntricos, con 19 alambres y 0.46 pulgada de diámetro. 
+• Aislamiento de tipo PVC con un espesor de 0.24 pulgada. 
+• Hay 32 hilos de cobre con Neutros concéntricos, el Tamaño es 12 AWG y el Paso de cableado es 5.64 
+pulgadas. 
+  
+  
+ f. Después de haber rellenado los campos, pulse Aceptar. 
+ g. Regrese al cuadro de dialogo Cable y pulse en la pestaña Impedancias para calcular las impedancias en base a 
+los detalles de construcción ingresados. Seleccione la opción Calculado a partir de los detalles de construcción 
+y pulse Aceptar para salir. 
+--- PAGE 11 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 11 
+ 
+8. Cómo crear un Dispositivo de protección 
+ Abajo se muestra el cuadro de diálogo de un fusible. Es el mismo para todos los dispositivos de protección y permite 
+ingresar: 
+ a. La corriente y tensión nominal del aparato. 
+ b. El modo de operación 
+ c. Datos como el fabricante, el tipo de control, la capacidad y el modelo según el dispositivo seleccionado. 
+  
+  
+9. Cómo crear Otros equipos 
+ El menú Equipos permite crear otros equipos como el Condensador shunt/serie, la Reactancia shunt/serie y los 
+Dispositivos armónicos. 
+--- PAGE 12 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 12 
+ 
+10. Agregar un dispositivo de la Biblioteca 
+ Es posible agregar equipos desde la biblioteca de los equipos de CYME. Esta biblioteca contiene los equipos 
+predeterminados que se pueden utilizar para poblar las listas disponibles para el usuario en los cuadros de diálogo de 
+cada equipo. 
+ a. Diríjase a la sección Inventario de los equipos de 
+la pestaña Explorador de la Barra de exploración. 
+Seleccione el tipo de Equipo y un Nombre. Para 
+este ejemplo, seleccione Líneas, cables y 
+conductores. También puede acceder el mismo 
+cuadro de diálogo usando el menú Equipos. 
+  
+ b. Pulse el botón derecho en un Nombre de cable y 
+seleccione Propiedades en el menú contextual. 
+Aparecerá el cuadro de diálogo Cable. 
+ c. Seleccione Mostrar la biblioteca de CYME en el 
+menú de la barra de herramientas de un cuadro de 
+diálogo de equipos o pulse una vez en la barra 
+Biblioteca CYME. 
+  
+ d. Pulse el botón derecho en el Nombre del cable 
+para añadirlo al Inventario de los equipos desde la 
+Biblioteca de CYME y seleccione Agregar al 
+inventario. 
+  
+--- PAGE 13 ---
+Pub. No: IL917062ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 13 
+ 
+ e. El cable seleccionado ahora aparecerá en la sección Mi inventario del cuadro de diálogo Equipos > Cable y 
+estará disponible en el Inventario de equipos, listo para ser deslizado y soltado en el diagrama unifilar. 
+  
+  
+ f. Para instalar un nuevo dispositivo, deslice un símbolo de la Barra de símbolos de la Barra de exploración y 
+suéltelo en el diagrama unifilar. Haga doble clic en el dispositivo y seleccione el Nombre de equipo que desee 
+utilizar. 
+ 

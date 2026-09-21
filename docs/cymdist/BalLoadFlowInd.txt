@@ -1,0 +1,184 @@
+
+--- PAGE 1 ---
+  
+CYME  
+Software para el análisis de redes eléctricas 
+Pub. No: IL917123ES 
+Efectivo: octubre de 2018 
+ 
+ 
+ 
+ 
+Tutorial 
+Flujo de carga en redes 
+– CYME 8.0 
+ 
+ Se proporciona un fichero de estudio autónomo (.sxst) para ser utilizado con este tutorial. Las explicaciones de abajo se basan en el 
+uso de dicho fichero. 
+1. Primeros pasos 
+ a. Inicie el programa CYME. 
+ b. Abra el estudio autónomo proporcionado con el tutorial Flujo de carga en redes BalLoadFlowInd.sxst. 
+ 
+2. Descripción de la red 
+ Se trata de un sistema de 44 barras modelizado en CYME. La red es alimentada por una red pública y en caso de 
+necesidad por generadores de reserva. En este caso, tanto la red pública como los generadores están en servicio y 
+suministran energía a la instalación industrial. La carga total del sistema es típica de un sistema que opera casi a plena 
+capacidad. El sistema contiene motores de inducción y sincrónicos. La red pública alimenta la red industrial a 69 kV y 
+los generadores a 13.8 kV. Varios motores con potencia nominal de menos de 50 HP se han reunido como un todo en 
+esta red. Los motores de potencia nominal de más de 50 HP se han modelizado individualmente. 
+ 
+ 
+--- PAGE 2 ---
+Pub. No: IL917123ES 
+Efectivo: marzo de 2018 
+ 
+ 
+© Eaton, CYME International 2 
+ 
+3. Análisis de flujo de carga 
+ El objetivo del análisis de Flujo de carga es de analizar el desempeño en régimen permanente de la red de energía 
+eléctrica bajo diversas condiciones de explotación. Se trata de la herramienta de análisis de base para el planeamiento, 
+el diseño y la explotación de cualquier red de energía eléctrica, ya sea de distribución, industrial o de transporte. 
+ a. Escoja Flujo de carga en la lista de análisis 
+disponibles de la barra de herramientas 
+Simulación. También se puede escoger el 
+menú Análisis > Flujo de carga. 
+ 
+ b. 
+Presione el botón Ejecutar simulación 
+  de la barra de herramientas Simulación para abrir el cuadro de 
+dialogo Análisis de flujo de carga. 
+ 
+ c. El cuadro de dialogo Análisis 
+de flujo de carga consta de seis 
+pestañas que permiten 
+configurar: 
+ 
+  • Los Parámetros del 
+análisis de flujo de carga 
+incluyendo los Factores de 
+regulación de generación y 
+de carga. 
+• Las Redes en que se 
+ejecuta el Flujo de carga. 
+• Los Comandos para 
+incluir o excluir equipos 
+particulares en la 
+simulación. 
+• Los Límites de carga de 
+los dispositivos. 
+• Los Límites de tensión 
+del sistema et de las 
+cargas del cliente. 
+• Las opciones de Salida 
+para seleccionar los 
+reportes, etiquetas, 
+codificación por colores e 
+indicativos de herramienta 
+que muestran los 
+resultados del análisis. 
+--- PAGE 3 ---
+Pub. No: IL917123ES 
+Efectivo: marzo de 2018 
+ 
+ 
+© Eaton, CYME International 3 
+ 
+4. Parámetros del estudio de flujo de carga 
+ Parámetros 
+ a. Método de cálculo. Existen varios métodos de cálculo disponibles: 
+Caída de tensión, Fast Decoupled, Gauss-Seidel y Newton 
+Raphson. 
+En este tutorial escogeremos el método Fast Decoupled. 
+ 
+ b. Parámetros de convergencia 
+En este tutorial hemos fijado la Tolerancia a 0.01 MVA y el número 
+máximo de Iteraciones a 60. 
+ 
+ c. Arranque a 1 p.u. se activa de forma predeterminada la primera 
+vez, lo que implica que todas las tensiones de barra se inicializan a 
+1.0 p.u./0°. 
+Si usa la solución anterior de flujo de carga, deseleccione la opción 
+Arranque a 1 p.u. 
+ d. Deseleccione Quitar todas las restricciones. Deseleccionando 
+esta opción, el flujo de carga se resolverá tomando en cuenta todos 
+los límites de la potencia reactiva del generador y el intervalo de las 
+tomas de todos los transformadores con cambiador de derivaciones 
+bajo carga (LTC). 
+ e. Seleccione la opción Incluir la puesta en carga de la línea en el 
+cuadro de grupo Opciones de cálculo. 
+ f. Seleccione la opción “Como definido” para todos los Factores de 
+regulación de generación y de carga. En este caso no se aplicará 
+ningún factor de regulación a las cargas, motores o generadores. En 
+otras palabras, toda la potencia activa y reactiva, tal como se 
+ingresaron para los equipos de la red, se utilizarán en el análisis de 
+flujo de carga. Los factores de regulación también se pueden aplicar 
+como Tipo Global, Por zona o “Por equipo (carga, motor o 
+generador)”. 
+ 
+ g. Modelo de carga función de 
+la frecuencia y de la tensión 
+simula el impacto de la 
+variación de la tensión de la 
+barra o el nudo sobre la carga 
+conectada a esta barra o 
+nudo.  
+ 
+P =  Po
+nPV
+Vbase 
+ 
+
+Q =  Qo
+nQV
+Vbase 
+ 
+
+ 
+  En este tutorial configuraremos un modelo de carga Global, es decir Cargas de potencia constante nP = nQ = 0.0. 
+ h. Tensión de umbral Vz es la tensión bajo la cual todas las cargas se convierten en impedancia constante. 
+Después que la tensión pasa ese umbral, las cargas regresan a su estado original. Fije Vz a 80%. 
+ Nota: El componente de sensibilidad de la frecuencia de la carga solo es tomado en cuenta en los estudios de 
+estabilidad transitoria. 
+--- PAGE 4 ---
+Pub. No: IL917123ES 
+Efectivo: marzo de 2018 
+ 
+ 
+© Eaton, CYME International 4 
+ 
+ Redes 
+ a. Seleccione la red LF-TN. 
+ 
+ Comandos 
+ a. Incluya todos los Condensadores, Generadores y Motores y escoja Funcionamiento normal de la toma del 
+transformador y regulador. 
+ Límites de carga 
+ a. Seleccione los Límites de carga que 
+se aplicarán a este estudio en 
+particular: las condiciones de 
+funcionamiento de Planificación. 
+ 
+ b. Escoja Potencias nominales de los 
+equipos en Verano para los criterios. 
+Esta opción le permitirá identificar las 
+sobrecargas, en función de la potencia 
+nominal en verano de cada equipo  
+ 
+ c. La columna correspondiente en la tabla 
+de porcentajes de Límites de carga se 
+activará para permitirle ingresar los 
+límites individuales de carga de 
+cualquier componente de la red. 
+ 
+ Límites de tensión  
+ a. Las Categorías de límites son las 
+condiciones de funcionamiento de 
+Planificación. 
+ 
+ b. Fije los Límites de tensión del 
+sistema para las condiciones de 
+explotación de Planificación. Fije el 
+límite de Sobretensión a 105% y el 
+límite de Subtensión a 95%. 
+  

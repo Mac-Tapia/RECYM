@@ -1,0 +1,16 @@
+{
+  "_comment": "Plantilla alimentador Electro Dunas. study_file se resuelve bajo projects_dir.",
+  "name": "NUEVO_ALIMENTADOR",
+  "description": "",
+  "network_id": "NET_XXXX",
+  "study_file": "NUEVO.zxst",
+  "study_path": "",
+  "voltage_ll_kv": 22.9,
+  "region": "",
+  "substation": "",
+  "enabled": true,
+  "control_workbook": "",
+  "catalog_workbook": "",
+  "output_dir": "",
+  "notes": "Deje study_path vacío para usar projects_dir\\\\study_file"
+}

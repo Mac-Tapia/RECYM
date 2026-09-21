@@ -1,0 +1,96 @@
+{
+  "ok": true,
+  "feeder_id": "PA217",
+  "assembled_at": "2026-09-21T01:48:47",
+  "note": "Copia sin alterar formato ni numerales. Imagenes del .docx se preservan embebidas. Rellenar tablas con resultados de loadflow_situacional / loadflow_proyectado.",
+  "paths": {
+    "feeder_id": "PA217",
+    "plantilla_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe",
+    "doc_dir": "D:\\Proyectos\\ELDICA\\RECYM\\doc",
+    "informe_plantilla": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe\\informe.docx",
+    "justificacion_plantilla": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe\\justificacion.xlsx",
+    "informe_doc": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe.docx",
+    "justificacion_doc": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\justificacion.xlsx",
+    "loadflow_situacional": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_situacional.json",
+    "loadflow_proyectado": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_proyectado.json",
+    "loadflow_result": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_result.json",
+    "assemble_manifest": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\assemble_manifest.json"
+  },
+  "copied": [
+    {
+      "name": "informe.docx",
+      "src": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe\\informe.docx",
+      "dst": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe.docx",
+      "bytes": 2197907,
+      "action": "copied"
+    },
+    {
+      "name": "justificacion.xlsx",
+      "src": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe\\justificacion.xlsx",
+      "dst": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\justificacion.xlsx",
+      "bytes": 790286,
+      "action": "copied"
+    }
+  ],
+  "scenarios": {
+    "situacional": {
+      "feeder_id": "PA217",
+      "network_id": "NET_2030_179_PA217",
+      "module": "LoadFlow",
+      "manual": "docs/cymdist/BalLoadFlowInd.txt (IL917123ES)",
+      "scenario": "situacional",
+      "status": "ok",
+      "note": "Cada boton es independiente: situacional desconecta cargas §3; proyectado las conecta. No redistribuir tras SpotLoad.",
+      "lf_warnings_fix": {
+        "ok": true,
+        "notes": [
+          "MDB CYMEQSHUNTCAPACITOR DEFAULT: UPDATE 13.2213211644424",
+          "DEV_2030_179_PA217 OperatingVoltageA: 13,22132 -> 13,22132",
+          "DEV_2030_179_PA217 OperatingVoltageB: 13,22132 -> 13,22132",
+          "DEV_2030_179_PA217 OperatingVoltageC: 13,22132 -> 13,22132",
+          "DEFAULT ShuntCapacitor RatedVoltageKVLN: 13,22132 -> 13,22132",
+          "LoadFlowVoltageSensitivityLoadModel.Mode: FromLibrary -> Global",
+          "LoadFlowVoltageSensitivityLoadModel.V: 0,01 -> 0,01",
+          "UseDefaultValuesByLoad: false -> false",
+          "study.Save(AllEquipments)+db OK"
+        ]
+      },
+      "new_loads_scenario": [
+        {
+          "LoadID": "SAN_FERNANDO2",
+          "ConnectionStatus": "Disconnected",
+          "connected": false,
+          "P_kW": 1500.0,
+          "Q_kvar": 493.0261577682948,
+          "role": "situacional"
+        }
+      ],
+      "n_new_loads": 1,
+      "new_loads_connected": false,
+      "topo": {
+        "KWTOT": "6389",
+        "KVARTOT": "3082",
+        "KWLOSS": "$KWLOSS$",
+        "KVARLOSS": "$KVARLOSS$",
+        "Vpu": "1,735",
+        "VpuA": "1,735",
+        "VpuB": "1,735",
+        "VpuC": "1,735",
+        "VLN": "13,2",
+        "VLL": "22,9",
+        "I": "$I$",
+        "Ia": "$Ia$",
+        "Ib": "$Ib$",
+        "Ic": "$Ic$"
+      },
+      "source_node": "NODE_2030_179_PA217",
+      "saved": true,
+      "warnings": [],
+      "warn_file": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\lf_com_warn.txt",
+      "cymdist_open": true,
+      "engine": "COM",
+      "saved_to": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_result.json"
+    },
+    "proyectado": null
+  }
+}

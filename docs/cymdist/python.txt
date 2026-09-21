@@ -1,0 +1,92 @@
+--- PAGE 1 ---
+  
+CYME  
+Software para el análisis de redes eléctricas 
+Pub. No: IL917079ES 
+Efectivo: octubre de 2018 
+ 
+ 
+ 
+ 
+Tutorial 
+Utilización de Python® en CYME 
+– CYME 8.0 
+ 
+ Se proporciona un fichero de estudio autónomo (.sxst) para ser utilizado con este tutorial. Las explicaciones de abajo se basan en el 
+uso de dicho fichero. 
+1. Introducción a Python® en CYME 
+ Cuando se usa el programa CYME se pueden crear scripts para automatizar las tareas con el lenguaje Python. El 
+módulo puede ser utilizado de diferentes maneras: 
+• Incorporándolo en CYME 
+• Como ejecutable externo de Python 
+En este tutorial sólo se explica el primer método. El segundo es para los usuarios avanzados.  
+También se describen los componentes siguientes:  
+• la barra de herramientas de Python 
+• la consola de Python 
+• el cuadro de herramientas Python 
+Las herramientas de Python se pueden acceder escogiendo la opción de menú Archivo > Herramientas > Consola 
+Python o Cuadro de herramientas Python. 
+Para agregar la barra de herramientas, pulse el botón derecho del ratón sobre un espacio vacío de la barra de 
+herramientas y seleccione Python en la lista de barras de herramientas. La barra siguiente aparecerá. 
+ Las opciones siguientes estarán disponibles en la barra de herramientas, de izquierda a derecha: 
+• cuadro de selección de los scripts del cuadro de herramientas 
+ • botón Ejecutar el script Python 
+• botón Abrir el cuadro de herramientas Python  
+• botón Abrir la consola Python 
+• botón Abrir el editor Python 
+ 
+ Abra el estudio autónomo python-s.sxst disponible con este tutorial. 
+2. Consola Python 
+ La consola Python se puede 
+abrir desde la barra de 
+herramientas o 
+seleccionando la opción de 
+menú Archivo 
+>Herramientas->Consola 
+Python. La ventana siguiente 
+se abrirá: 
+  
+--- PAGE 2 ---
+Pub. No: IL917079ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 2 
+ 
+ En esta ventana se pueden utilizar comandos simples de Python, desde simples cálculos matemáticos hasta los 
+comandos cympy proporcionados por CYME. Escriba lo siguiente y presione después la tecla Enter: 
+1. 2*8 
+2. cympy.study.QueryInfoNode(‘Distance’, ‘B4’, 3) 
+Deberá obtener lo siguiente: 
+ 
+El segundo comando mostrado es para buscar la palabra clave Distance en el nudo B4 con una precisión de 3 
+decimales. 
+Nota: También se puede explorar la biblioteca CymPy Library con la función de completado automático de la 
+herramienta. Si escribe “cympy” seguido de un punto, obtendrá todos los sub-módulos, funciones o variables posibles. 
+Consulte el Manual de Referencia para obtener más detalles. 
+3. Cuadro de herramientas Python  
+ El cuadro de herramientas Python puede servir para 
+guardar y ejecutar scripts. El cuadro de herramientas 
+se puede abrir desde la barra de herramientas o 
+desde el menú Archivo > Herramientas > Cuadro de 
+herramientas Python.  
+El cuadro de diálogo siguiente se abrirá. Éste contiene 
+algunos ejemplos de scripts.  
+La barra de herramientas disponible en el cuadro de 
+diálogo contiene las siguientes opciones, de izquierda 
+a derecha: 
+1. Mostrar el menú opciones 
+2. Agregar el script Python 
+3. Modificar las propiedades del script Python 
+4. Quitar el script Python 
+5. Ejecutar el script Python 
+6. Editar el script Python 
+7. Importar/Exportar Script Python 
+8. Opciones de búsqueda 
+Seleccione el script Summary Report LF/SC y 
+ejecútelo. Un informe personalizado deberá aparecer 
+al terminar la ejecución. También podrá visualizar el 
+script seleccionando la opción Editar el Script 
+Python. 
+   
+ 

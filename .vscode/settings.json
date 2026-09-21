@@ -1,0 +1,4 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/.tools/python37-win32/python.exe",
+  "python.terminal.activateEnvironment": false
+}

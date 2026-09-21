@@ -1,0 +1,630 @@
+{
+  "_meta": {
+    "source": "CYME cymdist.cymsg [DiagnosticTool] + LoadFlow/Simulation relevantes",
+    "manual_support": "docs/cymdist/EquipmentModeling.txt (flujo biblioteca→asignacion para 220047)",
+    "policy": "En etapa diagnostico se proponen TODAS las entradas Error/Warning/Hint; auto_apply=true se corrige en bulk_fix.",
+    "n_codes": 62
+  },
+  "codes": {
+    "220000": {
+      "code": "220000",
+      "section": "DiagnosticTool",
+      "message": "El nodo controlado por el dispositivo %s no es especificado. Se utilizará un nodo arbitrario durante la simulación.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Device",
+      "fix_note": "Especificar nodo controlado del dispositivo",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220001": {
+      "code": "220001",
+      "section": "DiagnosticTool",
+      "message": "El nodo controlado por el dispositivo %s no existe. Se utilizará un nodo arbitrario durante la simulación.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Device",
+      "fix_note": "Apuntar control a un nodo existente",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220002": {
+      "code": "220002",
+      "section": "DiagnosticTool",
+      "message": "El dispositivo %s controla un nodo a %.1f kV, pero la tensión de base del nodo es %.1f kV.",
+      "action": "align_control_voltage",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Alinear tension controlada con base del nodo",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220003": {
+      "code": "220003",
+      "section": "DiagnosticTool",
+      "message": "El factor de potencia del dispositivo %s es inferior al límite mínimo del factor de potencia.",
+      "action": "raise_device_pf",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Subir FP del dispositivo sobre el minimo",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220004": {
+      "code": "220004",
+      "section": "DiagnosticTool",
+      "message": "La longitud de la línea aérea %s es superior al límite máximo de la longitud.",
+      "action": "raise_length_limit",
+      "auto_apply": true,
+      "tipo_default": "OverheadLine",
+      "fix_note": "Ajustar limite longitud o acortar linea",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220005": {
+      "code": "220005",
+      "section": "DiagnosticTool",
+      "message": "La longitud del cable %s es superior al límite máximo de la longitud.",
+      "action": "raise_length_limit",
+      "auto_apply": true,
+      "tipo_default": "Cable",
+      "fix_note": "Ajustar limite longitud o acortar cable",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220006": {
+      "code": "220006",
+      "section": "DiagnosticTool",
+      "message": "La tensión deseada del conmutador en carga a %s está fuera de límites de la tensión deseada.",
+      "action": "fix_ltc_desired_voltage",
+      "auto_apply": true,
+      "tipo_default": "Transformer",
+      "fix_note": "Ajustar tension deseada LTC dentro de limites",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220007": {
+      "code": "220007",
+      "section": "DiagnosticTool",
+      "message": "Las tensiones primaria y/o secundaria del transformador %s parecen estar incorrectas con respecto a la tensión de la red.",
+      "action": "align_transformer_voltages",
+      "auto_apply": true,
+      "tipo_default": "Transformer",
+      "fix_note": "Corregir tensiones prim/sec vs red",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220008": {
+      "code": "220008",
+      "section": "DiagnosticTool",
+      "message": "Las tensiones de base del sistema definidas por el usuario del transformador %s parecen estar incorrectas con respecto a la tensión de la red.",
+      "action": "align_transformer_voltages",
+      "auto_apply": true,
+      "tipo_default": "Transformer",
+      "fix_note": "Corregir UserDefinedBaseVoltage del transformador",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220009": {
+      "code": "220009",
+      "section": "DiagnosticTool",
+      "message": "La tensión de base definida por el usuario del nodo %s parece estar incorrecta con respecto a la tensión de la red.",
+      "action": "set_base_voltage",
+      "auto_apply": true,
+      "tipo_default": "Node",
+      "fix_note": "Corregir UserDefinedBaseVoltage del nodo a Vll red",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220010": {
+      "code": "220010",
+      "section": "DiagnosticTool",
+      "message": "La potencia reactiva máxima del dispositivo %s es inferior a la potencia reactiva mínima.",
+      "action": "fix_q_limits",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Asegurar Qmax >= Qmin",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220011": {
+      "code": "220011",
+      "section": "DiagnosticTool",
+      "message": "La tolerancia de convergencia especificada en los parámetros de flujo de carga es superior a %s. Una grande tolerancia puede afectar la precisión de los resultados.",
+      "action": "tighten_lf_tolerance",
+      "auto_apply": true,
+      "tipo_default": "StudyParam",
+      "fix_note": "Ajustar tolerancia convergencia LoadFlow",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220012": {
+      "code": "220012",
+      "section": "DiagnosticTool",
+      "message": "El dispositivo %s controla un nodo localizado fuera de su red.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Device",
+      "fix_note": "Controlar nodo dentro de la misma red",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220013": {
+      "code": "220013",
+      "section": "DiagnosticTool",
+      "message": "Por lo menos un análisis debe ser seleccionado para ejecutar un diagnóstico.",
+      "action": "enable_diagnostic_checks",
+      "auto_apply": true,
+      "tipo_default": "StudyParam",
+      "fix_note": "Activar al menos un analisis del diagnostico",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220014": {
+      "code": "220014",
+      "section": "DiagnosticTool",
+      "message": "Las corrientes de disparo de fase y de neutro son ambos iguales a cero.",
+      "action": "fix_trip_currents",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Fijar corrientes de disparo fase/neutro != 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220015": {
+      "code": "220015",
+      "section": "DiagnosticTool",
+      "message": "La impedancia de secuencia directa de %s es igual a 0.",
+      "action": "set_min_impedance",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Impedancia secuencia directa Z1 != 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220016": {
+      "code": "220016",
+      "section": "DiagnosticTool",
+      "message": "La impedancia de régimen transitorio de %s es igual a 0.",
+      "action": "set_min_impedance",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Impedancia transitoria != 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220017": {
+      "code": "220017",
+      "section": "DiagnosticTool",
+      "message": "La impedancia de régimen subtransitorio de %s es igual a 0.",
+      "action": "set_min_impedance",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Impedancia subtransitoria != 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220018": {
+      "code": "220018",
+      "section": "DiagnosticTool",
+      "message": "La impedancia de secuencia homopolar de %s es igual a 0.",
+      "action": "set_min_impedance",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Impedancia homopolar Z0 != 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220019": {
+      "code": "220019",
+      "section": "DiagnosticTool",
+      "message": "La impedancia de secuencia inversa de %s es igual a 0.",
+      "action": "set_min_impedance",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Impedancia inversa Z2 != 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220020": {
+      "code": "220020",
+      "section": "DiagnosticTool",
+      "message": "El relé %s controla un interruptor automático que no existe.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Relay",
+      "fix_note": "Asignar interruptor existente al rele",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220021": {
+      "code": "220021",
+      "section": "DiagnosticTool",
+      "message": "El relé %s controla ningún interruptor automático.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Relay",
+      "fix_note": "Asignar interruptor al rele",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220022": {
+      "code": "220022",
+      "section": "DiagnosticTool",
+      "message": "El relé %s controla un interruptor automático en un tramo distante.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Relay",
+      "fix_note": "Controlar interruptor en tramo valido",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220023": {
+      "code": "220023",
+      "section": "DiagnosticTool",
+      "message": "El ajuste de referencia de la tensión cc del convertidor de fuente de tensión debe situarse dentro de 10%% de su tensión cc nominal.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Converter",
+      "fix_note": "Ajustar referencia tension CC VSC (+/-10%%)",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220024": {
+      "code": "220024",
+      "section": "DiagnosticTool",
+      "message": "La tensión cc nominal del convertidor debe situarse dentro de 5%% de la tensión nominal del sistema fotovoltaico (Vmpp * Ns).",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Converter",
+      "fix_note": "Alinear tension CC convertidor con PV",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220025": {
+      "code": "220025",
+      "section": "DiagnosticTool",
+      "message": "El límite del factor de potencia debe ser superior a 0%%. Favor de corregir.",
+      "action": "fix_diagnostic_limits",
+      "auto_apply": true,
+      "tipo_default": "StudyParam",
+      "fix_note": "Limite FP diagnostico > 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220026": {
+      "code": "220026",
+      "section": "DiagnosticTool",
+      "message": "Los límites de la longitud deben ser superiores à 0. Favor de corregir.",
+      "action": "fix_diagnostic_limits",
+      "auto_apply": true,
+      "tipo_default": "StudyParam",
+      "fix_note": "Limites longitud diagnostico > 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220027": {
+      "code": "220027",
+      "section": "DiagnosticTool",
+      "message": "El límite mínimo de la tensión deseada debe ser inferior al límite máximo. Favor de corregir.",
+      "action": "fix_diagnostic_limits",
+      "auto_apply": true,
+      "tipo_default": "StudyParam",
+      "fix_note": "Min tension deseada < max",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220028": {
+      "code": "220028",
+      "section": "DiagnosticTool",
+      "message": "El tramo maestro del conmutador en carga en %s no existe.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Transformer",
+      "fix_note": "Definir tramo maestro LTC valido",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220029": {
+      "code": "220029",
+      "section": "DiagnosticTool",
+      "message": "El tramo maestro para el conmutador en carga en %s no contiene un transformador con conmutador en carga.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Transformer",
+      "fix_note": "Tramo maestro debe tener transformador LTC",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220030": {
+      "code": "220030",
+      "section": "DiagnosticTool",
+      "message": "La tensión nominal del dispositivo %s está fuera de %d%% de la tensión de base de la red.",
+      "action": "align_device_rated_voltage",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Tension nominal dispositivo vs base red",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220031": {
+      "code": "220031",
+      "section": "DiagnosticTool",
+      "message": "La longitud del cable CC %s es superior al límite de la longitud máxima.",
+      "action": "raise_length_limit",
+      "auto_apply": true,
+      "tipo_default": "Cable",
+      "fix_note": "Longitud cable CC sobre limite",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220032": {
+      "code": "220032",
+      "section": "DiagnosticTool",
+      "message": "La tensión de funcionamiento del dispositivo %s está fuera de %d%% de la tensión de base de la red.",
+      "action": "align_device_operating_voltage",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Tension de funcionamiento vs base red",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220033": {
+      "code": "220033",
+      "section": "DiagnosticTool",
+      "message": "El conductor %s en el equipo cable %s se encuentra en la lista de los conductores.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Cable",
+      "fix_note": "Revisar conductor en equipo cable",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220034": {
+      "code": "220034",
+      "section": "DiagnosticTool",
+      "message": "La sobretensión máxima en el dispositivo %s está mayor que el valor definido en la base de datos de los equipos.",
+      "action": "sync_device_from_equipment_db",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Alinear sobretension max con BD equipos",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220035": {
+      "code": "220035",
+      "section": "DiagnosticTool",
+      "message": "La reducción de tensión máxima en el dispositivo %s está mayor que el valor definido en la base de datos de los equipos.",
+      "action": "sync_device_from_equipment_db",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Alinear subtension max con BD equipos",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220036": {
+      "code": "220036",
+      "section": "DiagnosticTool",
+      "message": "El intervalo máximo en el dispositivo %s está mayor que el valor definido en la base de datos de los equipos.",
+      "action": "sync_device_from_equipment_db",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Alinear intervalo max con BD equipos",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220037": {
+      "code": "220037",
+      "section": "DiagnosticTool",
+      "message": "El intervalo mínimo en el dispositivo %s está mayor que el valor definido en la base de datos de los equipos.",
+      "action": "sync_device_from_equipment_db",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Alinear intervalo min con BD equipos",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220038": {
+      "code": "220038",
+      "section": "DiagnosticTool",
+      "message": "Una de las corrientes de disparo es igual a cero.",
+      "action": "fix_trip_currents",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Corriente de disparo != 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220039": {
+      "code": "220039",
+      "section": "DiagnosticTool",
+      "message": "La corriente de disparo del relé %s es igual a cero.",
+      "action": "fix_trip_currents",
+      "auto_apply": true,
+      "tipo_default": "Relay",
+      "fix_note": "Corriente de disparo del rele != 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220040": {
+      "code": "220040",
+      "section": "DiagnosticTool",
+      "message": "La potencia reactiva máxima del dispositivo %s es igual a su potencia reactiva mínima.",
+      "action": "fix_q_limits",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Qmax debe diferir de Qmin",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220041": {
+      "code": "220041",
+      "section": "DiagnosticTool",
+      "message": "La sobretensión máxima en el dispositivo %s es menor que 1%%.",
+      "action": "fix_voltage_thresholds",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Sobretension maxima >= 1%%",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220042": {
+      "code": "220042",
+      "section": "DiagnosticTool",
+      "message": "La reducción de tensión máxima en el dispositivo %s es menor que 1%%.",
+      "action": "fix_voltage_thresholds",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Subtension maxima >= 1%%",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220043": {
+      "code": "220043",
+      "section": "DiagnosticTool",
+      "message": "El ancho de banda en el dispositivo %s es menor que 0.1 volt.",
+      "action": "fix_bandwidth",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Ancho de banda >= 0.1 V",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220044": {
+      "code": "220044",
+      "section": "DiagnosticTool",
+      "message": "Los umbrales de cierre y de desconexión del condensador shunt %s son iguales.",
+      "action": "fix_shunt_thresholds",
+      "auto_apply": true,
+      "tipo_default": "ShuntCapacitor",
+      "fix_note": "Separar umbrales cierre/apertura condensador",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220045": {
+      "code": "220045",
+      "section": "DiagnosticTool",
+      "message": "La impedancia de secuencia homopolar del dispositivo %s es igual a 0.",
+      "action": "set_min_impedance",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Z0 dispositivo != 0",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220046": {
+      "code": "220046",
+      "section": "DiagnosticTool",
+      "message": "El ancho de banda en sentido contrario en el dispositivo %s es inferior a 0.1 voltio.\"",
+      "action": "fix_bandwidth",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Ancho de banda inverso >= 0.1 V",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220047": {
+      "code": "220047",
+      "section": "DiagnosticTool",
+      "message": "El equipo de %s %s está configurado en predeterminado.",
+      "action": "set_equipment",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Asignar equipo real de biblioteca (no DEFAULT) — EquipmentModeling",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220048": {
+      "code": "220048",
+      "section": "DiagnosticTool",
+      "message": "El nodo de bucle %s se encontró en su red.",
+      "action": "open_tie_switch",
+      "auto_apply": true,
+      "tipo_default": "Node",
+      "fix_note": "Abrir seccionador en nodo de bucle (radializar)",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220049": {
+      "code": "220049",
+      "section": "DiagnosticTool",
+      "message": "Se encontró el nodo %s de combinación de fase en la red.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Node",
+      "fix_note": "Revisar modelado combinacion de fases",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220050": {
+      "code": "220050",
+      "section": "DiagnosticTool",
+      "message": "La sección desconectada %s se encontró en la red.",
+      "action": "flag_disconnected_section",
+      "auto_apply": true,
+      "tipo_default": "Section",
+      "fix_note": "Conectar o excluir seccion desconectada",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220051": {
+      "code": "220051",
+      "section": "DiagnosticTool",
+      "message": "Debe agregar voltajes de base de red para realizar la verificación de voltajes de base de red predeterminados.",
+      "action": "ensure_valid_base_voltages",
+      "auto_apply": true,
+      "tipo_default": "StudyParam",
+      "fix_note": "Agregar ValidBaseVoltages de la red",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220052": {
+      "code": "220052",
+      "section": "DiagnosticTool",
+      "message": "El voltaje de base del nodo %s no coincide con la lista de voltajes de base de red predeterminada.",
+      "action": "set_base_voltage",
+      "auto_apply": true,
+      "tipo_default": "Node",
+      "fix_note": "Base del nodo en lista ValidBaseVoltages",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "220053": {
+      "code": "220053",
+      "section": "DiagnosticTool",
+      "message": "Se debe activar, al menos, una verificación para realizar un diagnóstico de red.",
+      "action": "enable_diagnostic_checks",
+      "auto_apply": true,
+      "tipo_default": "StudyParam",
+      "fix_note": "Activar al menos una verificacion",
+      "source": "cymdist.cymsg [DiagnosticTool]"
+    },
+    "260008": {
+      "code": "260008",
+      "section": "LoadFlow",
+      "message": "Ausencia de generadores SWING en la red",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Source",
+      "fix_note": "Debe existir generador SWING",
+      "source": "cymdist.cymsg [LoadFlow]"
+    },
+    "260012": {
+      "code": "260012",
+      "section": "LoadFlow",
+      "message": "La impedancia del dispositivo %s es demasiado pequeña; predetermina X1 a %s",
+      "action": "set_min_impedance",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Impedancia demasiado pequena",
+      "source": "cymdist.cymsg [LoadFlow]"
+    },
+    "260030": {
+      "code": "260030",
+      "section": "LoadFlow",
+      "message": "El límite de carga de %s debe ser mayor que 0.",
+      "action": "fix_load_limit",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "Limite de carga > 0",
+      "source": "cymdist.cymsg [LoadFlow]"
+    },
+    "260035": {
+      "code": "260035",
+      "section": "LoadFlow",
+      "message": "Se ha reemplazado el modelo de carga en función de la sensibilidad de la tensión de ciertas cargas por impedancia constante ya que la tensión cayó debajo de la tensión de umbral.",
+      "action": "fix_lf_warnings",
+      "auto_apply": true,
+      "tipo_default": "StudyParam",
+      "fix_note": "Umbral sensibilidad tension / modelo carga",
+      "source": "cymdist.cymsg [LoadFlow]"
+    },
+    "260037": {
+      "code": "260037",
+      "section": "LoadFlow",
+      "message": "El factor de potencia de %s %s parece ser entrado en p.u. en vez de porcentaje. Favor de verificar.",
+      "action": "fix_pf_percent",
+      "auto_apply": true,
+      "tipo_default": "Device",
+      "fix_note": "FP en %% no en p.u.",
+      "source": "cymdist.cymsg [LoadFlow]"
+    },
+    "260042": {
+      "code": "260042",
+      "section": "LoadFlow",
+      "message": "Una caída de tensión anormalmente importante fue detectada en el tramo %s. Favor de verificar la impedancia de línea y la corriente de carga.",
+      "action": "revisar",
+      "auto_apply": false,
+      "tipo_default": "Section",
+      "fix_note": "Caida tension anormal — revisar Z e I",
+      "source": "cymdist.cymsg [LoadFlow]"
+    },
+    "260044": {
+      "code": "260044",
+      "section": "LoadFlow",
+      "message": "La potencia aparente es superior a la capacidad conectada en %s %s. Favor de verificar.",
+      "action": "raise_connected_kva",
+      "auto_apply": true,
+      "tipo_default": "Load",
+      "fix_note": "Subir ConnectedKVA >= S aparente",
+      "source": "cymdist.cymsg [LoadFlow]"
+    },
+    "480010": {
+      "code": "480010",
+      "section": "Simulation",
+      "message": "La tensión nominal del condensador localizado sobre el tramo %s debe ser verificada....",
+      "action": "fix_lf_warnings",
+      "auto_apply": true,
+      "tipo_default": "ShuntCapacitor",
+      "fix_note": "RatedVoltage condensador vs red",
+      "source": "cymdist.cymsg [Simulation]"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "Demo Electro Oriente",
+  "description": "Ejemplo (disabled) Electro Dunas",
+  "network_id": "NET_DEMO01",
+  "study_path": "",
+  "voltage_ll_kv": 22.9,
+  "region": "",
+  "substation": "",
+  "enabled": false,
+  "control_workbook": "",
+  "catalog_workbook": "",
+  "output_dir": "",
+  "notes": "Ejemplo multi-alimentador. Poner enabled=true y completar datos reales para usarlo."
+}

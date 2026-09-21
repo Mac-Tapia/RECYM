@@ -1,0 +1,170 @@
+--- PAGE 1 ---
+  
+CYME  
+Software para el análisis de redes eléctricas 
+Pub. No: IL917115ES 
+Efectivo: octubre de 2018 
+ 
+ 
+ 
+ 
+Tutorial 
+Distribución de carga 
+– CYME 8.0 
+ 
+ Se proporciona un fichero de estudio autónomo (.sxst) para ser utilizado con este tutorial. Las explicaciones de abajo se basan en el 
+uso de dicho fichero. 
+ El análisis de Distribución de carga se usa para ajustar la carga conectada para igualarla a la medida de la demanda. 
+CYME asignará una porción de la medida de la demanda a cada fase de cada sección de acuerdo al tamaño del 
+transformador de distribución (kVA conectada), los datos de consumo del cliente (kWh), el consumo real (kVA o kW) o 
+el método REA. 
+1. Distribución global de las cargas 
+ Esta función permite ajustar los puntos de carga individuales para que la carga 
+total del circuito aumente hasta la demanda deseada (nivel de carga). 
+En el primer caso, veremos cómo el usuario puede repartir (distribuir) la carga 
+para poder analizar un circuito en condiciones de pico. 
+ 
+ Pico anual del alimentador 
+GA09: 
+Fase A: 382.3 Amps pf = 97.6% 
+Fase B: 361.7 Amps pf = 98.2%  
+Fase C: 359.2 Amps pf = 98.1% 
+ a. Abra el estudio autónomo titulado LoadAllocation.sxst. 
+ b. En el menú Análisis, escoja la opción Distribución de carga para abrir el 
+cuadro de dialogo Distribución de carga. 
+ c. Usted necesita seleccionar las Redes para las que ejecutará la distribución 
+de carga, el Método de distribución, los Parámetros de flujo de carga y el 
+Tipo de demanda que se emplearán para este proceso. 
+  • Seleccione el Alimentador GA09 (a) 
+  • Seleccione kVa conectados en el cuadro combinado Método de 
+distribución (b) 
+  
+• Presione el botón 
+  para 
+acceder a los parámetros de la 
+Distribución de carga (c) 
+ 
+  • Introduzca una Tolerancia de 
+0.01% (este elemento está 
+ilustrado en la siguiente página) 
+(d) y pulse en ACEPTAR para 
+salir del cuadro de diálogo 
+Parámetros de distribución de 
+carga. 
+  • Ingrese la demanda como se 
+indica más arriba (seleccione 
+A-FP como tipo) (e) 
+ d. Para ejecutar la distribución de 
+carga, presione 
+ . 
+--- PAGE 2 ---
+Pub. No: IL917115ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 2 
+ 
+  
+ 
+ e. Para ver la carga total que se asignó durante 
+el proceso, seleccione el nudo de origen del 
+alimentador y lea el cuadro de resultados 
+Cuadro de flujo de carga. 
+La corriente (o potencia) que fluye a través 
+de este primer nudo debería corresponder a 
+la demanda, o nivel de carga, que usted 
+pidió. 
+Nota: Si el cuadro de resultados no aparece 
+automáticamente, presione el atajo ALT+V 
+en su teclado. 
+  
+ f. En este ejemplo, se escogió el Método de distribución Conectado kVA, por eso se repartió la demanda (carga) a 
+los puntos de carga individuales como una función (proporción) de los kVA conectados ingresados para cada 
+carga. 
+Con este método, se espera que un punto de carga con un valor de kVA conectados de 100 kVA obtenga el doble 
+de carga de otro punto de carga que tendría un kVA conectado de 50 kVA ya que este método distribuye 
+proporcionalmente la demanda al kVA conectado de cada punto de carga. Como ejemplo, compare la carga en el 
+tramo 6156 con la del tramo 6366. 
+--- PAGE 3 ---
+Pub. No: IL917115ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 3 
+ 
+  
+ 
+  
+ 
+2. Asignación de cargas por puntos de medición 
+ Ahora, supongamos que el usuario además de tener la demanda del alimentador disponible también ha registrado otros 
+puntos del alimentador. El usuario tiene la demanda total del alimentador y otras medidas sobre el alimentador. 
+El tener más puntos de medición permite que la función de asignación de cargas se ajuste a los puntos de carga de la 
+red con mayor precisión. Esto permite representar mejor el sistema. 
+ En esta situación, sabemos que 
+la demanda total del 
+alimentador era (Medidor #1, 
+interruptor en el tramo 6156); 
+y también sabemos que la 
+carga que fluía a través del 
+interruptor en el tramo 8654 era 
+(Medidor #2, interruptor en el 
+tramo 8654). 
+ 
+ a. Abra el estudio autónomo DistribCarga.sxst. 
+ b. Localice los dos interruptores en los cuales usted desea crear medidores para ingresar la demanda a ser asignada. 
+--- PAGE 4 ---
+Pub. No: IL917115ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 4 
+ 
+ c. Para cada medidor: 
+  • Abra el cuadro de dialogo Propiedades del tramo correspondiente. (a) 
+  • En la lista Dispositivos, expanda el grupo Interruptor y seleccione Medidor. Esto activará la zona de grupo 
+Demanda y el botón Nuevo. (b) 
+  
+• Presione 
+  para añadir el medidor. (c) 
+  • Introduzca la demanda mencionada arriba en la zona de grupo Demanda (como tipo, seleccione kW y kVAR). 
+(d) 
+  • Presione Aceptar para guardar los cambios. (e) 
+  
+ 
+ d. Después de haber añadido los dos medidores, seleccione la opción Distribución de carga del menú Análisis 
+para abrir el cuadro de dialogo Distribución de carga. 
+ e. Usted debe seleccionar las redes en los que desea ejecutar la distribución de cargas, el Método de distribución, la 
+Tolerancia y la Demanda que utilizará para este proceso. 
+  • Seleccione la Red GA09 
+  • Asegúrese que la Demanda del alimentador definida en la parte 1 esté desconectada y que solamente las dos 
+demandas medidas estén conectadas. 
+  • Seleccione Consumo (kWh) en el cuadro combinado Método de distribución para distribuir basándose en el 
+consumo de cada carga 
+  • Introduzca una Tolerancia de 0.01% 
+  • Verifique que los medidores estén conectados, mientras que la demanda del alimentador GA09 no lo esta (o 
+es 0) 
+--- PAGE 5 ---
+Pub. No: IL917115ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 5 
+ 
+  
+ 
+ f. Pulse Ejecutar para iniciar la distribución de carga. 
+ g. Para verificar los resultados de la distribución de carga, vea el cuadro de resultados Cuadro de caída de 
+tensión y seleccione la ubicación de los medidores. Usted verá que la demanda que ingresó fue distribuida 
+precisamente por CYME. 
+  
+ 
+--- PAGE 6 ---
+Pub. No: IL917115ES 
+Efectivo: octubre de 2018 
+ 
+ 
+© Eaton, CYME International 6 
+ 
+ 
+ 
