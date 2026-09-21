@@ -160,17 +160,22 @@ def propose_row(diag_row, settings, ctx=None):
 
 
 def _fill_equipment(row, settings, ctx, auto):
-    """220047 — EquipmentModeling: equipo real de biblioteca, nunca inventar IDs."""
-    from core.equipment_library import pick_equipment, EQ_TYPE_MAP, equipment_exists
+    """220047 — reemplaza DEFAULT por AAAC/XLPE de la misma sección (mm2).
+
+    No toca tensiones de fuentes ni alimentadores (eso es set_base_voltage / 220052).
+    """
+    from core.equipment_library import (
+        pick_equipment, EQ_TYPE_MAP, equipment_exists,
+        size_from_device, size_from_default_equipment,
+    )
 
     tipo = row.get("Tipo") or "OverheadLine"
     obj_id = row.get("ID_CYMDIST") or ""
     defaults = ctx.get("defaults") or settings.get("default_equipment") or {}
     preferred = defaults.get(tipo) or defaults.get("Cable" if tipo == "Underground" else "") or ""
-    hints = ctx.get("catalog_hints") or {}
-    size = hints.get((tipo, preferred))
     cympy = ctx.get("cympy")
     inv = ctx.get("inv") or {}
+    adapter = ctx.get("adapter")
 
     row["Equipo_Actual"] = "DEFAULT"
     row["Fase"] = "ABC"
@@ -180,8 +185,18 @@ def _fill_equipment(row, settings, ctx, auto):
         row["Observacion"] = "220047 sin Tipo/ID. " + (row.get("Observacion") or "")
         return row
 
+    # Sección desde dispositivo o desde DEFAULT de biblioteca (AAAC ligado)
+    size = None
     if cympy is not None:
-        eq_id, how = pick_equipment(cympy, tipo, preferred_id=preferred, size_mm2=size, inventory=inv)
+        try:
+            size = size_from_device(adapter or cympy, tipo, obj_id)
+        except Exception:
+            size = size_from_default_equipment(cympy, tipo)
+
+    if cympy is not None:
+        eq_id, how = pick_equipment(
+            cympy, tipo, preferred_id=preferred, size_mm2=size, inventory=inv
+        )
     else:
         eq_id, how = (preferred if preferred else None), "settings_fallback"
 
@@ -204,8 +219,12 @@ def _fill_equipment(row, settings, ctx, auto):
 
     row["Equipo_Nuevo"] = eq_id
     row["Activo"] = bool(auto)
-    row["Observacion"] = "Equipo biblioteca (%s). %s" % (how, row.get("Observacion") or "")
-    row["Origen_Dato"] = "EquipmentModeling + eq.ListEquipments"
+    size_txt = ("%s mm2" % int(size)) if size else "sin_size"
+    row["Observacion"] = (
+        "DEFAULT→%s (%s, %s). Sin cambiar tensiones de fuente/alimentador. %s"
+        % (eq_id, how, size_txt, row.get("Observacion") or "")
+    )
+    row["Origen_Dato"] = "EquipmentModeling AAAC/XLPE misma seccion"
     return row
 
 
@@ -494,16 +513,19 @@ def _fix_shunt_close_open(adapter, obj_id):
 
 def _enable_diagnostic_checks(adapter):
     nd = adapter.cympy.study.NetworkDiagnostic()
-    # Habilitar verificaciones típicas usadas por RECYM
-    paths = [
-        "PreDeterminedNetworkBaseVoltagesVerification.Enable",
-        "DefaultEquipmentVerification.Enable",
-        "LoopNodeVerification.Enable",
-        "DisconnectedSectionVerification.Enable",
-    ]
-    for p in paths:
+    # Nombres oficiales DiagnosticToolParameters (Cyme.Model.xml)
+    paths = {
+        "LoopNodesVerification": True,
+        "PhaseMergingNodesVerification": True,
+        "DisconnectedSectionsVerification": True,
+        "LoopPointConfigurationMissmatchVerification": True,
+        "PreDeterminedNetworkBaseVoltagesVerification.Enable": False,
+        "DefaultEquipmentVerification.Enable": True,
+        "BasicDeviceVerification.Enable": True,
+    }
+    for p, val in paths.items():
         try:
-            nd.SetValue(True, p)
+            nd.SetValue(val, p)
         except Exception:
             pass
     return "enable_diagnostic_checks"

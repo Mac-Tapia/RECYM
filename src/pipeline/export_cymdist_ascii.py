@@ -33,7 +33,8 @@ def _load_settings():
     return load_json(os.path.join(ROOT, "config", "settings.json"))
 
 
-def export_ascii(settings, out_dir, prefix, connection_name=None):
+def export_ascii(settings, out_dir, prefix, connection_name=None, study_path=None):
+    """Exporta ASCII. Si study_path (ELD.zxst) existe, lo abre; si no, study.New()+LoadNetworks."""
     import cympy
     import cympy.db as db
     import cympy.study as study
@@ -50,25 +51,31 @@ def export_ascii(settings, out_dir, prefix, connection_name=None):
     print("Salida:", out_dir)
     db.ConnectDatabaseByName(conn)
 
-    nets = list(db.ListNetworks())
+    nets = [str(n) for n in list(db.ListNetworks())]
     print("Redes en BD:", len(nets))
     if not nets:
         raise RuntimeError("La BD no tiene redes. Verifique la conexion %s." % conn)
 
-    print("Crear estudio vacio...")
-    study.New()
-
+    study_path = study_path or settings.get("eld_study_path") or ""
     opt = cympy.enums.LoadNetworkOption.NoDependencies
-    print("Cargar TODAS las redes (%d)..." % len(nets))
-    t0 = time.time()
-    study.LoadNetworks(nets, opt)
+    if study_path and os.path.isfile(study_path):
+        print("Abrir estudio:", study_path)
+        study.Open(study_path)
+        loaded = [str(n) for n in list(study.ListNetworks())]
+        if len(loaded) < len(nets):
+            print("Cargar redes faltantes (%d → %d)..." % (len(loaded), len(nets)))
+            study.LoadNetworks(nets, opt)
+    else:
+        print("Crear estudio vacio + LoadNetworks...")
+        study.New()
+        study.LoadNetworks(nets, opt)
+
     loaded = list(study.ListNetworks())
-    print("Cargadas:", len(loaded), "en %.1fs" % (time.time() - t0))
+    print("Cargadas:", len(loaded))
     if len(loaded) < len(nets):
-        missing = sorted(set(nets) - set(loaded))
         raise RuntimeError(
-            "Solo se cargaron %d/%d redes. Faltan ej.: %s"
-            % (len(loaded), len(nets), missing[:5])
+            "Solo se cargaron %d/%d redes. ExportASCII fallaria (530014)."
+            % (len(loaded), len(nets))
         )
 
     print("Actualizar BD (db.Update)...")
@@ -84,6 +91,8 @@ def export_ascii(settings, out_dir, prefix, connection_name=None):
         if not os.path.isfile(path):
             raise RuntimeError("No se genero: %s" % path)
         size = os.path.getsize(path)
+        if size < 100:
+            raise RuntimeError("Archivo demasiado pequeno (posible fallo): %s (%d bytes)" % (path, size))
         print("  %s: %s (%d bytes)" % (label, path, size))
         result[label] = {"path": path, "bytes": size}
     return result
@@ -103,6 +112,11 @@ def main(argv=None):
         default="",
         help="Nombre conexion CYME (default: settings.database_connection_name)",
     )
+    ap.add_argument(
+        "--study",
+        default="",
+        help="Ruta .zxst (default: settings.eld_study_path / ELD.zxst)",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -111,6 +125,7 @@ def main(argv=None):
             out_dir=args.out,
             prefix=args.prefix,
             connection_name=args.connection or None,
+            study_path=args.study or None,
         )
         print("EXPORT OK")
         return 0

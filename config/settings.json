@@ -10,6 +10,7 @@
   "database_dir": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603",
   "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\20260919.mdb",
   "database_connection_name": "20260919",
+  "eld_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\ELD.zxst",
   "common_equipment_dir": "data\\input\\common\\equipment",
   "suministrocliente_dir": "data\\input\\common\\suministrocliente",
   "clientesimportantes_dir": "data\\input\\common\\clientesimportantes",

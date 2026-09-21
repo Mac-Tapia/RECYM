@@ -47,7 +47,7 @@ from core.clientes_suministro import (
 )
 from core.spot_load_new import compute_pq
 
-UI_VERSION = "4.0"
+UI_VERSION = "4.2"
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
@@ -196,32 +196,36 @@ tr.off-row{opacity:.55;background:#fafaf9}
 
   <section class="panel" id="panelCalidad">
     <h2>Calidad del modelo CYMDIST (antes de cargar §2)</h2>
-    <p class="muted">Ejecute aquí el <b>diagnóstico y corrección</b> del modelo vía API
-      <b>NetworkDiagnostic</b> (códigos oficiales 220000–220053 + avisos LoadFlow).
-      Las correcciones usan la tabla ya definida (<b>Correcciones</b> /
-      <code>correcciones_propuestas.csv</code>). El gate queda <b>LISTO</b> cuando
-      no hay Error/Warning/Hint y el flujo <b>converge</b>. Luego puede cargar EA/Pot en §2.</p>
+    <p class="muted">Diagnóstico y corrección vía API <b>NetworkDiagnostic</b>
+      (códigos 220000–220053 + avisos LoadFlow). <b>No depende de §3 ni §4</b>
+      (cargas nuevas / flujos de escenario) ni de cabecera de demanda: usa redes y
+      equipos ya en la BD. §§3–4 solo aplican después, si hay SpotLoad nueva.
+      El gate del alimentador activo queda <b>LISTO</b> con 0 Error/Warning/Hint + converge.
+      Use <b>Diagnosticar sistema</b> para los ~96 alimentadores clasificados por tipo de error.</p>
     <ol class="steps">
-      <li>Diagnosticar → listar problemas del estudio abierto.</li>
+      <li>Diagnosticar (feeder activo) o Diagnosticar sistema (todas las redes de la BD).</li>
       <li>Proponer → mapear cada código a acción (catálogo cymsg / manual).</li>
-      <li>Aplicar → escribir correcciones en CYMDIST.</li>
-      <li>Verificar convergencia → LoadFlow + IsValidResults.</li>
-      <li>O usar el botón principal: cicla 1–4 hasta limpio.</li>
+      <li>Aplicar → escribir correcciones en CYMDIST (feeder activo).</li>
+      <li>Verificar convergencia → LoadFlow + IsValidResults (sin escenario §3).</li>
+      <li>O usar el botón principal: cicla 1–4 hasta limpio (feeder activo).</li>
     </ol>
     <div class="actions">
       <button type="button" id="btnMqUntil" onclick="mqUntilClean()">▶ Ejecutar: corregir hasta limpio + converge</button>
       <button type="button" id="btnMqDiag" class="ghost" onclick="mqDiagnose()">Diagnosticar</button>
+      <button type="button" id="btnMqDiagSys" class="secondary" onclick="mqDiagnoseSystem()">Diagnosticar sistema (96)</button>
+      <button type="button" id="btnMqDiagEld" class="secondary" onclick="mqDiagnoseEld()">Diagnosticar ELD</button>
       <button type="button" id="btnMqProp" class="ghost" onclick="mqPropose()">Proponer</button>
       <button type="button" id="btnMqApply" class="secondary" onclick="mqApply()">Aplicar</button>
       <button type="button" id="btnMqConv" class="ghost" onclick="mqConverge()">Verificar convergencia</button>
       <button type="button" id="btnMqRefresh" class="ghost" onclick="mqRefreshStatus()">Actualizar estado</button>
-      <span class="muted" id="mqMsg">Pulse «Ejecutar» o Diagnosticar para empezar.</span>
+      <span class="muted" id="mqMsg">Pulse «Diagnosticar sistema» para el parque completo, o Diagnosticar para el feeder activo.</span>
     </div>
     <div class="pathbox" id="mqStatus">
       Estado gate: <b id="mqReady">—</b>
       · Converge: <b id="mqConv">—</b>
       · Problemas: <b id="mqProblems">—</b>
       · Feeder: <b>{{ feeder }}</b> · Red: <b>{{ network }}</b>
+      · Sistema: <b id="mqSysProblems">—</b>
     </div>
     <div id="mqTable" style="max-height:280px;overflow:auto;margin-top:10px"></div>
     <pre id="mqOut" class="muted" style="white-space:pre-wrap;margin-top:8px;font-size:12px;max-height:220px;overflow:auto"></pre>
@@ -1068,7 +1072,7 @@ async function mqFetch(path, body){
   return j;
 }
 
-const MQ_BTNS = ['btnMqUntil','btnMqDiag','btnMqProp','btnMqApply','btnMqConv','btnMqRefresh'];
+const MQ_BTNS = ['btnMqUntil','btnMqDiag','btnMqDiagSys','btnMqDiagEld','btnMqProp','btnMqApply','btnMqConv','btnMqRefresh'];
 
 function mqBusy(on, label){
   MQ_BTNS.forEach(id=>{
@@ -1094,22 +1098,35 @@ function mqRenderStatus(j){
   const np = (lastSum && lastSum.n_problems != null) ? lastSum.n_problems
     : (gate.n_problems != null ? gate.n_problems : '—');
   document.getElementById('mqProblems').textContent = np;
+  const sys = j.system_diagnostic || (j.summary && j.summary.scope==='system' ? j.summary : null);
+  const sysEl = document.getElementById('mqSysProblems');
+  if (sysEl) {
+    if (sys && sys.n_problems != null) {
+      sysEl.textContent = (sys.n_networks_ok||'?')+' redes · '+sys.n_problems+' problemas';
+    } else {
+      sysEl.textContent = '—';
+    }
+  }
   window._mqReady = ready;
 }
 
 function mqRenderRows(rows){
   const box = document.getElementById('mqTable');
   if(!rows || !rows.length){ box.innerHTML = '<span class="muted">Sin filas de corrección / problemas.</span>'; return; }
-  let h = '<table><thead><tr><th>Activo</th><th>Código</th><th>Sev</th><th>Tipo</th><th>ID</th><th>Acción</th><th>Observación</th></tr></thead><tbody>';
+  const hasFeeder = rows.some(r => r.Feeder || r.NetworkID);
+  let h = '<table><thead><tr>'
+    +(hasFeeder?'<th>Feeder</th>':'')
+    +'<th>Activo</th><th>Código</th><th>Sev</th><th>Tipo</th><th>ID</th><th>Acción</th><th>Observación</th></tr></thead><tbody>';
   rows.slice(0,120).forEach(r=>{
     h += '<tr>'
-      +'<td>'+(r.Activo===true||r.Activo==='True'||r.Activo==='true'||r.Activo===1||r.Activo==='1'?'Sí':'No')+'</td>'
+      +(hasFeeder?'<td>'+(r.Feeder||'')+'</td>':'')
+      +'<td>'+(r.Activo===true||r.Activo==='True'||r.Activo==='true'||r.Activo===1||r.Activo==='1'?'Sí':(r.Requiere_Correccion==='SI'?'Sí':(r.Activo!=null?'No':'')))+'</td>'
       +'<td>'+(r.Codigo||'')+'</td>'
       +'<td>'+(r.Severidad||'')+'</td>'
       +'<td>'+(r.Tipo||'')+'</td>'
       +'<td>'+(r.ID_CYMDIST||'')+'</td>'
       +'<td>'+(r.Accion_Sugerida||r.Accion||'')+'</td>'
-      +'<td>'+String(r.Observacion||r.Mensaje||'').slice(0,140)+'</td>'
+      +'<td>'+String(r.Observacion||r.Mensaje||r.Mensaje_ejemplo||'').slice(0,140)+'</td>'
       +'</tr>';
   });
   h += '</tbody></table>';
@@ -1126,6 +1143,67 @@ async function mqDiagnose(){
     mqRenderStatus(j);
     mqRenderRows((j.summary && j.summary.top_errors) || j.rows || []);
     msg.innerHTML = '<span class="ok">Diagnóstico OK · problemas='+((j.summary||{}).n_problems)+' · E='+((j.summary||{}).n_errors)+' W='+((j.summary||{}).n_warnings)+' H='+((j.summary||{}).n_hints)+'</span>';
+  }catch(e){
+    msg.innerHTML = '<span class="err">'+e.message+'</span>';
+    document.getElementById('mqOut').textContent = String(e);
+  }finally{ mqBusy(false); }
+}
+
+async function mqDiagnoseSystem(){
+  const msg = document.getElementById('mqMsg');
+  if(!confirm('Diagnosticar TODO el sistema (~96 alimentadores).\n\nNo requiere cabecera ni §§3–4.\nPuede tardar varios minutos. ¿Continuar?')) return;
+  mqBusy(true, 'NetworkDiagnostic sistema (todas las redes de la BD)…');
+  try{
+    const j = await mqFetch('/api/calidad/diagnosticar_sistema', {});
+    const sum = j.summary || {};
+    document.getElementById('mqOut').textContent = JSON.stringify({
+      n_networks_ok: sum.n_networks_ok,
+      n_problems: sum.n_problems,
+      n_errors: sum.n_errors,
+      n_warnings: sum.n_warnings,
+      n_hints: sum.n_hints,
+      by_code: sum.by_code,
+      by_type: sum.by_type,
+      csv: sum.csv || j.csv,
+      csv_by_code: sum.csv_by_code,
+      independent_of: sum.independent_of,
+    }, null, 2);
+    if(j.ok === false){ msg.innerHTML = '<span class="err">'+(j.error||'Error')+'</span>'; return; }
+    mqRenderStatus({system_diagnostic: sum, summary: sum});
+    mqRenderRows(sum.by_code_detail || sum.top_errors || []);
+    msg.innerHTML = '<span class="ok">Sistema OK · redes='+(sum.n_networks_ok||0)
+      +' · problemas='+(sum.n_problems||0)
+      +' · E='+(sum.n_errors||0)+' W='+(sum.n_warnings||0)+' H='+(sum.n_hints||0)
+      +' · <a href="#" onclick="return false;">ver CSV por código</a></span>';
+  }catch(e){
+    msg.innerHTML = '<span class="err">'+e.message+'</span>';
+    document.getElementById('mqOut').textContent = String(e);
+  }finally{ mqBusy(false); }
+}
+
+async function mqDiagnoseEld(){
+  const msg = document.getElementById('mqMsg');
+  if(!confirm('Herramienta diagnóstica API → estudio ELD.zxst (96 redes).\n\nMisma herramienta de CYMDIST (Topología + Equipos).\n¿Continuar?')) return;
+  mqBusy(true, 'Herramienta diagnóstica → ELD.zxst…');
+  try{
+    const j = await mqFetch('/api/calidad/diagnosticar_eld', {});
+    const sum = j.summary || {};
+    document.getElementById('mqOut').textContent = JSON.stringify({
+      study_path: sum.study_path,
+      topology_settings: sum.topology_settings,
+      n_networks_ok: sum.n_networks_ok,
+      n_problems: sum.n_problems,
+      n_errors: sum.n_errors,
+      by_code: sum.by_code,
+      csv: sum.csv || j.csv,
+      csv_by_code: sum.csv_by_code,
+    }, null, 2);
+    if(j.ok === false){ msg.innerHTML = '<span class="err">'+(j.error||'Error')+'</span>'; return; }
+    mqRenderStatus({system_diagnostic: sum, summary: sum});
+    mqRenderRows(sum.by_code_detail || sum.top_errors || []);
+    msg.innerHTML = '<span class="ok">ELD OK · redes='+(sum.n_networks_ok||0)
+      +' · problemas='+(sum.n_problems||0)
+      +' · E='+(sum.n_errors||0)+' W='+(sum.n_warnings||0)+' H='+(sum.n_hints||0)+'</span>';
   }catch(e){
     msg.innerHTML = '<span class="err">'+e.message+'</span>';
     document.getElementById('mqOut').textContent = String(e);
@@ -1986,6 +2064,38 @@ def api_calidad_diagnosticar():
     s = _settings()
     try:
         return jsonify(run_network_diagnostic(s, suffix=""))
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/calidad/diagnosticar_sistema", methods=["POST"])
+def api_calidad_diagnosticar_sistema():
+    """Diagnóstico de todas las redes de la BD. Independiente de §§1–4 / SpotLoad."""
+    from pipeline.model_quality_gate import run_system_network_diagnostic
+    s = _settings()
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(run_system_network_diagnostic(
+            s,
+            limit=int(body.get("limit") or 0),
+            network_ids=body.get("networks") or None,
+        ))
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/calidad/diagnosticar_eld", methods=["POST"])
+def api_calidad_diagnosticar_eld():
+    """Herramienta diagnóstica API sobre ELD.zxst (Topología + Equipos)."""
+    from pipeline.model_quality_gate import run_eld_network_diagnostic
+    s = _settings()
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(run_eld_network_diagnostic(
+            s,
+            limit=int(body.get("limit") or 0),
+            network_ids=body.get("networks") or None,
+        ))
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 

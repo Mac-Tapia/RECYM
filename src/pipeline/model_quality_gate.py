@@ -85,7 +85,10 @@ def _diag_summary_from_rows(rows, settings, phase="before"):
 
 
 def run_network_diagnostic(settings=None, suffix=""):
-    """Ejecuta NetworkDiagnostic y escribe CSV/JSON canónicos."""
+    """Ejecuta NetworkDiagnostic del alimentador activo y escribe CSV/JSON canónicos.
+
+    Independiente de §3 SpotLoad y §4 flujos de escenario. No requiere cabecera.
+    """
     from analysis.run_network_diagnostic import main as diag_main
 
     s = settings or load_settings()
@@ -109,6 +112,68 @@ def run_network_diagnostic(settings=None, suffix=""):
     summary = _diag_summary_from_rows(rows, s, phase=suffix or "before")
     summary["csv"] = csv_path
     return {"ok": True, "summary": summary, "rows": rows, "csv": csv_path}
+
+
+def run_system_network_diagnostic(settings=None, limit=0, network_ids=None):
+    """Diagnóstico de TODAS las redes de la BD (sistema de distribución).
+
+    No depende de §1 cabecera, §2 EA/Pot, §3 cargas nuevas ni §4 flujos.
+    Usa redes + equipos ya en la MDB. Clasifica por tipo/código de error.
+    """
+    from analysis.run_system_network_diagnostic import run_system_diagnostic
+
+    s = settings or load_settings()
+    _pause_gui(s)
+    result = run_system_diagnostic(
+        s, network_ids=network_ids, limit=int(limit or 0)
+    )
+    # Persistir resumen sistema en sesión (no bloquea gate por-feeder)
+    try:
+        sess = load_session(s)
+        sess["system_diagnostic"] = {
+            "timestamp": (result.get("summary") or {}).get("timestamp"),
+            "n_problems": (result.get("summary") or {}).get("n_problems"),
+            "n_networks_ok": (result.get("summary") or {}).get("n_networks_ok"),
+            "csv": result.get("csv"),
+            "json": result.get("json"),
+            "ready_model_system": (result.get("summary") or {}).get("ready_model_system"),
+        }
+        save_session(s, sess)
+    except Exception as ex:
+        print("AVISO session system_diagnostic:", ex)
+    return result
+
+
+def run_eld_network_diagnostic(settings=None, limit=0, network_ids=None):
+    """Herramienta diagnóstica API sobre el estudio ELD.zxst (96 alimentadores).
+
+    Misma herramienta que Análisis → Herramienta diagnóstica en la GUI.
+    """
+    from analysis.run_eld_diagnostic import run_eld_diagnostic
+
+    s = settings or load_settings()
+    _pause_gui(s)
+    result = run_eld_diagnostic(
+        s,
+        study_path=s.get("eld_study_path"),
+        limit=int(limit or 0),
+        network_ids=network_ids,
+    )
+    try:
+        sess = load_session(s)
+        sess["eld_diagnostic"] = {
+            "timestamp": (result.get("summary") or {}).get("timestamp"),
+            "n_problems": (result.get("summary") or {}).get("n_problems"),
+            "n_networks_ok": (result.get("summary") or {}).get("n_networks_ok"),
+            "csv": result.get("csv"),
+            "json": result.get("json"),
+            "study_path": (result.get("summary") or {}).get("study_path"),
+            "ready_model_eld": (result.get("summary") or {}).get("ready_model_eld"),
+        }
+        save_session(s, sess)
+    except Exception as ex:
+        print("AVISO session eld_diagnostic:", ex)
+    return result
 
 
 def propose_corrections(settings=None):
@@ -262,6 +327,7 @@ def get_gate_status(settings=None):
     s = settings or load_settings()
     sess = load_session(s)
     gate = sess.get("model_quality_gate") or {}
+    system_diag = sess.get("system_diagnostic") or {}
     diag = output_path(s, "diagnostics", "dashboard_summary.json")
     corr = output_path(s, "diagnostics", "correcciones_propuestas.csv")
     summary = None
@@ -278,12 +344,14 @@ def get_gate_status(settings=None):
         "ready": bool(gate.get("ready")),
         "converge": gate.get("converge"),
         "diagnostic_summary": summary,
+        "system_diagnostic": system_diag,
         "n_correcciones": len(corr_rows),
         "n_correcciones_activas": sum(1 for r in corr_rows if truthy(r.get("Activo"))),
         "paths": {
             "diagnostic_csv": output_path(s, "diagnostics", "cymdist_diagnostic_errors.csv"),
             "correcciones_csv": corr,
             "preview_csv": output_path(s, "preview_changes.csv"),
+            "system_csv": system_diag.get("csv") or "",
         },
     }
 

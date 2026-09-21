@@ -3,11 +3,21 @@
 Interfaz: `scripts\20_demand_ui.bat` → **http://127.0.0.1:5055**  
 Motor: CymPy + API COM CYMDIST 9.2 · estudio `.zxst` + BD `.mdb` Electro Dunas.
 
-Orden obligatorio:
+Orden obligatorio para **demanda / entrega de un alimentador**:
 
-**§1 Cabecera → §2 EA/Pot + distribución → §3 SpotLoad nueva → §4 Flujos → §5 Informes**
+**Calidad modelo → §1 Cabecera → §2 EA/Pot + distribución → §3 SpotLoad nueva → §4 Flujos → §5 Informes**
 
-Tras **Cargar EA/Pot** o **Conectar carga**, CYMDIST queda abierto; §§2–5 operan sobre la misma sesión física.
+- **Calidad / NetworkDiagnostic** (feeder o **sistema 96**) **no depende** de §§3–4 ni de cabecera: usa redes y equipos ya en la BD. §§3–4 solo se ejecutan en secuencia cuando hay cargas nuevas; no limitan el diagnóstico del parque.
+- Tras **Cargar EA/Pot** o **Conectar carga**, CYMDIST queda abierto; §§2–5 operan sobre la misma sesión física.
+
+### Diagnóstico de sistema (96 alimentadores)
+
+- UI: botón **Diagnosticar sistema (96)** / **Diagnosticar ELD** en el panel Calidad.
+- CLI sistema: `scripts\24_system_network_diagnostic.bat`
+- CLI estudio ELD (Herramienta diagnóstica API): `scripts\25_eld_diagnostic.bat`  
+  Estudio: `D:\BaseDatosElectroDunas\260919BaseDatos\proyectos\ELD.zxst`  
+  Salida: `data/output/system/diagnostics/ELD/`
+- Salida sistema: `data/output/system/diagnostics/cymdist_diagnostic_errors_system.csv` + `diagnostic_by_code_system.csv` (agrupado por tipo/código de error).
 
 ---
 
@@ -16,6 +26,7 @@ Tras **Cargar EA/Pot** o **Conectar carga**, CYMDIST queda abierto; §§2–5 op
 - Ingrese P/Q, P+cosφ o I+V+cosφ y **Guarde**.
 - Esa demanda es la entrada de **LoadAllocation** (demanda Connected+Total).
 - Guardar cabecera **restablece** §§2–4 (tabla, distribución, carga nueva) para evitar mezclar campañas.
+- Los valores por defecto de cabecera por alimentador **no** son prerequisito del NetworkDiagnostic.
 
 ---
 
