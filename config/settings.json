@@ -36,8 +36,8 @@
     "Cable": "XLPE120",
     "Underground": "XLPE120",
     "Sectionalizer": "SEC22.9KV",
-    "Switch": "SEC22.9KV",
-    "_comment": "IDs reales de biblioteca CYMDIST 20260919 (verificados con eq.ListEquipments). No inventar."
+    "Switch": "SW22.9KV",
+    "_comment": "IDs reales de biblioteca CYMDIST 20260919. Switch=SW22.9KV (no SEC). Fuentes SET* por voltage."
   },
   "run_sequence": [
     "validate_inputs",

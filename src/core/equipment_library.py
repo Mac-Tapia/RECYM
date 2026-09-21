@@ -58,6 +58,9 @@ SIZE_HINTS = {
     "Sectionalizer": {
         None: "SEC22.9KV",
     },
+    "Switch": {
+        None: "SW22.9KV",
+    },
 }
 
 def list_equipment_ids(cympy, equipment_type_name):
