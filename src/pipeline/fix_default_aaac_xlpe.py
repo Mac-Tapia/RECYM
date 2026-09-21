@@ -372,7 +372,7 @@ def main(argv=None):
     print(before)
 
     src_before = _ace_query(
-        mdb, "SELECT TOP 5 EquipmentId, NominalKVLL, DesiredKVLL FROM [CYMEQSOURCE]"
+        mdb, "SELECT EquipmentId, NominalKVLL, DesiredKVLL FROM [CYMEQSOURCE]"
     )
     report["sources_before"] = src_before
 
@@ -383,6 +383,11 @@ def main(argv=None):
     targets = resolve_targets(cympy, settings)
     report["targets"] = targets
     print("[fix-default] Targets:", json.dumps(targets, ensure_ascii=False, indent=2))
+    print(
+        "[fix-default] NOTA: todos los DEFAULT del mismo tipo → un ID "
+        "(sección del equipo DEFAULT de biblioteca / settings). "
+        "Si hubiera calibres mixtos bajo DEFAULT, revisar SIZE_HINTS."
+    )
 
     for kind, t in targets.items():
         if not t.get("id"):
@@ -428,24 +433,19 @@ def main(argv=None):
 
     src_check = verify_no_source_change(mdb, src_before)
     report["sources_check"] = src_check
-    # Validar que NominalKVLL no cambio
-    before_map = {
-        (r.get("EquipmentId") or ""): (r.get("NominalKVLL"), r.get("DesiredKVLL"))
-        for r in (src_before or [])
-    }
-    after_src = src_check.get("after") or []
-    drift = []
-    for r in after_src:
-        eid = r.get("EquipmentId") or ""
-        if eid in before_map and before_map[eid] != (r.get("NominalKVLL"), r.get("DesiredKVLL")):
-            drift.append({"EquipmentId": eid, "before": before_map[eid], "after": (r.get("NominalKVLL"), r.get("DesiredKVLL"))})
-    if drift:
-        raise RuntimeError("Se alteraron tensiones de fuente (CYMEQSOURCE): %s" % drift)
+    if not src_check.get("ok"):
+        raise RuntimeError(
+            "Se alteraron tensiones de fuente (CYMEQSOURCE): %s" % src_check.get("drift")
+        )
     report["sources_unchanged"] = True
-    print("[fix-default] Fuentes (NominalKVLL) intactas:", after_src)
+    print(
+        "[fix-default] Fuentes (NominalKVLL) intactas:",
+        len(src_check.get("after") or []),
+        "equipos",
+    )
 
     if not args.dry_run and not args.skip_refresh:
-        report["refresh"] = refresh_eld_study(settings, targets)
+        report["refresh"] = refresh_eld_study(settings, targets, mdb=mdb)
 
     path = os.path.join(out_dir, "fix_default_aaac_xlpe_report.json")
     with open(path, "w", encoding="utf-8") as f:
