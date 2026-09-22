@@ -50,11 +50,21 @@
       "connection_status_field": "CustomerLoads[0].ConnectionStatus",
       "connected_value": "Connected",
       "disconnected_value": "Disconnected",
-      "connected_kva_field": "CustomerLoads[0].ConnectedKVA",
+      "connected_kva_field": "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0].ConnectedKVA",
+      "connected_kva_field_alts": [
+        "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0].ConnectedKVA",
+        "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[1].ConnectedKVA",
+        "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[2].ConnectedKVA",
+        "CustomerLoads[0].CustomerLoadModels[0].ConnectedKVA",
+        "CustomerLoads[0].ConnectedKVA",
+        "CustomerLoads.Get(0).ConnectedKVA",
+        "CustomerLoads[0].ConnectedCapacity",
+        "CustomerLoads[0].RatedKVA"
+      ],
       "add_device": "study.AddDevice(LoadID, DeviceType.SpotLoad, SectionID)",
       "phases_default": "ABC",
       "note_new_load": "Carga concentrada trifasica: solo KW/KVAR (sin EA). SectionID/LoadID derivados del nodo.",
-      "note_260044": "Si S>ConnectedKVA: raise_load_connected_kva sube CustomerLoads[0].ConnectedKVA.",
+      "note_260044": "ConnectedKVA vive en CustomerLoadValue (CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[i].ConnectedKVA), no en SpotLoad ni CustomerLoad.",
       "confirmed": true
     },
     "Node": {

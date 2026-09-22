@@ -221,31 +221,166 @@ def size_from_default_equipment(cympy, device_tipo):
 
 
 def size_from_device(adapter_or_cympy, device_tipo, obj_id):
-    """Intenta leer sección mm2 del dispositivo; si es DEFAULT, usa biblioteca DEFAULT."""
+    """Lee sección mm2 del dispositivo en el modelo; si es DEFAULT, usa biblioteca DEFAULT.
+
+    Prioridad:
+      1) Campos Size / Conductor / LineID / CableID / EquipmentID del dispositivo
+      2) Equipo del mismo tramo (Section.ListDevices → OH/UG)
+      3) Equipo DEFAULT de biblioteca (AAAC/XLPE ligado)
+    """
     cympy = getattr(adapter_or_cympy, "cympy", adapter_or_cympy)
-    # Si hay adapter con get_device
     d = None
     try:
         if hasattr(adapter_or_cympy, "get_device"):
             d = adapter_or_cympy.get_device(device_tipo, obj_id)
     except Exception:
         d = None
+
+    def _size_from_eq_id(eq_id):
+        vs = str(eq_id or "").strip()
+        if not vs or vs.upper() == "DEFAULT":
+            return None
+        return float(_parse_size_from_id(vs)) if _parse_size_from_id(vs) else None
+
     if d is not None:
-        for fld in ("Size", "ConductorSize", "PhaseConductorID", "LineID", "CableID"):
+        for fld in (
+            "Size", "ConductorSize", "PhaseConductorID",
+            "LineID", "CableID", "EquipmentID", "EquipmentId",
+        ):
             try:
                 v = d.GetValue(fld)
                 vs = str(v or "").strip()
                 if not vs or vs.upper() == "DEFAULT":
                     continue
-                if fld in ("PhaseConductorID", "LineID", "CableID"):
-                    parsed = _parse_size_from_id(vs)
-                    if parsed:
-                        return float(parsed)
-                else:
+                if fld in ("Size", "ConductorSize"):
                     return float(vs.replace(",", "."))
+                parsed = _size_from_eq_id(vs)
+                if parsed:
+                    return parsed
             except Exception:
                 pass
+
+        # Calibre del tramo: otros OH/UG en la misma sección
+        sec_id = ""
+        try:
+            sec_id = str(getattr(d, "SectionID", None) or d.GetValue("SectionID") or "").strip()
+        except Exception:
+            sec_id = ""
+        if sec_id:
+            try:
+                sec = cympy.study.GetSection(sec_id)
+                for peer in list(sec.ListDevices()):
+                    try:
+                        eq = str(getattr(peer, "EquipmentID", None) or "").strip()
+                    except Exception:
+                        eq = ""
+                    parsed = _size_from_eq_id(eq)
+                    if parsed:
+                        return parsed
+            except Exception:
+                pass
+
     return size_from_default_equipment(cympy, device_tipo)
+
+
+def fix_defaults_on_network(adapter, settings, inventory=None, catalog_hints=None):
+    """Reemplaza equipos DEFAULT del alimentador vía API CymPy.
+
+    Usa la biblioteca (tablas de equipos) y, si hay calibre del tramo o de fichas
+    (Catalogo_Maestro / AAAC / XLPE), elige el ID de misma sección mm2.
+    No modifica OperatingVoltage de fuentes.
+    """
+    cympy = adapter.cympy
+    inv = inventory or inventory_library(cympy)
+    defaults = (settings or {}).get("default_equipment") or {}
+    hints = catalog_hints or {}
+    net = str((settings or {}).get("network_id") or "").strip() or None
+    report = []
+
+    targets = (
+        ("OverheadLine", "OverheadLine"),
+        ("Underground", "Cable"),
+        ("Sectionalizer", "Sectionalizer"),
+        ("Switch", "Switch"),
+    )
+    for device_name, eq_tipo in targets:
+        try:
+            dtype = adapter.device_type(device_name)
+        except Exception:
+            continue
+        try:
+            if net:
+                devices = list(cympy.study.ListDevices(dtype, net))
+            else:
+                devices = list(cympy.study.ListDevices(dtype))
+        except Exception as ex:
+            report.append({
+                "Tipo": device_name, "ID": "", "Estado": "ERR_LIST",
+                "Detalle": str(ex),
+            })
+            continue
+
+        for d in devices:
+            sid = str(
+                getattr(d, "DeviceNumber", None)
+                or getattr(d, "ID", None)
+                or ""
+            ).strip()
+            if not sid:
+                continue
+            # Campo de equipo según tipo
+            eq_now = ""
+            for fld in ("EquipmentID", "LineID", "CableID", "EquipmentId"):
+                try:
+                    eq_now = str(d.GetValue(fld) or "").strip()
+                    if eq_now:
+                        break
+                except Exception:
+                    continue
+            if not eq_now:
+                try:
+                    eq_now = str(getattr(d, "EquipmentID", None) or "").strip()
+                except Exception:
+                    eq_now = ""
+            if eq_now.upper() != "DEFAULT":
+                continue
+
+            size = None
+            try:
+                size = size_from_device(adapter, device_name, sid)
+            except Exception:
+                size = None
+            if size is None:
+                size = hints.get((device_name, sid)) or hints.get((eq_tipo, sid))
+
+            preferred = defaults.get(device_name) or defaults.get(eq_tipo) or ""
+            new_eq, how = pick_equipment(
+                cympy, device_name,
+                preferred_id=preferred,
+                size_mm2=size,
+                inventory=inv,
+            )
+            if not new_eq:
+                report.append({
+                    "Tipo": device_name, "ID": sid, "Estado": "SIN_EQUIPO",
+                    "Detalle": "biblioteca sin candidato (fichas/tablas)",
+                    "Size": size,
+                })
+                continue
+            try:
+                before, after = adapter.set_equipment(device_name, sid, new_eq)
+                report.append({
+                    "Tipo": device_name, "ID": sid, "Estado": "OK",
+                    "Antes": before, "Despues": after,
+                    "How": how, "Size": size,
+                })
+            except Exception as ex:
+                report.append({
+                    "Tipo": device_name, "ID": sid, "Estado": "ERROR",
+                    "Detalle": str(ex), "Equipo": new_eq,
+                })
+    return report
+
 
 def save_inventory(path, inv):
     os.makedirs(os.path.dirname(path), exist_ok=True)

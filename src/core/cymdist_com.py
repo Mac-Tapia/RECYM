@@ -100,6 +100,20 @@ def _kill_cyme():
         pass
 
 
+def cyme_is_running():
+    """True si hay proceso Cyme.exe (GUI) activo."""
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["tasklist", "/FI", "IMAGENAME eq Cyme.exe", "/NH"],
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+        )
+        return "Cyme.exe" in (out or "")
+    except Exception:
+        return False
+
+
 def open_cymdist_gui(settings, kill_existing=True, reason="session"):
     """
     Abre CYMDIST visible con el mismo .zxst (API COM real).
@@ -153,21 +167,38 @@ def open_cymdist_gui(settings, kill_existing=True, reason="session"):
 
 
 def pause_cymdist_for_cympy(settings):
-    """Cierra Cyme temporalmente para que CymPy pueda abrir el .zxst en exclusiva."""
+    """Libera el .zxst para CymPy: solo mata Cyme si realmente está corriendo."""
+    running = cyme_is_running()
+    if not running:
+        return {
+            "ok": True,
+            "paused": False,
+            "skipped": True,
+            "reason": "Cyme.exe no estaba activo",
+            "keep_open": is_keep_open(settings),
+        }
     _kill_cyme()
     try:
         import time
-        time.sleep(0.6)
+        time.sleep(0.4)
     except Exception:
         pass
-    return {"ok": True, "paused": True, "keep_open": is_keep_open(settings)}
+    return {
+        "ok": True,
+        "paused": True,
+        "skipped": False,
+        "keep_open": is_keep_open(settings),
+    }
 
 
 def resume_cymdist_gui(settings, reason="resume"):
     """Reabre CYMDIST visible tras una operacion CymPy (si keep_open)."""
     if not is_keep_open(settings):
         return {"ok": True, "skipped": True, "cymdist_open": False}
-    return open_cymdist_gui(settings, kill_existing=True, reason=reason)
+    # Evitar reopen costoso si ya hay Cyme (p.ej. otro hilo lo abrió)
+    if cyme_is_running():
+        return {"ok": True, "skipped": True, "cymdist_open": True, "reason": "ya_abierto"}
+    return open_cymdist_gui(settings, kill_existing=False, reason=reason)
 
 
 def add_spot_load_com(settings, load_id, section_id, location="From",

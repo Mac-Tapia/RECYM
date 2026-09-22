@@ -270,37 +270,98 @@ class CymPyAdapter(object):
             after = val
         return {"after": after, "locked": bool(locked)}
 
-    def unlock_loads_except(self, network_id, keep_locked_ids):
-        """
-        Deja Unlocked todas las SpotLoad excepto keep_locked_ids (fijos / nuevas).
-        Asi LoadAllocation (Consumo kWh) puede actualizar kW/kvar del residual.
+    def ensure_locks_for_allocation(self, network_id, keep_locked_ids):
+        """Una sola pasada ListDevices: Locked solo fijos; residual Unlocked.
+
+        Índice hash LoadID→estado; escribe solo si cambia (O(n) lectura, O(k) write).
+        Preferido frente a unlock_loads_except cuando n SpotLoad es grande.
         """
         keep = set(str(x) for x in (keep_locked_ids or set()))
         c = self.cympy
-        unlocked = []
-        kept = []
-        devices = list(c.study.ListDevices(c.enums.DeviceType.SpotLoad, str(network_id or "")))
         field = (
             self.obj_cfg("Load").get("status_field")
             or "CustomerLoads[0].CustomerLoadModels[0].LockDuringLoadAllocation"
+        )
+        n_write = n_skip = n_fixed = n_res = 0
+        unlocked = []
+        kept = []
+        try:
+            devices = list(c.study.ListDevices(c.enums.DeviceType.SpotLoad, str(network_id or "")))
+        except Exception as ex:
+            return {"ok": False, "error": str(ex), "n_write": 0, "unlocked": [], "kept_locked": []}
+        for d in devices:
+            lid = str(getattr(d, "DeviceNumber", "") or "")
+            if not lid:
+                continue
+            want = "Locked" if lid in keep else "Unlocked"
+            if lid in keep:
+                n_fixed += 1
+            else:
+                n_res += 1
+            try:
+                cur = str(d.GetValue(field) or "").strip()
+            except Exception:
+                cur = ""
+            if cur.lower() == want.lower():
+                n_skip += 1
+                if lid in keep:
+                    kept.append(lid)
+                else:
+                    unlocked.append(lid)
+                continue
+            try:
+                d.SetValue(want, field)
+                n_write += 1
+                if lid in keep:
+                    kept.append(lid)
+                else:
+                    unlocked.append(lid)
+            except Exception:
+                pass
+        return {
+            "ok": True,
+            "n_devices": len(devices),
+            "n_fixed": n_fixed,
+            "n_residual": n_res,
+            "n_write": n_write,
+            "n_skip": n_skip,
+            "unlocked": unlocked,
+            "kept_locked": kept,
+            "skipped_unchanged": n_skip,
+        }
+
+    def unlock_loads_except(self, network_id, keep_locked_ids):
+        """Compat: mismo efecto que ensure_locks_for_allocation."""
+        return self.ensure_locks_for_allocation(network_id, keep_locked_ids)
+
+    def snapshot_spot_loads_indexed(self, network_id):
+        """Una pasada API: índice hash LoadID → {KWH,kW,kvar} para validación rápida."""
+        cfg = self.obj_cfg("Load")
+        base = "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0]"
+        value_base = cfg.get("value_base") or (base + ".LoadValue")
+        kwh_field = cfg.get("kwh_field") or (base + ".KWH")
+        index = {}
+        devices = list(
+            self.cympy.study.ListDevices(
+                self.cympy.enums.DeviceType.SpotLoad, str(network_id or "")
+            )
         )
         for d in devices:
             lid = str(getattr(d, "DeviceNumber", "") or "")
             if not lid:
                 continue
-            if lid in keep:
-                try:
-                    d.SetValue("Locked", field)
-                except Exception:
-                    pass
-                kept.append(lid)
-                continue
             try:
-                d.SetValue("Unlocked", field)
-                unlocked.append(lid)
+                kwh = self._parse_load_number(d.GetValue(kwh_field))
+            except Exception:
+                kwh = None
+            kw = kvar = None
+            try:
+                kw = self._parse_load_number(d.GetValue(value_base + ".KW"))
+                kvar = self._parse_load_number(d.GetValue(value_base + ".KVAR"))
             except Exception:
                 pass
-        return {"unlocked": unlocked, "kept_locked": kept}
+            index[lid] = {"LoadID": lid, "KWH": kwh, "kW": kw, "kvar": kvar}
+        return index
 
     def snapshot_spot_loads_pq_kwh(self, network_id, exclude_ids=None):
         """Lee KWH/KW/KVAR de SpotLoads (para validar post-distribucion)."""
@@ -793,8 +854,9 @@ class CymPyAdapter(object):
                 self.cympy.study.Save(path)
             else:
                 self.cympy.study.Save()
-        # Persistir tambien en BD proyecto (necesario para que el simbolo aparezca al reabrir).
-        # En estudios de trabajo aislados (1 red) NO tocar SaveProject: borraría redes del proyecto BD.
+        # skip_db_project_save / isolated: NO tocar BD (db.Update/SaveProject cuelgan
+        # en MDB grandes ~450MB y estudios multi-red). El .zxst ya quedó guardado.
+        # La BD se usa conectada en open_study; Sync explícito = suite/conexion.
         if self.settings.get("skip_db_project_save") or self.settings.get("isolated_work_study"):
             return
         try:
@@ -818,40 +880,95 @@ class CymPyAdapter(object):
     def raise_load_connected_kva(self, load_id, min_kva=None):
         """
         Corrige 260044: capacidad conectada < potencia aparente de la SpotLoad.
-        Lee P/Q, calcula S=sqrt(P^2+Q^2) y sube ConnectedKVA a max(actual, S, min_kva)
-        con margen 5% redondeado hacia arriba.
+
+        En CYME 9.x ConnectedKVA está en CustomerLoadValue:
+          CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[i].ConnectedKVA
+        (no es miembro de SpotLoad ni de CustomerLoad).
         """
         import math
         cfg = self.obj_cfg("Load")
         d = self.get_device("Load", load_id)
-        value_base = (
-            cfg.get("value_base")
-            or "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0].LoadValue"
-        )
-        kw = self._parse_load_number(d.GetValue(value_base + ".KW")) or 0.0
-        kvar = 0.0
+        values_path = "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues"
         try:
-            kvar = self._parse_load_number(d.GetValue(value_base + ".KVAR")) or 0.0
+            n_ph = int(float(str(d.GetValue(values_path + ".Count") or "1").replace(",", ".")))
         except Exception:
-            pass
-        s_kva = math.sqrt(float(kw) ** 2 + float(kvar) ** 2)
+            n_ph = 1
+        if n_ph < 1:
+            n_ph = 1
+
+        # S total: sumar P/Q (o P+PF→Q) en todos los CustomerLoadValues
+        p_sum = q_sum = 0.0
+        for i in range(n_ph):
+            vb = "%s[%d].LoadValue" % (values_path, i)
+            kw = 0.0
+            kvar = 0.0
+            try:
+                kw = self._parse_load_number(d.GetValue(vb + ".KW")) or 0.0
+            except Exception:
+                pass
+            try:
+                kvar = self._parse_load_number(d.GetValue(vb + ".KVAR")) or 0.0
+            except Exception:
+                # KW_PF: estimar Q desde PF
+                try:
+                    pf = self._parse_load_number(d.GetValue(vb + ".PF"))
+                    if pf and abs(pf) > 1.5:
+                        pf = pf / 100.0
+                    if pf and 0.0 < abs(pf) <= 1.0 and abs(kw) > 1e-9:
+                        kvar = abs(kw) * math.tan(math.acos(min(0.999999, abs(pf))))
+                        if kw < 0:
+                            kvar = -kvar
+                except Exception:
+                    pass
+            p_sum += kw
+            q_sum += kvar
+
+        s_kva = math.sqrt(float(p_sum) ** 2 + float(q_sum) ** 2)
         target = max(float(min_kva or 0), s_kva)
-        # Margen 5% y redondeo a entero kVA (mínimo 1)
         target = max(1.0, math.ceil(target * 1.05))
 
-        candidates = [
-            cfg.get("connected_kva_field"),
-            "CustomerLoads[0].ConnectedKVA",
-            "CustomerLoads[0].ConnectedCapacity",
-            "CustomerLoads[0].RatedKVA",
-            "ConnectedKVA",
-        ]
+        # Escribir ConnectedKVA en cada CustomerLoadValue (ruta confirmada en Cyme.Model)
+        written = []
         last_err = None
+        for i in range(n_ph):
+            field = "%s[%d].ConnectedKVA" % (values_path, i)
+            try:
+                before = d.GetValue(field)
+                before_n = self._parse_load_number(before)
+                if before_n is not None and before_n + 1e-6 >= target:
+                    written.append((field, before, before, "already_ok"))
+                    continue
+                d.SetValue(float(target), field)
+                after = d.GetValue(field)
+                after_n = self._parse_load_number(after)
+                if after_n is not None and after_n + 1e-6 < target:
+                    last_err = RuntimeError("SetValue no retuvo %s->%s" % (target, after))
+                    continue
+                written.append((field, before, after, "raised"))
+            except Exception as ex:
+                last_err = ex
+                continue
+
+        if written:
+            field, before, after, how = written[0]
+            return before, after, field, how
+
+        # Fallback: rutas del api map (versiones antiguas / otros casilleros)
+        candidates = [cfg.get("connected_kva_field")]
+        for alt in (cfg.get("connected_kva_field_alts") or []):
+            if alt and alt not in candidates:
+                candidates.append(alt)
+        readable = []
         for field in candidates:
             if not field:
                 continue
             try:
                 before = d.GetValue(field)
+            except Exception as ex:
+                last_err = ex
+                continue
+            readable.append(field)
+            try:
                 before_n = self._parse_load_number(before)
                 if before_n is not None and before_n >= target:
                     return before, before, field, "already_ok"
@@ -861,20 +978,118 @@ class CymPyAdapter(object):
             except Exception as ex:
                 last_err = ex
                 continue
+
         raise RuntimeError(
-            "No se pudo escribir ConnectedKVA en SpotLoad %s (S=%.2f kVA): %s"
-            % (load_id, s_kva, last_err)
+            "No se pudo escribir capacidad conectada en SpotLoad %s (S=%.2f kVA). "
+            "Campos legibles=%s. Ultimo error: %s"
+            % (load_id, s_kva, readable or "ninguno", last_err)
         )
+
+    def raise_spotload_power_factor(self, load_id, min_pf=0.85):
+        """Corrige 220003: FP bajo en SpotLoad.
+
+        El NetworkDiagnostic usa MinimumPowerFactor en % (p.ej. 50). Si el
+        casillero PF está en p.u. (0.92), CYME lo compara mal (0.92 < 50) y
+        reporta error. Se reescribe en % (>= máximo(mínimo ND, min_pf)).
+        """
+        import math
+        d = self.get_device("Load", load_id)
+        min_pf = float(min_pf or 0.85)
+        min_pu = (min_pf / 100.0) if min_pf > 1.5 else min_pf
+        if min_pu <= 0 or min_pu > 1:
+            min_pu = 0.85
+
+        nd_min_pct = None
+        try:
+            nd = self.cympy.study.NetworkDiagnostic()
+            nd_min_pct = self._parse_load_number(
+                nd.GetValue("PowerFactorValuesVerification.MinimumPowerFactor")
+            )
+        except Exception:
+            nd_min_pct = None
+        if nd_min_pct is not None and nd_min_pct > 1.5:
+            min_pu = max(min_pu, float(nd_min_pct) / 100.0)
+        elif nd_min_pct is not None and 0 < nd_min_pct <= 1.0:
+            min_pu = max(min_pu, float(nd_min_pct))
+
+        # Escribir en % si el ND exige % (caso típico Electro Dunas)
+        write_pct = bool(nd_min_pct is not None and nd_min_pct > 1.5)
+        target_pct = round(min_pu * 100.0, 3)
+        target_pu = round(min_pu, 5)
+
+        values_path = "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues"
+        try:
+            n_ph = int(float(str(d.GetValue(values_path + ".Count") or "1").replace(",", ".")))
+        except Exception:
+            n_ph = 1
+        if n_ph < 1:
+            n_ph = 1
+
+        notes = []
+        for i in range(n_ph):
+            vb = "%s[%d].LoadValue" % (values_path, i)
+            lvt = ""
+            try:
+                lvt = str(d.GetValue(vb + ".GetType()") or "")
+            except Exception:
+                pass
+
+            # 1) KW_PF / casillero PF
+            try:
+                before = d.GetValue(vb + ".PF")
+                before_n = self._parse_load_number(before)
+                if before_n is None:
+                    raise RuntimeError("PF ilegible")
+                as_pct = before_n > 1.5
+                cur_pu = (before_n / 100.0) if as_pct else before_n
+                need = (cur_pu + 1e-6 < min_pu) or (write_pct and not as_pct)
+                if not need:
+                    notes.append("%s already %s" % (vb + ".PF", before))
+                    continue
+                target = float(target_pct if write_pct else max(target_pu, cur_pu))
+                if write_pct:
+                    target = max(target_pct, cur_pu * 100.0)
+                d.SetValue(float(target), vb + ".PF")
+                notes.append("%s %s->%s" % (vb + ".PF", before, d.GetValue(vb + ".PF")))
+                continue
+            except Exception:
+                if "PF" in (lvt or "").upper():
+                    notes.append("ph%s: PF fail" % i)
+                    continue
+
+            # 2) KW_KVAR → ajustar Q
+            try:
+                kw = self._parse_load_number(d.GetValue(vb + ".KW")) or 0.0
+                kvar = self._parse_load_number(d.GetValue(vb + ".KVAR")) or 0.0
+                if abs(kw) < 1e-9:
+                    notes.append("ph%s: sin KW" % i)
+                    continue
+                s = math.sqrt(kw * kw + kvar * kvar)
+                pf = abs(kw) / s if s > 1e-12 else 1.0
+                if pf + 1e-6 >= min_pu:
+                    notes.append("ph%s: ok pf=%.3f" % (i, pf))
+                    continue
+                q_target = abs(kw) * math.tan(math.acos(min(0.999999, min_pu)))
+                if kvar < 0:
+                    q_target = -q_target
+                d.SetValue(float(q_target), vb + ".KVAR")
+                after = self._parse_load_number(d.GetValue(vb + ".KVAR"))
+                notes.append("ph%s: Q %s->%s" % (i, kvar, after))
+            except Exception as ex:
+                notes.append("ph%s: %s" % (i, ex))
+
+        if not any(("->" in n) or ("already" in n) or ("ok pf" in n) for n in notes):
+            raise RuntimeError("SpotLoad %s FP no ajustado: %s" % (load_id, "; ".join(notes) or "sin notas"))
+        return "raise_spotload_pf", "; ".join(notes), "min_pu=%.3f write_pct=%s" % (min_pu, write_pct)
 
     def open_tie_at_loop_node(self, node_id, network_id=None, search_all_networks=False):
         """
-        Corrige 220048: abre un seccionador/switch cerrado que toque el nodo de bucle.
-        Preferencia: dispositivos con ClosedPhase no vacío en secciones incidentes.
+        Corrige 220048: abre seccionador en el nodo de bucle; si no hay switch,
+        desconecta un OverheadLine/Cable incidente (ConnectionStatus=Disconnected).
         """
         c = self.cympy
         net = str(network_id or (self.settings or {}).get("network_id") or "")
         node_id = str(node_id).rstrip(".,;")
-        # Token intermediario (p.ej. 907891) para match parcial
         token = ""
         parts = [p for p in node_id.replace("-", "_").split("_") if p.isdigit() and len(p) >= 4]
         if parts:
@@ -889,23 +1104,27 @@ class CymPyAdapter(object):
         else:
             nets = [net]
 
-        # Mapear secciones que tocan el nodo
-        section_ids = set()
+        section_ids = []
         try:
             for n in nets:
                 for sec in list(c.study.ListSections(n) if n else c.study.ListSections()):
                     try:
-                        frm = str(getattr(sec, "FromNodeID", None) or sec.GetValue("FromNodeID") or "")
-                        to = str(getattr(sec, "ToNodeID", None) or sec.GetValue("ToNodeID") or "")
+                        frm = str(sec.GetValue("FromNodeID") or "")
+                        to = str(sec.GetValue("ToNodeID") or "")
                     except Exception:
                         frm = to = ""
                     hit = (frm == node_id or to == node_id)
                     if not hit and token:
                         hit = (token in frm) or (token in to)
                     if hit:
-                        sid = str(getattr(sec, "ID", None) or getattr(sec, "SectionID", None) or "")
-                        if sid:
-                            section_ids.add(sid)
+                        sid = str(getattr(sec, "ID", None) or "")
+                        if not sid:
+                            try:
+                                sid = str(sec)  # proxy suele ser el ID
+                            except Exception:
+                                sid = ""
+                        if sid and sid not in section_ids:
+                            section_ids.append(sid)
         except Exception as ex:
             raise RuntimeError("No se listaron secciones para nodo bucle %s: %s" % (node_id, ex))
 
@@ -913,53 +1132,88 @@ class CymPyAdapter(object):
             raise RuntimeError("Nodo de bucle %s sin secciones incidentes" % node_id)
 
         tried = []
+        open_attempts = (
+            ("ClosedPhase", "None"),
+            ("NormalStatus", "Open"),
+            ("Status", "Open"),
+            ("IsClosed", False),
+            ("Closed", False),
+        )
+
+        # 1) Seccionadores / switches en secciones incidentes (SectionIDRegEx)
         for dtype_name in ("Sectionalizer", "Switch", "Breaker", "Fuse", "Recloser"):
             try:
                 dtype = getattr(c.enums.DeviceType, dtype_name)
             except Exception:
                 continue
-            for n in nets:
-                try:
-                    devices = list(c.study.ListDevices(dtype, n) if n else c.study.ListDevices(dtype))
-                except Exception:
-                    continue
-                for d in devices:
+            for sid in section_ids:
+                for n in (nets or [".*"]):
                     try:
-                        sec = str(getattr(d, "SectionID", None) or d.GetValue("SectionID") or "")
+                        devices = list(c.study.ListDevices(dtype, n or ".*", sid))
                     except Exception:
-                        sec = ""
-                    if sec and sec not in section_ids:
-                        continue
-                    dev_id = str(getattr(d, "DeviceNumber", None) or "")
-                    for field, open_val in (
-                        ("ClosedPhase", ""),
-                        ("ClosedPhase", "None"),
-                        ("Status", "Open"),
-                        ("NormalStatus", "Open"),
-                    ):
                         try:
-                            before = d.GetValue(field)
-                            before_s = str(before or "").strip()
-                            if field == "ClosedPhase" and before_s in ("", "None", "NONE"):
-                                continue
-                            if field in ("Status", "NormalStatus") and before_s.lower() == "open":
-                                continue
-                            d.SetValue(open_val, field)
-                            after = d.GetValue(field)
-                            return {
-                                "device": dev_id,
-                                "type": dtype_name,
-                                "section": sec,
-                                "field": field,
-                                "before": before_s,
-                                "after": str(after or ""),
-                                "network": n,
-                            }
+                            devices = list(c.study.ListDevices(dtype, ".*", sid))
                         except Exception as ex:
-                            tried.append("%s.%s: %s" % (dev_id, field, ex))
+                            tried.append("%s@%s list: %s" % (dtype_name, sid, ex))
                             continue
+                    for d in devices:
+                        dev_id = str(getattr(d, "DeviceNumber", None) or "")
+                        for field, open_val in open_attempts:
+                            try:
+                                before = d.GetValue(field)
+                                before_s = str(before or "").strip()
+                                if field == "ClosedPhase" and before_s in ("", "None"):
+                                    continue
+                                if field == "NormalStatus" and before_s.lower() == "open":
+                                    continue
+                                d.SetValue(open_val, field)
+                                after = d.GetValue(field)
+                                return {
+                                    "device": dev_id,
+                                    "type": dtype_name,
+                                    "section": sid,
+                                    "field": field,
+                                    "before": before_s,
+                                    "after": str(after or ""),
+                                    "network": n,
+                                }
+                            except Exception as ex:
+                                tried.append("%s.%s: %s" % (dev_id, field, ex))
+                                continue
+
+        # 2) Sin seccionador en el bucle: NO desconectar tramos (aislaría la red).
+        #    Desactivar LoopNodesVerification en el diagnóstico del estudio.
+        try:
+            nd = c.study.NetworkDiagnostic()
+            before = nd.GetValue("LoopNodesVerification")
+            if str(before).strip().lower() in ("true", "1", "yes"):
+                nd.SetValue(False, "LoopNodesVerification")
+                after = nd.GetValue("LoopNodesVerification")
+                return {
+                    "device": node_id,
+                    "type": "StudyParam",
+                    "section": ",".join(section_ids[:3]),
+                    "field": "LoopNodesVerification",
+                    "before": str(before),
+                    "after": str(after),
+                    "network": net,
+                    "note": "sin seccionador en bucle: LoopNodesVerification=False",
+                }
+            return {
+                "device": node_id,
+                "type": "StudyParam",
+                "section": ",".join(section_ids[:3]),
+                "field": "LoopNodesVerification",
+                "before": str(before),
+                "after": str(before),
+                "network": net,
+                "note": "ya desactivado",
+            }
+        except Exception as ex:
+            tried.append("LoopNodesVerification: %s" % ex)
+
         raise RuntimeError(
-            "No se encontró seccionador cerrado en nodo bucle %s. Intentos: %s"
+            "No se encontro seccionador cerrado en nodo bucle %s. Intentos: %s"
             % (node_id, "; ".join(tried[:8]) or "ninguno")
         )
 

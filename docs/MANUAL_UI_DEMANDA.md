@@ -1,130 +1,104 @@
 # Manual UI de demanda RECYM (PA217 / multi-alimentador)
 
-Interfaz: `scripts\20_demand_ui.bat` → **http://127.0.0.1:5055**  
+Interfaz SPA: `scripts\20_demand_ui.bat` → **http://127.0.0.1:5055** (React + FastAPI §§1–7)  
+Legacy Flask: `scripts\20_demand_ui_legacy.bat`  
+Contrato API: [`API_CONTRATO_UI.md`](API_CONTRATO_UI.md)  
 Motor: CymPy + API COM CYMDIST 9.2 · estudio `.zxst` + BD `.mdb` Electro Dunas.
 
-Orden obligatorio para **demanda / entrega de un alimentador**:
+Orden obligatorio (SPA numerada):
 
-**Calidad modelo → §1 Cabecera → §2 EA/Pot + distribución → §3 SpotLoad nueva → §4 Flujos → §5 Informes**
+**§1 Cabecera → §2 Calidad+Tablero → §3 EA/Pot + distribución → §4 SpotLoad → §5 Flujos → §6 Informes → §7 Opt/Suite**
 
-- **Calidad / NetworkDiagnostic** (feeder o **sistema 96**) **no depende** de §§3–4 ni de cabecera: usa redes y equipos ya en la BD. §§3–4 solo se ejecutan en secuencia cuando hay cargas nuevas; no limitan el diagnóstico del parque.
-- Tras **Cargar EA/Pot** o **Conectar carga**, CYMDIST queda abierto; §§2–5 operan sobre la misma sesión física.
+- **§2 Calidad / NetworkDiagnostic** (feeder o **sistema 96**) **no depende** de §§4–5 ni de cabecera: usa redes y equipos ya en la BD.
+- Tras **Cargar EA/Pot** o **Conectar carga**, CYMDIST queda abierto; §§3–6 operan sobre la misma sesión física.
+- El **tablero** vive en §2 (`GET /api/tablero`); ya no se usa `tablero.html` como producto.
 
 ### Diagnóstico de sistema (96 alimentadores)
 
-- UI: botón **Diagnosticar sistema (96)** / **Diagnosticar ELD** en el panel Calidad.
+- UI: botones **2.7 Diagnosticar sistema (96)** / **2.8 Diagnosticar ELD** en §2.
 - CLI sistema: `scripts\24_system_network_diagnostic.bat`
 - CLI estudio ELD (Herramienta diagnóstica API): `scripts\25_eld_diagnostic.bat`  
   Estudio: `D:\BaseDatosElectroDunas\260919BaseDatos\proyectos\ELD.zxst`  
   Salida: `data/output/system/diagnostics/ELD/`
-- Salida sistema: `data/output/system/diagnostics/cymdist_diagnostic_errors_system.csv` + `diagnostic_by_code_system.csv` (agrupado por tipo/código de error).
+- Salida sistema: `data/output/system/diagnostics/cymdist_diagnostic_errors_system.csv` + `diagnostic_by_code_system.csv`
 
 ---
 
-## §1 — Máxima demanda de cabecera
+## §1 — Contexto + máxima demanda de cabecera
 
-- Ingrese P/Q, P+cosφ o I+V+cosφ y **Guarde**.
+- Elija BD + estudio y pulse **1.1 Aplicar BD + estudio**.
+- Ingrese P/Q, P+cosφ o I+V+cosφ y **1.2 Guarde**.
 - Esa demanda es la entrada de **LoadAllocation** (demanda Connected+Total).
-- Guardar cabecera **restablece** §§2–4 (tabla, distribución, carga nueva) para evitar mezclar campañas.
-- Los valores por defecto de cabecera por alimentador **no** son prerequisito del NetworkDiagnostic.
+- Guardar cabecera **restablece** artefactos de sesión de §§3–5 para evitar mezclar campañas.
 
 ---
 
-## §2 — Clientes importantes → SED + distribución
+## §2 — Calidad del modelo + Tablero dinámico
 
-### Cargar EA/Pot
+- Botones 2.1–2.8 (diagnosticar, proponer, aplicar, convergencia, sistema, ELD).
+- Tablero: cards de errores, códigos antes/después, top errores, tabla clientes Incluir.
+- Gate listo (0 Error/Warning/Hint + converge) antes de §3.
+
+---
+
+## §3 — Clientes importantes → SED + distribución
 
 1. Elija `suministrocliente` y `clientesimportantes`.
 2. Marque alimentador(es) RADIAL.
-3. **Armar tabla** (cruce NIS).
-4. Columna **Incluir**:
-   - Marcada → se escribe en CYMDIST.
-   - Desmarcada → la SpotLoad SED se **desconecta físicamente** (`ConnectionStatus=Disconnected`) y P/Q/kWh=0. No entra en distribución ni en flujos.
-5. **Cargar EA/Pot en CYMDIST**:
-   - **EA → casillero Consumo (kWh)** (`CustomerLoadValues[].KWH`), con verificación de relectura.
-   - **Pot → potencia real (kW)** + kvar desde FP; **Locked** (cliente fijo).
-   - SED típica: un solo valor Total (Phase=ABC).
-   - Abre CYMDIST (COM) en el mismo estudio.
-
-### Distribución de carga (Consumo kWh)
-
-- Método CYME: **Consumo (kWh)** = `KWHMethod` (IL917115ES).
-- Clientes importantes Incluidos = **fijos Locked** (restan de cabecera).
-- Resto de SpotLoad = **Unlocked**; su **Consumo (kWh)** define el peso del residual.
-- Resultado: actualiza **kW/kvar** del residual.
-- Tras la corrida se valida que el Consumo de clientes siga igual al EA.
-- SpotLoad nuevas del §3 (si ya existían) quedan Locked y **no** entran al prorrateo.
-
-No vuelva a distribuir después de conectar una SpotLoad nueva (§3).
+3. **3.1 Armar tabla** (cruce NIS).
+4. Columna **Incluir** (en §2 Tablero): marcada → escribe CYMDIST; desmarcada → desconecta SED.
+5. **3.2 Cargar EA/Pot** — EA→Consumo(kWh), Pot→kW Locked.
+6. **3.3 Distribución** Consumo (kWh). No redistribuir tras §4.
 
 ---
 
-## §3 — Nueva carga concentrada (SpotLoad)
+## §4 — Nueva carga concentrada (SpotLoad)
 
-1. Busque nodo → se deriva SectionID.
-2. Nombre obligatorio (= DeviceNumber en el plano).
-3. Ingrese **P trifásica (kW)** + cosφ o Q.
-4. **Conectar carga en CYMDIST**:
-   - Dibuja símbolo SpotLoad en el tramo (From/To), no lateral tipo SED.
-   - La potencia trifásica se reparte a **monofásica por fase**:
-     - A / B / C = **P/3** y **Q/3**
-     - Casilleros CYMDIST: *Potencia real (kW)* y *Potencia reactiva (kvar)* por fase.
-   - Queda **Locked** (fuera de distribución).
-   - Tras COM se reescriben P/Q (el COM puede dejar 0 si no se reaplica).
-
-Ejemplo: 1400 kW · cosφ 0.95 → Q≈460.16 kvar → **466.67 kW / 153.39 kvar** en A, B y C.
+1. **4.1** Actualizar inventario nodos → busque nodo.
+2. Nombre obligatorio (= DeviceNumber).
+3. P trifásica + cosφ/Q → **4.2 Conectar** (A/B/C = P/3, Q/3; Locked).
 
 ---
 
-## §4 — Flujos (LoadFlow) — botones independientes
+## §5 — Flujos (LoadFlow)
 
-| Botón | Acción física en modelo | Salida |
-|-------|-------------------------|--------|
-| **Flujo estado situacional** | **Desconecta** todas las SpotLoad §3 (`Disconnected`) y corre LoadFlow | `loadflow_situacional.json` |
-| **Flujo con cargas nuevas** | **Conecta** SpotLoad §3 con su P/Q y corre LoadFlow | `loadflow_proyectado.json` |
-| Flujo general | Sin conmutar escenario (o proyectado si hay §3) | `loadflow_result.json` |
+| Botón | Acción |
+|-------|--------|
+| **5.1 Situacional** | Desconecta SpotLoad §4 → LoadFlow |
+| **5.2 Proyectado** | Conecta SpotLoad §4 → LoadFlow |
+| **5.3 General** | Sin conmutar escenario |
 
-- Cada botón deja el modelo en ese estado (no se restaura solo).
-- Tras cada flujo OK se **actualiza automáticamente el §5** (informe).
-- No redistribuir tras §3.
-
-Manual CYME: BalLoadFlowInd / IL917123ES.
+Tras cada flujo OK se intenta actualizar §6.
 
 ---
 
-## §5 — Informes de entrega (riguroso)
+## §6 — Informes de entrega
 
-Orden recomendado:
+1. **6.1 PDF OCR** → meta (cliente + potencia_kw mínimo).
+2. Ambos flujos §5 + 4 PNG.
+3. **6.2 Rellenar informes → doc**.
 
-1. **PDF OCR (§5.1)** — cargar solicitud/factibilidad PDF → Extraer datos generales → revisar/guardar meta (`demand/informe_meta.json`). Mínimo: **cliente + potencia_kw**.
-2. **§4 Flujo situacional** (sin carga nueva §3) → genera `loadflow_situacional.json` + gráficas `situacional_*.png`.
-3. **§4 Flujo proyectado** (con carga nueva §3) → genera `loadflow_proyectado.json` + gráficas `proyectado_*.png`.
-4. **Rellenar informes → doc** — solo completa si hay ambos LF + meta OCR + 4 PNG LF.
-
-### Gates de entrega
-
-| Requisito | Origen |
-|-----------|--------|
-| `loadflow_situacional.json` | §4 situacional |
-| `loadflow_proyectado.json` | §4 proyectado |
-| `informe_meta.json` (cliente + kW) | PDF OCR / guardar meta §5 |
-| 4 PNG LF | Auto desde JSON (matplotlib) o override CYMDIST |
-
-Si falta algo, `fill_informe` retorna `ok: false` + `missing[]` y **no** sobrescribe `doc/` con plantilla.
-
-### Gráficas
-
-- Auto: `situacional_tension.png`, `situacional_cargabilidad.png`, `proyectado_tension.png`, `proyectado_cargabilidad.png`.
-- Override: capturas CYMDIST con el mismo nombre y mtime más reciente que el JSON LF.
-- Opcionales: `topologia.png`, `trafo_cargabilidad.png`.
-
-### APIs
+### APIs informe
 
 - `POST /api/informe/meta_pdf` — upload PDF
 - `GET|POST /api/informe/meta` — leer/guardar campos
 - `POST /api/informe/armar` — fill con gate
 
-Tras §4 el auto-fill también aplica el gate (puede quedar incompleto hasta tener ambos escenarios + OCR).
+---
+
+## §7 — Optimización + Suite
+
+- 7.1 Optimización (reclosers / regulators / capacitors).
+- 7.2 Entorno, conexión, validar entradas, inventario 96.
+- 7.3 Sync equipos / fix DEFAULT / export ASCII.
+- 7.4 Nuevo alimentador RECYM.
+- 7.5 Pipeline batch.
+
+---
+
+## Jobs asíncronos
+
+Operaciones largas de §2/§3/§5: `POST /api/jobs` + SSE `/api/jobs/{id}/events`.
 
 ---
 
@@ -146,15 +120,13 @@ Tras §4 el auto-fill también aplica el gate (puede quedar incompleto hasta ten
 ```
 data/output/feeders/PA217/
   clientes/clientes_alimentador.json
-  clientes/precision_report.csv
   demand/allocation_result.json
-  demand/residual_scaled.csv
   demand/loadflow_situacional.json
   demand/loadflow_proyectado.json
   demand/informe_meta.json
+  diagnostics/tablero.json
   informe_images/situacional_*.png
   informe_images/proyectado_*.png
-  loads/new_spot_loads_report.csv
 ```
 
 ---
@@ -164,9 +136,5 @@ data/output/feeders/PA217/
 ```bat
 scripts\01_check_environment.bat
 scripts\03_test_cymdist_connection.bat --feeder PA217
-
-:: Precisión EA→Consumo / Pot→kW (clientes Incluir=on)
-.tools\python37-win32\python.exe -c "import sys; sys.path.insert(0,'src'); from analysis.verify_clientes_precision import main; main()"
+scripts\20_demand_ui.bat
 ```
-
-En UI: tras Cargar EA/Pot debe aparecer «Consumo(KWH) verificado»; tras flujos, «§5 informe actualizado».

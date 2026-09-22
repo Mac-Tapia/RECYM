@@ -13,7 +13,11 @@ def _load(path):
         return json.load(f)
 
 def _load_clientes(s):
-    """Carga tabla final clientes (JSON preferido, CSV fallback)."""
+    """Carga tabla final clientes (JSON preferido, CSV fallback).
+
+    Si no hay tabla Excel armada, siembra desde inventario SpotLoad del modelo
+    (todas Incluir=SI; capacidad SED no excluye).
+    """
     jpath = output_path(s, "clientes", "clientes_alimentador.json")
     cpath = output_path(s, "clientes", "clientes_alimentador.csv")
     apply_path = output_path(s, "clientes", "apply_cymdist_report.csv")
@@ -27,6 +31,27 @@ def _load_clientes(s):
         with open(cpath, "r", encoding="utf-8-sig") as f:
             data["rows"] = list(csv.DictReader(f))
         data["csv_path"] = cpath
+
+    if not data["rows"]:
+        try:
+            from core.clientes_suministro import ensure_clientes_table
+            rows, meta, path = ensure_clientes_table(s)
+            data["rows"] = rows
+            data["meta"] = meta
+            data["json_path"] = path
+        except Exception as ex:
+            data["meta"] = {"seed_error": str(ex)}
+    else:
+        # Fusionar SpotLoads del inventario que falten (p.ej. avisos 260044)
+        try:
+            from core.clientes_suministro import ensure_clientes_table
+            rows, meta, path = ensure_clientes_table(s, force_inventory=False)
+            data["rows"] = rows
+            data["meta"] = meta
+            data["json_path"] = path
+        except Exception:
+            pass
+
     if os.path.isfile(apply_path):
         with open(apply_path, "r", encoding="utf-8-sig") as f:
             data["apply"] = list(csv.DictReader(f))
@@ -46,48 +71,198 @@ def _fmt_num(v, nd=1):
     except Exception:
         return _esc(v)
 
-def main():
-    s = load_settings()
-    before = _load(output_path(s, "diagnostics", "dashboard_summary.json"))
-    after = _load(output_path(s, "diagnostics", "dashboard_summary_after.json"))
-    preview = output_path(s, "preview_changes.csv")
-    clientes = _load_clientes(s)
 
+# Snapshot vacío: tablero en cero hasta 2.1 · Diagnosticar
+EMPTY_DIAG = {
+    "ok": True,
+    "empty": True,
+    "total_messages": 0,
+    "n_problems": 0,
+    "by_code": {},
+    "top_errors": [],
+    "phase": "empty",
+    "timestamp": None,
+}
+
+
+def empty_diag_snapshot(phase="empty"):
+    snap = dict(EMPTY_DIAG)
+    snap["phase"] = phase
+    return snap
+
+
+def diagnostic_artifact_paths(settings):
+    """Archivos de diagnóstico que alimentan el Tablero dinámico."""
+    return [
+        output_path(settings, "diagnostics", "dashboard_summary.json"),
+        output_path(settings, "diagnostics", "dashboard_summary_after.json"),
+        output_path(settings, "diagnostics", "cymdist_diagnostic_errors.csv"),
+        output_path(settings, "diagnostics", "cymdist_diagnostic_errors_after.csv"),
+        output_path(settings, "diagnostics", "tablero.json"),
+        output_path(settings, "diagnostics", "tablero.html"),
+    ]
+
+
+def _load_clientes_soft(s):
+    """Lee clientes desde disco. No abre CYMDIST.
+
+    Universal por alimentador: si no hay tabla armada, siembra desde
+    inventory/loads.json de ESE feeder (IN112, PA217, …). Así el tablero
+    no queda vacío solo porque PA217 ya tenía clientes_alimentador.json.
+    """
+    jpath = output_path(s, "clientes", "clientes_alimentador.json")
+    cpath = output_path(s, "clientes", "clientes_alimentador.csv")
+    apply_path = output_path(s, "clientes", "apply_cymdist_report.csv")
+    data = {"rows": [], "meta": {"soft": True}, "apply": []}
+    if os.path.isfile(jpath):
+        raw = _load(jpath) or {}
+        data["rows"] = raw.get("rows") or []
+        data["meta"] = dict(raw.get("meta") or {})
+        data["meta"]["soft"] = True
+        data["json_path"] = jpath
+    elif os.path.isfile(cpath):
+        with open(cpath, "r", encoding="utf-8-sig") as f:
+            data["rows"] = list(csv.DictReader(f))
+        data["csv_path"] = cpath
+    if not data["rows"]:
+        try:
+            from core.clientes_suministro import ensure_clientes_table
+            rows, meta, path = ensure_clientes_table(s, force_inventory=False)
+            data["rows"] = rows or []
+            data["meta"] = dict(meta or {})
+            data["meta"]["soft"] = True
+            data["meta"]["seeded_from_inventory"] = True
+            data["json_path"] = path
+        except Exception as ex:
+            data["meta"] = {"soft": True, "seed_error": str(ex)}
+    if os.path.isfile(apply_path):
+        with open(apply_path, "r", encoding="utf-8-sig") as f:
+            data["apply"] = list(csv.DictReader(f))
+        data["apply_path"] = apply_path
+    if os.path.isfile(cpath):
+        data["csv_path"] = cpath
+    return data
+
+
+def clear_tablero_diagnostics(settings, rebuild=True):
+    """Borra diagnósticos y deja el tablero en cero de forma durable.
+
+    Escribe snapshots empty=true (no solo borra), para que un rebuild posterior
+    no resucite totales viejos. No toca clientes ni §§3–4. No abre CYMDIST.
+    """
+    removed = []
+    # CSV de errores: borrar
+    for fname in (
+        "cymdist_diagnostic_errors.csv",
+        "cymdist_diagnostic_errors_after.csv",
+        "tablero.html",
+    ):
+        path = output_path(settings, "diagnostics", fname)
+        try:
+            if path and os.path.isfile(path):
+                os.remove(path)
+                removed.append(fname)
+        except Exception as ex:
+            print("AVISO clear_tablero:", path, ex)
+
+    # Summaries: escribir ceros (durable frente a rebuild=1)
+    before_path = output_path(settings, "diagnostics", "dashboard_summary.json")
+    after_path = output_path(settings, "diagnostics", "dashboard_summary_after.json")
+    before_snap = empty_diag_snapshot("before")
+    after_snap = empty_diag_snapshot("after")
+    try:
+        os.makedirs(os.path.dirname(before_path), exist_ok=True)
+        with open(before_path, "w", encoding="utf-8") as f:
+            json.dump(before_snap, f, indent=2, ensure_ascii=False)
+        with open(after_path, "w", encoding="utf-8") as f:
+            json.dump(after_snap, f, indent=2, ensure_ascii=False)
+        removed.extend(["dashboard_summary.json", "dashboard_summary_after.json"])
+    except Exception as ex:
+        print("AVISO write empty summaries:", ex)
+
+    board = None
+    if rebuild:
+        board = main(settings, soft_clientes=True)
+        removed.append("tablero_reset")
+    return {
+        "ok": True,
+        "cleared": removed,
+        "n": len(removed),
+        "tablero": board,
+        "before": before_snap,
+        "after": after_snap,
+        "has_diagnostic": False,
+    }
+
+
+def _coerce_diag(raw, phase):
+    """None / vacío → ceros. Diagnóstico real conserva datos."""
+    if not raw or raw.get("empty"):
+        return empty_diag_snapshot(phase)
+    out = dict(raw)
+    out.setdefault("total_messages", 0)
+    out.setdefault("n_problems", 0)
+    out.setdefault("by_code", {})
+    out.setdefault("top_errors", [])
+    out["empty"] = False
+    return out
+
+
+def main(settings=None, soft_clientes=False):
+    s = settings or load_settings()
+    before = _coerce_diag(
+        _load(output_path(s, "diagnostics", "dashboard_summary.json")), "before"
+    )
+    after = _coerce_diag(
+        _load(output_path(s, "diagnostics", "dashboard_summary_after.json")), "after"
+    )
+    has_diag = (not before.get("empty")) or (not after.get("empty"))
+    preview = output_path(s, "preview_changes.csv")
+    clientes = _load_clientes_soft(s) if soft_clientes else _load_clientes(s)
+
+    from core.common import ts, truthy as _truthy_cli
+    cli_rows_board = clientes.get("rows") or []
+    n_cli_tot = len(cli_rows_board)
+    n_cli_on = sum(1 for r in cli_rows_board if _truthy_cli(r.get("Activo", True)))
     board = {
         "utility": s.get("utility_name"),
         "feeder_id": s.get("feeder_id"),
         "network_id": s.get("network_id"),
         "dry_run": s.get("dry_run"),
         "study_path": s.get("study_path"),
+        "generated_at": ts(),
+        "has_diagnostic": has_diag,
         "before": before,
         "after": after,
         "preview_csv": preview if os.path.isfile(preview) else None,
         "clientes": {
             "meta": clientes.get("meta") or {},
-            "n": len(clientes.get("rows") or []),
+            "n": n_cli_tot,
+            "n_activos": n_cli_on,
+            "n_excluidos": n_cli_tot - n_cli_on,
             "csv": clientes.get("csv_path"),
             "json": clientes.get("json_path"),
             "apply_csv": clientes.get("apply_path"),
-            "rows": clientes.get("rows") or [],
+            "rows": cli_rows_board,
         },
     }
     out_json = output_path(s, "diagnostics", "tablero.json")
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(board, f, indent=2, ensure_ascii=False)
 
-    b_total = (before or {}).get("total_messages", 0)
-    a_total = (after or {}).get("total_messages")
-    b_codes = (before or {}).get("by_code") or {}
-    a_codes = (after or {}).get("by_code") or {}
+    b_total = before.get("total_messages", 0)
+    a_total = after.get("total_messages", 0)
+    b_codes = before.get("by_code") or {}
+    a_codes = after.get("by_code") or {}
 
     rows_html = []
     for code in sorted(set(list(b_codes.keys()) + list(a_codes.keys()))):
         rows_html.append(
             "<tr><td>%s</td><td>%s</td><td>%s</td></tr>"
-            % (code, b_codes.get(code, 0), a_codes.get(code, "—"))
+            % (code, b_codes.get(code, 0), a_codes.get(code, 0))
         )
 
-    top = ((after or before) or {}).get("top_errors") or []
+    top = (after.get("top_errors") or before.get("top_errors") or [])
     top_html = "".join(
         "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
         % (
@@ -198,8 +373,8 @@ Estudio: {study}<br/>dry_run={dry}</div>
   <div class="card">Errores antes<b class="bad">{b_total}</b></div>
   <div class="card">Errores después<b>{a_total}</b></div>
   <div class="card">220052 antes<b>{c52b}</b></div>
-  <div class="card">220047 antes<b>{c47b}</b></div>
   <div class="card">220052 después<b>{c52a}</b></div>
+  <div class="card">220047 antes<b>{c47b}</b></div>
   <div class="card">220047 después<b>{c47a}</b></div>
 </div>
 
@@ -305,6 +480,7 @@ collectActivo();
     print("Tablero JSON:", out_json)
     print("Tablero HTML:", out_html)
     print("Clientes en tablero:", n_cli)
+    return board
 
 if __name__ == "__main__":
     main()

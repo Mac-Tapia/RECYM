@@ -135,6 +135,17 @@ def propose_row(diag_row, settings, ctx=None):
         row["Fase"] = "ABC"
         row["Activo"] = bool(auto and obj_id)
 
+    elif action == "raise_device_pf":
+        # Mensaje CYME trae el SpotLoad; forzar Tipo=Load para aplicar Q→FP
+        if not tipo or tipo in ("Device", "?"):
+            row["Tipo"] = "Load"
+        row["Fase"] = "ABC"
+        row["Activo"] = bool(auto and obj_id)
+        if not obj_id:
+            row["Activo"] = False
+            row["Accion_Sugerida"] = "revisar"
+            row["Observacion"] = "220003 sin ID de carga. " + obs
+
     elif action == "open_tie_switch":
         row["Tipo"] = "Node"
         row["Activo"] = bool(auto and obj_id)
@@ -173,7 +184,11 @@ def propose_row(diag_row, settings, ctx=None):
 def _fill_equipment(row, settings, ctx, auto):
     """220047 — reemplaza DEFAULT por AAAC/XLPE de la misma sección (mm2).
 
-    No toca tensiones de fuentes ni alimentadores (eso es set_base_voltage / 220052).
+    Fuentes de calibre (en orden):
+      1) dispositivo / tramo del modelo (API CymPy)
+      2) fichas técnicas / Catalogo_Maestro (catalog_hints)
+      3) equipo DEFAULT de biblioteca
+    No toca tensiones de fuentes ni alimentadores.
     """
     from core.equipment_library import (
         pick_equipment, EQ_TYPE_MAP, equipment_exists,
@@ -187,6 +202,7 @@ def _fill_equipment(row, settings, ctx, auto):
     cympy = ctx.get("cympy")
     inv = ctx.get("inv") or {}
     adapter = ctx.get("adapter")
+    catalog_hints = ctx.get("catalog_hints") or {}
 
     row["Equipo_Actual"] = "DEFAULT"
     row["Fase"] = "ABC"
@@ -196,13 +212,29 @@ def _fill_equipment(row, settings, ctx, auto):
         row["Observacion"] = "220047 sin Tipo/ID. " + (row.get("Observacion") or "")
         return row
 
-    # Sección desde dispositivo o desde DEFAULT de biblioteca (AAAC ligado)
     size = None
+    size_src = ""
     if cympy is not None:
         try:
             size = size_from_device(adapter or cympy, tipo, obj_id)
+            if size is not None:
+                size_src = "modelo_seccion"
         except Exception:
+            size = None
+    if size is None:
+        hint = catalog_hints.get((tipo, obj_id))
+        if hint is None and tipo == "Underground":
+            hint = catalog_hints.get(("Cable", obj_id))
+        if hint is not None:
+            size = hint
+            size_src = "ficha_catalogo"
+    if size is None and cympy is not None:
+        try:
             size = size_from_default_equipment(cympy, tipo)
+            if size is not None:
+                size_src = "biblioteca_DEFAULT"
+        except Exception:
+            size = None
 
     if cympy is not None:
         eq_id, how = pick_equipment(
@@ -215,7 +247,7 @@ def _fill_equipment(row, settings, ctx, auto):
         row["Activo"] = False
         row["Accion_Sugerida"] = "revisar"
         row["Observacion"] = (
-            "PENDIENTE: sin equipo en biblioteca CYMDIST (EquipmentModeling). "
+            "PENDIENTE: sin equipo en biblioteca CYMDIST (tablas equipos / fichas). "
             + (row.get("Observacion") or "")
         )
         return row
@@ -232,10 +264,10 @@ def _fill_equipment(row, settings, ctx, auto):
     row["Activo"] = bool(auto)
     size_txt = ("%s mm2" % int(size)) if size else "sin_size"
     row["Observacion"] = (
-        "DEFAULT→%s (%s, %s). Sin cambiar tensiones de fuente/alimentador. %s"
-        % (eq_id, how, size_txt, row.get("Observacion") or "")
+        "DEFAULT→%s (%s, %s via %s). Respeta sección del tramo; sin cambiar V fuente. %s"
+        % (eq_id, how, size_txt, size_src or "n/a", row.get("Observacion") or "")
     )
-    row["Origen_Dato"] = "EquipmentModeling AAAC/XLPE misma seccion"
+    row["Origen_Dato"] = "Equipos+fichas AAAC/XLPE misma seccion"
     return row
 
 
@@ -273,7 +305,12 @@ def apply_action(adapter, settings, row):
         return action, before, "%s=%s (%s)" % (field, after, how)
 
     if action == "open_tie_switch":
-        info = adapter.open_tie_at_loop_node(obj_id, settings.get("network_id"))
+        try:
+            info = adapter.open_tie_at_loop_node(obj_id, settings.get("network_id"))
+        except Exception:
+            info = adapter.open_tie_at_loop_node(
+                obj_id, settings.get("network_id"), search_all_networks=True
+            )
         before = "%s.%s=%s" % (info.get("device"), info.get("field"), info.get("before"))
         after = "%s=%s" % (info.get("field"), info.get("after"))
         return action, before, after
@@ -308,8 +345,8 @@ def apply_action(adapter, settings, row):
         return action, "", "limits_ok"
 
     if action == "tighten_lf_tolerance":
-        _tighten_lf_tolerance(adapter)
-        return action, "", "tolerance_ok"
+        how = _tighten_lf_tolerance(adapter)
+        return action, "", how
 
     if action == "align_transformer_voltages":
         return _set_transformer_voltages(adapter, obj_id, vll)
@@ -384,10 +421,17 @@ def apply_action(adapter, settings, row):
 
     if action == "raise_device_pf":
         pf_min = float(settings.get("min_device_pf") or 0.85)
-        return _try_set_fields(adapter, obj_id, tipo, {
+        # SpotLoad / Device DEV_*: ajustar Q para FP (campo PowerFactor no existe en SpotLoad)
+        try:
+            return adapter.raise_spotload_power_factor(obj_id, pf_min)
+        except Exception:
+            pass
+        return _try_set_fields(adapter, obj_id, tipo or "Load", {
             "PowerFactor": pf_min,
             "PF": pf_min,
             "MinPowerFactor": pf_min,
+            "CustomerLoads[0].PowerFactor": pf_min,
+            "CustomerLoads[0].CustomerLoadModels[0].PowerFactor": pf_min,
         })
 
     if action == "raise_length_limit":
@@ -588,21 +632,26 @@ def _raise_nd_length_limit(adapter, settings):
 
 
 def _tighten_lf_tolerance(adapter):
-    c = adapter.cympy
-    sim = c.sim.LoadFlow()
-    base = "LoadFlowParameters"
-    for path, val in (
-        (base + ".ConvergenceTolerance", 0.001),
-        (base + ".VoltageTolerance", 0.001),
-        (base + ".Tolerance", 0.001),
-    ):
-        try:
-            sim.SetValue(val, path)
-            return "tighten_lf_tolerance"
-        except Exception:
-            continue
-    # Alternativa vía study params
-    raise RuntimeError("No se pudo ajustar tolerancia LoadFlow")
+    """Corrige 220011 en la raíz: Voltage/PowerTolerance de todas las configs LF."""
+    from core.sim_params import ensure_loadflow_convergence_tolerance
+
+    info = ensure_loadflow_convergence_tolerance(adapter.cympy)
+    if not info.get("ok"):
+        raise RuntimeError(
+            "220011: no se pudo fijar Voltage/PowerTolerance (%s)"
+            % ("; ".join((info.get("notes") or [])[:4]) or "sin API")
+        )
+    # Persistir en estudio + BD aquí (bulk_fix también guarda al final)
+    try:
+        if getattr(adapter, "settings", None) and adapter.settings.get("save_after_fix", True):
+            adapter.save_study()
+    except Exception as ex:
+        print("AVISO save tras tighten_lf_tolerance:", ex)
+    applied = info.get("applied") or []
+    return "tighten_lf_tolerance:n=%s:%s" % (
+        info.get("n_applied"),
+        ",".join(applied[:4]),
+    )
 
 
 def _set_transformer_voltages(adapter, obj_id, vll):

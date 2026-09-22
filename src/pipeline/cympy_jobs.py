@@ -33,11 +33,18 @@ def job_cabecera(payload):
             s[k] = payload[k]
     p = float(payload["P_kW"])
     q = float(payload["Q_kvar"])
+    vll = payload.get("Vll_kV")
+    va = payload.get("Va_kV")
+    vb = payload.get("Vb_kV")
+    vc = payload.get("Vc_kV")
     try:
         pause_cymdist_for_cympy(s)
     except Exception as ex:
         print("AVISO pause:", ex)
-    info = apply_cabecera_medicion(s, p, q, save=True)
+    info = apply_cabecera_medicion(
+        s, p, q, save=True,
+        vll_kv=vll, va_kv=va, vb_kv=vb, vc_kv=vc,
+    )
     return {
         "ok": True,
         "cymdist": info,
@@ -46,7 +53,11 @@ def job_cabecera(payload):
         "study_path": s.get("study_path"),
         "P_kW": p,
         "Q_kvar": q,
-        "msg": "SetDemand OK",
+        "Vll_kV": vll,
+        "Va_kV": va,
+        "Vb_kV": vb,
+        "Vc_kV": vc,
+        "msg": "SetDemand + tensiones fuente OK",
     }
 
 

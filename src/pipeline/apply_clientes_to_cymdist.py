@@ -86,9 +86,18 @@ def apply_rows(adapter, rows, fp=0.95, lock=True):
         try:
             conn = adapter.set_load_connected(lid, True)
             res = adapter.set_load_kwh_and_pot(lid, ea, pot, fp=fp, lock=lock)
+            # Dibujo + capacidad: no bloquean aunque S > ConnectedKVA (260044)
+            try:
+                adapter._ensure_spot_symbol(lid)
+            except Exception:
+                pass
+            try:
+                adapter.raise_load_connected_kva(lid)
+            except Exception:
+                pass
             kwh_ok = res.get("kwh_ok")
             estado = "OK"
-            detalle = "EA→Consumo(KWH); Pot→kW Locked"
+            detalle = "EA→Consumo(KWH); Pot→kW Locked; símbolo dibujado"
             if ea is not None and ea != "" and kwh_ok is False:
                 estado = "WARN_KWH"
                 detalle = (

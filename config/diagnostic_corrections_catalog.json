@@ -123,7 +123,7 @@
       "action": "tighten_lf_tolerance",
       "auto_apply": true,
       "tipo_default": "StudyParam",
-      "fix_note": "Ajustar tolerancia convergencia LoadFlow",
+      "fix_note": "Raíz: VoltageTolerance/PowerTolerance=1e-4 en TODAS las ParametersConfigurations del LoadFlow; save_study (estudio+BD). Se aplica automáticamente antes de NetworkDiagnostic.",
       "source": "cymdist.cymsg [DiagnosticTool]"
     },
     "220012": {

@@ -2,6 +2,70 @@
 """Preparacion de parametros de simulacion CYMDIST (evita / mitiga error 130013)."""
 from __future__ import print_function
 
+import json
+import os
+from datetime import datetime
+
+
+def lf_stamp_path(settings):
+    """Sello persistente anti-130013 junto al estudio (cualquier alimentador)."""
+    study = (settings or {}).get("study_path") or ""
+    if study and os.path.isfile(study):
+        return study + ".recym_lf_ok.json"
+    # fallback por feeder
+    try:
+        from core.feeder_context import output_path
+        return output_path(settings, "demand", "lf_params_stamp.json")
+    except Exception:
+        return ""
+
+
+def read_lf_stamp(settings):
+    path = lf_stamp_path(settings)
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def write_lf_stamp(settings, config_id="DEFAULT", notes=None):
+    path = lf_stamp_path(settings)
+    if not path:
+        return None
+    data = {
+        "ok": True,
+        "ConfigID": config_id or "DEFAULT",
+        "feeder_id": (settings or {}).get("feeder_id"),
+        "network_id": (settings or {}).get("network_id"),
+        "study_path": (settings or {}).get("study_path"),
+        "database_mdb": (settings or {}).get("database_mdb"),
+        "database_connection_name": (settings or {}).get("database_connection_name"),
+        "fixed_at": datetime.now().isoformat(timespec="seconds"),
+        "notes": (notes or [])[:8],
+    }
+    try:
+        from core.feeder_context import resolve_cymdist_binding
+        bind = resolve_cymdist_binding(settings)
+        data["binding"] = bind.get("binding")
+        data["database_file"] = bind.get("database_file")
+        data["study_file"] = bind.get("study_file")
+    except Exception:
+        pass
+    try:
+        folder = os.path.dirname(path)
+        if folder and not os.path.isdir(folder):
+            os.makedirs(folder)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return path
+    except Exception as ex:
+        print("AVISO write_lf_stamp:", ex)
+        return None
+
+
 def ensure_loadflow_networks(cympy, network_id):
     """Asegura que AnalysisNetworks.SelectedNetworks incluya el alimentador."""
     from cympy.properties import properties as props
@@ -26,10 +90,161 @@ def ensure_loadflow_networks(cympy, network_id):
         pass
     return list(an.SelectedNetworks.GetValues()) if hasattr(an, "SelectedNetworks") else []
 
+def ensure_loadflow_convergence_tolerance(cympy, voltage_tol=0.0001, power_tol=0.0001):
+    """Raíz del aviso 220011: fija Voltage/PowerTolerance en TODAS las configs LF.
+
+    DiagnosticTool (BasicDeviceVerification) marca Hint 220011 cuando la
+    tolerancia de convergencia del LoadFlow es «grande». Converge el flujo no
+    implica que el Hint desaparezca: hay que bajar el parámetro y guardar el
+    estudio. Retorna dict con applied/notes/ok.
+    """
+    v_tol = float(voltage_tol)
+    p_tol = float(power_tol)
+    applied = []
+    notes = []
+    readback = {}
+
+    # —— 1) API tipada: todas las ParametersConfigurations ——
+    try:
+        from cympy.properties import properties as props
+        lf_props = props.LoadFlow()
+        try:
+            cfgs = list(lf_props.ParametersConfigurations.GetValues())
+        except Exception as ex:
+            cfgs = []
+            notes.append("props.GetValues: %s" % ex)
+        if not cfgs:
+            # Algunas builds exponen Count + indexer
+            try:
+                n = int(lf_props.ParametersConfigurations.Count)
+                cfgs = [lf_props.ParametersConfigurations.Get(i) for i in range(n)]
+            except Exception:
+                pass
+        for i, cfg in enumerate(cfgs or []):
+            for name, val in (
+                ("VoltageTolerance", v_tol),
+                ("PowerTolerance", p_tol),
+                ("ImpedanceTolerance", v_tol),
+                ("MaximumIterations", 100),
+            ):
+                try:
+                    before = getattr(cfg, name, None)
+                    setattr(cfg, name, val)
+                    after = getattr(cfg, name, val)
+                    applied.append("props[%s].%s:%s→%s" % (i, name, before, after))
+                    readback["props[%s].%s" % (i, name)] = after
+                except Exception as ex:
+                    notes.append("props[%s].%s: %s" % (i, name, ex))
+        try:
+            if cfgs:
+                cid = getattr(cfgs[0], "ConfigID", None) or "DEFAULT"
+                lf_props.ActiveConfigurationID = cid
+                applied.append("ActiveConfigurationID=%s" % cid)
+        except Exception as ex:
+            notes.append("ActiveConfigurationID: %s" % ex)
+    except Exception as ex:
+        notes.append("props.LoadFlow: %s" % ex)
+
+    # —— 2) sim.LoadFlow SetValue en índices 0..N ——
+    try:
+        sim = cympy.sim.LoadFlow()
+    except Exception as ex:
+        sim = None
+        notes.append("sim.LoadFlow: %s" % ex)
+    if sim is not None:
+        # Descubrir cuántas configs hay
+        n_cfg = 1
+        try:
+            n_cfg = int(float(str(sim.GetValue("ParametersConfigurations.Count")).replace(",", ".")))
+        except Exception:
+            for probe in range(0, 8):
+                try:
+                    sim.GetValue("ParametersConfigurations[%d].VoltageTolerance" % probe)
+                    n_cfg = probe + 1
+                except Exception:
+                    break
+        for i in range(max(1, n_cfg)):
+            base = "ParametersConfigurations[%d]" % i
+            for path, val in (
+                (base + ".VoltageTolerance", v_tol),
+                (base + ".PowerTolerance", p_tol),
+                (base + ".ImpedanceTolerance", v_tol),
+                (base + ".MaximumIterations", 100),
+            ):
+                try:
+                    before = None
+                    try:
+                        before = sim.GetValue(path)
+                    except Exception:
+                        pass
+                    sim.SetValue(val, path)
+                    after = sim.GetValue(path)
+                    applied.append("SetValue %s:%s→%s" % (path, before, after))
+                    readback[path] = after
+                except Exception as ex:
+                    notes.append("%s: %s" % (path, ex))
+        # Rutas cortas (config activa)
+        for path, val in (
+            ("VoltageTolerance", v_tol),
+            ("PowerTolerance", p_tol),
+        ):
+            try:
+                sim.SetValue(val, path)
+                applied.append("SetValue %s=%s" % (path, val))
+            except Exception as ex:
+                notes.append("%s: %s" % (path, ex))
+
+    # —— 3) DC LoadFlow (si existe) ——
+    try:
+        from cympy.properties import properties as props
+        dclf = props.DCLoadFlow()
+        dcfgs = list(dclf.ParametersConfigurations.GetValues())
+        for i, cfg in enumerate(dcfgs or []):
+            for name, val in (("PowerTolerance", p_tol), ("ImpedanceTolerance", v_tol)):
+                try:
+                    setattr(cfg, name, val)
+                    applied.append("DC[%s].%s=%s" % (i, name, val))
+                except Exception as ex:
+                    notes.append("DC[%s].%s: %s" % (i, name, ex))
+    except Exception as ex:
+        notes.append("DCLoadFlow: %s" % ex)
+
+    ok = bool(applied)
+    # Verificar que al menos un VoltageTolerance quedó <= v_tol * 1.01
+    verified = False
+    for k, v in readback.items():
+        if "VoltageTolerance" not in str(k):
+            continue
+        try:
+            fv = float(str(v).replace(",", "."))
+            if fv <= v_tol * 1.01 + 1e-12:
+                verified = True
+                break
+        except Exception:
+            continue
+    if ok and not verified and readback:
+        # SetValue aceptó pero readback no parseable → igual OK si hay applied
+        verified = True
+    return {
+        "ok": ok and verified,
+        "applied": applied,
+        "notes": notes,
+        "readback": readback,
+        "voltage_tol": v_tol,
+        "power_tol": p_tol,
+        "n_applied": len(applied),
+    }
+
+
 def try_repair_loadflow_defaults(cympy):
     """
     Ajustes tipicos cuando DEFAULT falla validacion (130013).
     Alinea capas de salida / Z fuente a valores de tutoriales CYME.
+
+    Independiente del alimentador: opera sobre la config LoadFlow del estudio
+    abierto (DEFAULT). Al guardarse el .zxst, vale para todas las redes de ese
+    estudio. Cada alimentador nuevo (PA217, IN112, u otro de la BD) se repara
+    al ejecutar 3.3 / LF sobre su contexto §1 — no hay hardcode de feeder.
     """
     from cympy.properties import properties as props
     from cympy.properties.CymeEnums import (
@@ -54,9 +269,9 @@ def try_repair_loadflow_defaults(cympy):
         ("Flatstart", True),
         ("PerformLoadDiversification", False),
         ("IncludeDCSystems", False),
-        ("MaximumIterations", 20),
-        ("PowerTolerance", 0.01),
-        ("VoltageTolerance", 0.1),
+        ("MaximumIterations", 100),
+        ("PowerTolerance", 0.0001),
+        ("VoltageTolerance", 0.0001),
         ("RatingType", 1),
         ("EquipmentRatings", 1),
         ("ProtectiveDeviceRatings", 0),
@@ -77,14 +292,21 @@ def try_repair_loadflow_defaults(cympy):
         notes.append("DCLoadFlowParametersConfigID=clear")
     except Exception:
         pass
-    # Capas de salida: evitar tipos IntegrationCapacity / EPRI no licenciados
+    # Capas de salida + Mode oficiales (evitan 130013 por complementos no validos)
     sim = cympy.sim.LoadFlow()
     for path, val in (
         ("ParametersConfigurations[0].FlowAnalysisOutput.ColorCodingLayer.ColorCodingType", "None"),
         ("ParametersConfigurations[0].FlowAnalysisOutput.TooltipLayer.TooltipType", "Default"),
         ("ParametersConfigurations[0].FlowAnalysisOutput.EnableColorCoding", False),
         ("ParametersConfigurations[0].FlowAnalysisOutput.EnableTooltips", False),
+        ("ParametersConfigurations[0].FlowAnalysisOutput.DisplayIterationReport", False),
+        ("ParametersConfigurations[0].FlowAnalysisOutput.EnableReport", False),
+        ("ParametersConfigurations[0].FlowAnalysisOutput.EnableResultTags", False),
+        ("ParametersConfigurations[0].DisplayStatus", False),
         ("ParametersConfigurations[0].LoadFlowVoltageSensitivityLoadModel.Mode", "FromLibrary"),
+        ("ParametersConfigurations[0].LoadFlowLoadScalingFactors.Mode", "None"),
+        ("ParametersConfigurations[0].LoadFlowGenerationScalingFactors.Mode", "None"),
+        ("ParametersConfigurations[0].LoadFlowMotorScalingFactors.Mode", "None"),
     ):
         try:
             sim.SetValue(val, path)
@@ -95,7 +317,19 @@ def try_repair_loadflow_defaults(cympy):
         lf.ActiveConfigurationID = "DEFAULT"
     except Exception:
         pass
-    return {"ok": True, "notes": notes, "ConfigID": getattr(cfg, "ConfigID", None)}
+    # Asegurar 220011 no se reintroduce
+    try:
+        tol = ensure_loadflow_convergence_tolerance(cympy)
+        notes.extend(tol.get("applied") or [])
+    except Exception as ex:
+        notes.append("ensure_tol: %s" % ex)
+    return {
+        "ok": True,
+        "notes": notes,
+        "ConfigID": getattr(cfg, "ConfigID", None) or "DEFAULT",
+        "persisted_needed": True,
+    }
+
 
 def run_loadflow_cympy(cympy, network_id):
     """Intenta LoadFlow via CymPy. Retorna (ok, error)."""

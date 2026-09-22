@@ -352,9 +352,9 @@ def _is_problem_row(r):
 
 
 def _diag_summary_from_rows(rows, settings, phase="before"):
-    by_code = Counter((r.get("Codigo") or "(sin_codigo)") for r in rows)
-    by_sev = Counter((r.get("Severidad") or "") for r in rows)
     problems = [r for r in rows if _is_problem_row(r)]
+    by_code = Counter((r.get("Codigo") or "(sin_codigo)") for r in problems)
+    by_sev = Counter((r.get("Severidad") or "") for r in problems)
     n_err = sum(1 for r in problems if (r.get("Severidad") or "") == "Error")
     n_warn = sum(1 for r in problems if (r.get("Severidad") or "") == "Warning")
     n_hint = sum(1 for r in problems if (r.get("Severidad") or "") == "Hint")
@@ -363,7 +363,8 @@ def _diag_summary_from_rows(rows, settings, phase="before"):
         "feeder_id": settings.get("feeder_id"),
         "network_id": settings.get("network_id"),
         "timestamp": ts(),
-        "total_messages": len(rows),
+        # Tablero «Errores»: solo filas que aún requieren corrección
+        "total_messages": len(problems),
         "n_problems": len(problems),
         "n_errors": n_err,
         "n_warnings": n_warn,
@@ -382,6 +383,7 @@ def _diag_summary_from_rows(rows, settings, phase="before"):
             for r in problems[:40]
         ],
         "ready_model": len(problems) == 0,
+        "n_messages_raw": len(rows),
     }
 
 
@@ -508,9 +510,15 @@ def propose_corrections(settings=None):
 
 
 def apply_corrections(settings=None, fix_voltages=True):
-    """Aplica correcciones (CSV propuesto o hoja Correcciones) + tensiones base."""
+    """Aplica correcciones (CSV propuesto o hoja Correcciones) + tensiones base.
+
+    Tras bulk_fix, cierra DEFAULT restantes del alimentador con equipos de
+    biblioteca/fichas respetando la sección mm2 del tramo (API CymPy).
+    """
     from pipeline.bulk_fix import main as bulk_main
     from pipeline.fix_base_voltages import ensure_base_voltages
+    from core.equipment_library import fix_defaults_on_network, inventory_library
+    from pipeline.build_corrections_from_diagnostic import _catalog_size_hints
 
     s = settings or load_settings()
     _pause_gui(s)
@@ -520,12 +528,26 @@ def apply_corrections(settings=None, fix_voltages=True):
     err_n = sum(1 for r in preview if (r.get("Estado") or "") == "ERROR")
 
     volt = None
-    if fix_voltages and not s.get("dry_run"):
+    defaults_fix = None
+    if not s.get("dry_run"):
         api = load_json("config/cympy_api_map.json")
         c = require_cympy(s)
         a = CymPyAdapter(c, api, s)
         a.open_study()
-        volt = ensure_base_voltages(c, s, a)
+        try:
+            inv = inventory_library(c)
+            hints = _catalog_size_hints(s)
+            defaults_fix = fix_defaults_on_network(
+                a, s, inventory=inv, catalog_hints=hints
+            )
+            n_ok_def = sum(1 for r in (defaults_fix or []) if r.get("Estado") == "OK")
+            print("DEFAULT→equipo real (sección/ficha):", n_ok_def, "de", len(defaults_fix or []))
+        except Exception as ex_def:
+            print("AVISO fix DEFAULT por sección:", ex_def)
+            defaults_fix = [{"Estado": "ERROR", "Detalle": str(ex_def)}]
+
+        if fix_voltages:
+            volt = ensure_base_voltages(c, s, a)
         if s.get("save_after_fix", True):
             try:
                 a.save_study()
@@ -544,6 +566,11 @@ def apply_corrections(settings=None, fix_voltages=True):
         "preview_csv": output_path(s, "preview_changes.csv"),
         "preview": preview[:100],
         "base_voltages": volt,
+        "defaults_by_section": {
+            "n": len(defaults_fix or []),
+            "n_ok": sum(1 for r in (defaults_fix or []) if r.get("Estado") == "OK"),
+            "rows": (defaults_fix or [])[:80],
+        },
     }
 
 
@@ -560,10 +587,14 @@ def check_convergence(settings=None, run_lf=True):
         "converge": None,
         "loadflow": None,
         "status": "ok",
+        "ok": False,
+        "msg": "",
     }
     if s.get("dry_run"):
         result["converge"] = "DRY_RUN"
         result["status"] = "dry_run"
+        result["ok"] = True
+        result["msg"] = "2.4 · Converge = DRY_RUN (sin CYMDIST)"
         return result
 
     def _topo_numeric_ok(topo):
@@ -580,6 +611,29 @@ def check_convergence(settings=None, run_lf=True):
             return True
         except Exception:
             return False
+
+    def _finish(res):
+        """Normaliza msg/ok según converge para la UI §2.4."""
+        conv = res.get("converge")
+        fid = res.get("feeder_id") or s.get("feeder_id") or "?"
+        if conv == "SI":
+            res["ok"] = True
+            res["msg"] = (
+                "2.4 · Converge = SI · alimentador %s · red %s"
+                % (fid, res.get("network_id") or s.get("network_id") or "—")
+            )
+        elif conv == "NO":
+            res["ok"] = False
+            err = res.get("error") or "LoadFlow sin resultados válidos"
+            res["msg"] = "2.4 · Converge = NO · %s · %s" % (fid, err)
+        elif conv == "DESCONOCIDO":
+            res["ok"] = False
+            res["msg"] = "2.4 · Converge = DESCONOCIDO · %s · %s" % (
+                fid, res.get("error") or "no se pudo verificar"
+            )
+        else:
+            res["msg"] = "2.4 · Converge = %s · %s" % (conv or "—", fid)
+        return res
 
     lf = None
     if run_lf:
@@ -598,7 +652,7 @@ def check_convergence(settings=None, run_lf=True):
             result["status"] = "lf_error"
             result["error"] = lf.get("error")
             _persist_gate(s, result)
-            return result
+            return _finish(result)
         # COM: resultados viven en el proceso Cyme ya cerrado → confiar en topo
         if (lf.get("engine") or "").upper() == "COM":
             if _topo_numeric_ok(lf.get("topo") or {}):
@@ -619,7 +673,7 @@ def check_convergence(settings=None, run_lf=True):
             }], ["Utility", "Feeder", "Escenario", "Converge", "Estado", "Timestamp"])
             result["csv"] = out
             _persist_gate(s, result)
-            return result
+            return _finish(result)
 
     _pause_gui(s)
     api = load_json("config/cympy_api_map.json")
@@ -650,7 +704,7 @@ def check_convergence(settings=None, run_lf=True):
     }], ["Utility", "Feeder", "Escenario", "Converge", "Estado", "Timestamp"])
     result["csv"] = out
     _persist_gate(s, result)
-    return result
+    return _finish(result)
 
 
 def _persist_gate(settings, converge_result, extra=None):
@@ -853,7 +907,7 @@ def isolate_feeder_sources(settings=None):
 
 def run_until_converges(settings=None, max_iters=3, skip_initial_lf=False):
     """
-    Diagnostica → propone → corrige → verifica convergencia, hasta Converge=SI.
+    Diagnostica → propone → corrige (equipos/fichas + sección tramo) → verifica.
 
     max_iters: ciclos de corrección (default 3).
     """
@@ -876,21 +930,35 @@ def run_until_converges(settings=None, max_iters=3, skip_initial_lf=False):
             iso.get("after"), iso.get("work_path") or s.get("study_path")))
         final["isolation"] = iso
         if not iso.get("ok"):
-            log.append("AVISO aislamiento incompleto: %s" % (iso.get("error") or iso))
-            # Sin aislamiento fiable el ciclo multi-red no puede limpiar 480067
-            final["error"] = "Aislamiento de red falló: %s" % (iso.get("error") or iso.get("method"))
-            final["log"] = log
-            _persist_gate(s, {"converge": "NO", "status": "isolate_error"}, {
-                "n_problems": -1,
-                "ready_model": False,
-                "last_error": final["error"],
-            })
-            return final
+            # No abortar: continuar con estudio multi-red (aviso). El hard-fail
+            # dejaba 2.6 en «Job falló» sin intentar correcciones de equipos.
+            log.append(
+                "AVISO aislamiento incompleto — se continúa con el estudio actual: %s"
+                % (iso.get("error") or iso.get("method"))
+            )
+            final["isolation_warning"] = iso.get("error") or iso.get("method")
         elif s.get("isolated_work_study"):
             log.append("Ciclo usa estudio trabajo (1 red): %s" % s.get("study_path"))
     except Exception as ex:
         log.append("AVISO aislamiento redes: %s" % ex)
         final["isolation_error"] = str(ex)
+
+    # Paso -0.5: alinear biblioteca con fichas técnicas (AAAC / XLPE) si existen
+    try:
+        sync_info = _sync_equipment_fichas(s)
+        final["equipment_sync"] = sync_info
+        log.append(
+            "Sync equipos/fichas: ok=%s aaac=%s cable=%s msg=%s"
+            % (
+                sync_info.get("ok"),
+                sync_info.get("n_aaac"),
+                sync_info.get("n_cable"),
+                sync_info.get("msg") or sync_info.get("error") or "",
+            )
+        )
+    except Exception as ex_sync:
+        log.append("AVISO sync fichas equipos: %s" % ex_sync)
+        final["equipment_sync_error"] = str(ex_sync)
 
     # Paso 0: diagnóstico + intento de convergencia (ver errores presentes)
     step0 = {"iter": 0, "action": "diagnostico_inicial"}
@@ -908,6 +976,8 @@ def run_until_converges(settings=None, max_iters=3, skip_initial_lf=False):
         step0["error"] = str(ex)
         final["iterations"].append(step0)
         final["error"] = "Fallo NetworkDiagnostic: %s" % ex
+        final["msg"] = final["error"]
+        final["log"] = log
         _persist_gate(s, {"converge": "NO", "status": "diag_error"}, {"last_error": str(ex), "n_problems": -1})
         return final
 
@@ -962,20 +1032,25 @@ def run_until_converges(settings=None, max_iters=3, skip_initial_lf=False):
             log.append("Iter %s: %s correcciones activas / %s total" % (
                 i, prop.get("n_activas"), prop.get("n_total")))
 
-            if prop.get("n_activas"):
-                applied = apply_corrections(s, fix_voltages=True)
-                step["applied"] = {
-                    "ok": applied.get("ok"),
-                    "n_ok": applied.get("n_ok"),
-                    "n_error": applied.get("n_error"),
-                    "base_voltages": applied.get("base_voltages"),
-                }
-                log.append("Iter %s: aplicadas OK=%s ERR=%s" % (
-                    i, applied.get("n_ok"), applied.get("n_error")))
-            else:
+            # Siempre aplicar: bulk (CSV) + DEFAULT por sección (biblioteca/fichas)
+            applied = apply_corrections(s, fix_voltages=True)
+            step["applied"] = {
+                "ok": applied.get("ok"),
+                "n_ok": applied.get("n_ok"),
+                "n_error": applied.get("n_error"),
+                "base_voltages": applied.get("base_voltages"),
+                "defaults_by_section": applied.get("defaults_by_section"),
+            }
+            log.append("Iter %s: aplicadas OK=%s ERR=%s DEFAULT_seccion=%s" % (
+                i,
+                applied.get("n_ok"),
+                applied.get("n_error"),
+                (applied.get("defaults_by_section") or {}).get("n_ok"),
+            ))
+            if not prop.get("n_activas"):
                 step["note"] = (
-                    "Sin correcciones auto-aplicables; quedan filas 'revisar' "
-                    "segun manual CYME o falta biblioteca de equipos."
+                    "Sin filas auto en CSV; se aplicó cierre DEFAULT por sección "
+                    "con tablas de equipos / fichas técnicas."
                 )
 
             d_after = run_network_diagnostic(s, suffix="after")
@@ -1011,8 +1086,9 @@ def run_until_converges(settings=None, max_iters=3, skip_initial_lf=False):
                 return final
 
             final["iterations"].append(step)
-            # Si solo quedan 'revisar' y ya no hay activas, no tiene sentido iterar más
-            if not prop.get("n_activas") and n_prob > 0:
+            # Si no hay activas ni DEFAULT corregidos y siguen problemas → stop
+            n_def = (applied.get("defaults_by_section") or {}).get("n_ok") or 0
+            if not prop.get("n_activas") and n_def == 0 and n_prob > 0:
                 log.append("Stop: quedan problemas sin auto-fix (revisar manual).")
                 break
         except Exception as ex:
@@ -1036,9 +1112,12 @@ def run_until_converges(settings=None, max_iters=3, skip_initial_lf=False):
     final["log"] = log
     final["msg"] = (
         "No se limpio el diagnostico (Error/Warning/Hint) y/o no converge en %s ciclo(s). "
-        "Revise correcciones Accion=revisar y el catalogo cymdist.cymsg."
+        "Revise correcciones Accion=revisar y el catalogo cymdist.cymsg. "
+        "Equipos: se usaron tablas de biblioteca + fichas AAAC/XLPE respetando sección del tramo."
         % max_iters
     )
+    if not final.get("error"):
+        final["error"] = final["msg"]
     _persist_gate(s, {"converge": last_conv, "status": "max_iters"}, {
         "iters": max_iters,
         "n_problems": last_prob,
@@ -1046,3 +1125,37 @@ def run_until_converges(settings=None, max_iters=3, skip_initial_lf=False):
         "last_error": final.get("error"),
     })
     return final
+
+
+def _sync_equipment_fichas(settings):
+    """Sincroniza biblioteca CYMDIST desde fichas AAAC/XLPE (si existen en disco)."""
+    s = settings or load_settings()
+    eq_dir = s.get("common_equipment_dir") or "data/input/common/equipment"
+    if not os.path.isabs(eq_dir):
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        eq_dir = os.path.join(root, eq_dir)
+    aaac = os.path.join(eq_dir, "AAAC_6201_T81_CYMDIST_9_referenciado.xlsx")
+    cable = os.path.join(eq_dir, "Cable_Subterraneo_Cobre_XLPE_18-30kV_CYMDIST_v4.xlsx")
+    if not os.path.isfile(aaac) and not os.path.isfile(cable):
+        return {
+            "ok": True,
+            "skipped": True,
+            "msg": "Sin fichas en %s — se usa biblioteca ya cargada en MDB" % eq_dir,
+            "n_aaac": 0,
+            "n_cable": 0,
+        }
+    try:
+        from pipeline import sync_equipment_from_excel as sync_mod
+        # Reusa main() pero no debe tumbar el ciclo si falla
+        sync_mod.main()
+        return {
+            "ok": True,
+            "skipped": False,
+            "msg": "Biblioteca alineada con fichas técnicas",
+            "n_aaac": 1 if os.path.isfile(aaac) else 0,
+            "n_cable": 1 if os.path.isfile(cable) else 0,
+            "aaac": aaac if os.path.isfile(aaac) else None,
+            "cable": cable if os.path.isfile(cable) else None,
+        }
+    except Exception as ex:
+        return {"ok": False, "error": str(ex), "n_aaac": 0, "n_cable": 0}

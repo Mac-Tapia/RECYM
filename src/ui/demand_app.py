@@ -48,6 +48,8 @@ from core.clientes_suministro import (
 from core.spot_load_new import compute_pq
 
 UI_VERSION = "5.10"
+# RECYM_SPA=1: la SPA React (FastAPI) sirve `/`; Flask solo expone /api/* (+ /tablero legado).
+SPA_MODE = os.environ.get("RECYM_SPA", "0") in ("1", "true", "True", "yes")
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
@@ -748,14 +750,35 @@ async function uiActualizar(){
   const msg = document.getElementById('hdrMsg');
   const b = document.getElementById('btnUiActualizar');
   if (b) b.disabled = true;
-  if (msg) msg.textContent = 'Actualizando listas y estado…';
+  if (msg) msg.textContent = 'Actualizando… vaciando tablero…';
   try{
     uiLiberarBusy();
+    // Vaciar Tablero dinámico (errores/códigos → 0) de forma durable
+    try {
+      const r = await fetch('/api/ui/actualizar', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: '{}',
+        cache: 'no-store',
+      });
+      const j = await r.json().catch(function(){ return {}; });
+      if (j && j.ok === false) throw new Error(j.error || 'ui/actualizar falló');
+    } catch (eTab) {
+      console.warn('ui/actualizar', eTab);
+      try {
+        await fetch('/api/tablero?clear=1', {cache: 'no-store'});
+      } catch (e2) {}
+    }
     if (typeof refreshContextFiles === 'function') await refreshContextFiles();
     if (typeof mqLoadNetworks === 'function') await mqLoadNetworks(true);
     if (typeof refreshCiFiles === 'function') await refreshCiFiles();
     if (typeof mqRefreshStatus === 'function') await mqRefreshStatus();
-    if (msg) msg.innerHTML = '<span class="ok">Actualizado · UI v'+ (document.getElementById('hdrBadge')||{}).textContent +'</span>';
+    if (msg) msg.innerHTML = '<span class="ok">Actualizado · Tablero en cero · UI v'+ (document.getElementById('hdrBadge')||{}).textContent +'</span>';
+    // Recarga suave para que §2 lea tablero.json vacío
+    setTimeout(function(){
+      const u = window.location.pathname + '?_r=' + Date.now();
+      window.location.replace(u);
+    }, 150);
   }catch(e){
     if (msg) msg.innerHTML = '<span class="err">'+e.message+'</span>';
   }finally{
@@ -3401,12 +3424,25 @@ def _safe_remove(path):
 
 
 def reset_downstream_after_cabecera(settings):
-    """Al guardar cabecera (§1): limpia artefactos de §§2–4 para forzar el flujo de nuevo.
+    """Al guardar/aplicar §1: limpia artefactos de §§2–4 y el Tablero dinámico.
 
+    El tablero debe quedar vacío hasta que se ejecute 2.1 · Diagnosticar.
     No borra dispositivos en CYMDIST; solo resultados/tablas de sesión RECYM.
     """
     removed = []
+    # §2 calidad / tablero → ceros (helper compartido con SPA)
+    try:
+        from analysis.build_dashboard import clear_tablero_diagnostics
+        tab = clear_tablero_diagnostics(settings, rebuild=False)
+        removed.extend(tab.get("cleared") or [])
+    except Exception as ex:
+        print("AVISO clear_tablero_diagnostics:", ex)
+
     targets = [
+        output_path(settings, "diagnostics", "correcciones_propuestas.csv"),
+        output_path(settings, "diagnostics", "diagnostico_tecnico.csv"),
+        output_path(settings, "preview_changes.csv"),
+        # §3–4
         output_path(settings, "clientes", "clientes_alimentador.json"),
         output_path(settings, "clientes", "clientes_alimentador.csv"),
         output_path(settings, "clientes", "apply_cymdist_report.csv"),
@@ -3419,8 +3455,29 @@ def reset_downstream_after_cabecera(settings):
     for p in targets:
         if _safe_remove(p):
             removed.append(os.path.basename(p))
+
+    # Gate de calidad: pendiente hasta 2.1
+    try:
+        from pipeline.run_demand_allocation import load_session, save_session
+        sess = load_session(settings)
+        if sess.get("model_quality_gate"):
+            sess.pop("model_quality_gate", None)
+            sess["status"] = sess.get("status") or "cabecera_ok"
+            save_session(settings, sess)
+            removed.append("model_quality_gate")
+    except Exception as ex:
+        print("AVISO clear gate sesión:", ex)
+
+    # Tablero vacío (códigos/errores en cero) para la SPA
+    try:
+        from analysis.build_dashboard import main as build_tablero
+        build_tablero(settings)
+        removed.append("tablero_reset")
+    except Exception as ex:
+        print("AVISO rebuild tablero vacío:", ex)
+
     _invalidate_caches()
-    return {"cleared": removed, "n": len(removed)}
+    return {"cleared": removed, "n": len(removed), "tablero_reset": True}
 
 def _loads(s, open_cymdist=True):
     """Inventario SpotLoad. Por defecto no abre CYMDIST si no hay JSON (evita colgar Armar tabla)."""
@@ -3472,6 +3529,13 @@ def _existing_load_ids(s):
 
 @app.route("/")
 def index():
+    if SPA_MODE:
+        return jsonify({
+            "ok": True,
+            "spa": True,
+            "ui_version": UI_VERSION,
+            "msg": "UI React en / (FastAPI). Flask legacy solo /api/*.",
+        })
     s = _settings()
     sess = seed_session_from_excel(s)
     mode = (sess.get("mode") or "KW_COSFI").upper()
@@ -3501,14 +3565,19 @@ def index():
 
 @app.route("/api/contexto/archivos")
 def api_contexto_archivos():
-    """Lista .mdb y .zxst disponibles en las carpetas configuradas."""
-    from core.feeder_context import list_database_files, list_study_files
+    """Lista .mdb, .zxst y alimentadores de la BD (cualquiera, sin fijo)."""
+    from core.feeder_context import list_database_files, list_study_files, list_bd_feeder_catalog
     from core.common import load_json
     try:
-        s = _settings()
+        from core.common import load_json
         global_s = load_json("config/settings.json")
+        try:
+            s = _settings()
+        except Exception:
+            s = global_s
         dbs = list_database_files(global_s)
         studies = list_study_files(global_s)
+        feeders = list_bd_feeder_catalog(global_s)
         cur_db = s.get("database_mdb") or global_s.get("database_mdb") or ""
         cur_st = (
             s.get("study_path")
@@ -3520,19 +3589,27 @@ def api_contexto_archivos():
             "ok": True,
             "databases": dbs,
             "studies": studies,
+            "feeders": feeders,
+            "n_feeders": len(feeders),
             "current_database": cur_db,
             "current_study": cur_st,
+            "current_feeder": s.get("feeder_id") or global_s.get("active_feeder") or "",
+            "current_network": s.get("network_id") or "",
             "database_dir": global_s.get("database_dir"),
             "projects_dir": global_s.get("projects_dir"),
+            "msg": "Cualquier alimentador de la BD se puede cargar (sin fijo).",
         })
     except Exception as ex:
-        return jsonify({"ok": False, "error": str(ex), "databases": [], "studies": []})
+        return jsonify({"ok": False, "error": str(ex), "databases": [], "studies": [], "feeders": []})
 
 
 @app.route("/api/contexto/aplicar", methods=["POST"])
 def api_contexto_aplicar():
-    """Persiste BD y/o estudio elegidos en settings (+ feeder si aplica)."""
-    from core.feeder_context import apply_context_selection
+    """Persiste BD y/o estudio elegidos en settings (+ feeder si aplica).
+
+    Reinicia Tablero dinámico / gate §2: sin valores hasta 2.1 · Diagnosticar.
+    """
+    from core.feeder_context import apply_context_selection, load_settings
     body = request.get_json(silent=True) or {}
     try:
         result = apply_context_selection(
@@ -3550,6 +3627,22 @@ def api_contexto_aplicar():
             clear_networks_cache()
         except Exception:
             pass
+        # §1 re-aplicado → limpiar diagnósticos previos del tablero
+        reset_info = None
+        try:
+            fid = (result.get("feeder_id") or body.get("feeder") or "").strip()
+            s = load_settings(feeder_id=fid, synthesize=True) if fid else _settings()
+            if body.get("study_path"):
+                s["study_path"] = body.get("study_path")
+            reset_info = reset_downstream_after_cabecera(s)
+            result["reset_downstream"] = reset_info
+            result["msg"] = (
+                (result.get("msg") or "Contexto aplicado")
+                + " · Tablero §2 reiniciado (ejecute 2.1 Diagnosticar)"
+            )
+        except Exception as ex_reset:
+            print("AVISO reset tablero tras contexto:", ex_reset)
+            result["reset_error"] = str(ex_reset)
         return jsonify(result)
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
@@ -3574,9 +3667,57 @@ def api_ui_ping():
     })
 
 
+@app.route("/api/ui/actualizar", methods=["POST", "GET"])
+def api_ui_actualizar():
+    """Actualizar (sidebar): vacía Tablero dinámico → ceros y refresca cachés.
+
+    Los campos (errores, códigos, muestra) quedan en 0 hasta 2.1 · Diagnosticar.
+    No abre CYMDIST.
+    """
+    tablero_info = None
+    try:
+        from analysis.build_dashboard import clear_tablero_diagnostics
+        s = _settings()
+        feeder = (request.headers.get("X-Feeder") or "").strip()
+        if feeder:
+            from core.feeder_context import load_settings
+            s = load_settings(feeder_id=feeder, synthesize=True)
+        tablero_info = clear_tablero_diagnostics(s, rebuild=True)
+    except Exception as ex:
+        print("AVISO ui/actualizar tablero:", ex)
+        tablero_info = {"ok": False, "error": str(ex)}
+    try:
+        from pipeline.model_quality_gate import clear_networks_cache
+        clear_networks_cache()
+    except Exception:
+        pass
+    try:
+        _invalidate_caches()
+    except Exception:
+        pass
+    board = (tablero_info or {}).get("tablero") or {}
+    before = board.get("before") or (tablero_info or {}).get("before") or {}
+    after = board.get("after") or (tablero_info or {}).get("after") or {}
+    return jsonify({
+        "ok": True,
+        "ui_version": UI_VERSION,
+        "tablero_reset": True,
+        "has_diagnostic": False,
+        "before": before,
+        "after": after,
+        "errores_antes": before.get("total_messages", 0),
+        "errores_despues": after.get("total_messages", 0),
+        "cleared": (tablero_info or {}).get("cleared"),
+        "msg": "Tablero en cero · pulse 2.1 Diagnosticar para cargar resultados",
+    })
+
+
 @app.route("/api/ui/reset", methods=["POST"])
 def api_ui_reset():
-    """Limpia cachés en memoria para desbloquear UI colgada / datos viejos."""
+    """Limpia cachés, vacía Tablero y limpia medición de cabecera del alimentador.
+
+    Restablecer sí deja P/Q/Vll/fecha vacíos; Actualizar no toca la sesión.
+    """
     try:
         from pipeline.model_quality_gate import clear_networks_cache
         clear_networks_cache()
@@ -3586,10 +3727,42 @@ def api_ui_reset():
         _invalidate_caches()
     except Exception as ex:
         print("AVISO _invalidate_caches:", ex)
+    tablero_info = None
+    try:
+        from analysis.build_dashboard import clear_tablero_diagnostics
+        s = _settings()
+        feeder = (request.headers.get("X-Feeder") or "").strip()
+        if feeder:
+            from core.feeder_context import load_settings
+            s = load_settings(feeder_id=feeder, synthesize=True)
+        tablero_info = clear_tablero_diagnostics(s, rebuild=True)
+    except Exception as ex:
+        print("AVISO clear tablero en ui/reset:", ex)
+        tablero_info = {"ok": False, "error": str(ex)}
+    cabecera_cleared = False
+    try:
+        s = _settings()
+        feeder = (request.headers.get("X-Feeder") or "").strip()
+        if feeder:
+            s = load_settings(feeder_id=feeder, synthesize=True)
+        sess = load_session(s)
+        for k in ("P_kW", "Q_kvar", "I_A", "Va_kV", "Vb_kV", "Vc_kV"):
+            sess[k] = None
+        sess["Vll_kV"] = None
+        sess["fecha_medicion"] = ""
+        sess["status"] = "empty"
+        sess.pop("allocation", None)
+        sess.pop("last_allocation", None)
+        save_session(s, sess)
+        cabecera_cleared = True
+    except Exception as ex:
+        print("AVISO clear cabecera en ui/reset:", ex)
     return jsonify({
         "ok": True,
         "ui_version": UI_VERSION,
-        "msg": "Caches limpiadas. Recargue la pagina.",
+        "tablero_reset": tablero_info,
+        "cabecera_cleared": cabecera_cleared,
+        "msg": "Caches limpiadas · Tablero en cero · cabecera vacía. Recargue la pagina.",
     })
 
 
@@ -3630,7 +3803,53 @@ def api_calidad_ejecutar_seleccionados():
 @app.route("/api/calidad/diagnosticar", methods=["POST"])
 def api_calidad_diagnosticar():
     from pipeline.model_quality_gate import run_network_diagnostic
-    return _cympy_run("calidad_diagnosticar", lambda: run_network_diagnostic(_settings(), suffix=""))
+    from analysis.build_dashboard import main as build_tablero
+    import shutil
+
+    def _run():
+        s = _settings()
+        result = run_network_diagnostic(s, suffix="")
+        summary = (result.get("summary") or {}) if isinstance(result, dict) else {}
+        try:
+            before_path = output_path(s, "diagnostics", "dashboard_summary.json")
+            after_path = output_path(s, "diagnostics", "dashboard_summary_after.json")
+            before_csv = output_path(s, "diagnostics", "cymdist_diagnostic_errors.csv")
+            after_csv = output_path(s, "diagnostics", "cymdist_diagnostic_errors_after.csv")
+            summary = dict(summary)
+            summary["empty"] = False
+            summary.setdefault("phase", "before")
+            after_summary = dict(summary)
+            after_summary["phase"] = "after"
+            after_summary["empty"] = False
+            with open(before_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2, ensure_ascii=False)
+            with open(after_path, "w", encoding="utf-8") as f:
+                json.dump(after_summary, f, indent=2, ensure_ascii=False)
+            if os.path.isfile(before_csv):
+                shutil.copy2(before_csv, after_csv)
+            build_tablero(s)
+            if isinstance(result, dict):
+                result["tablero_updated"] = True
+                result["summary"] = summary
+                result["tablero"] = {
+                    "before": summary,
+                    "after": after_summary,
+                    "total_messages": summary.get("total_messages"),
+                    "by_code": summary.get("by_code"),
+                    "top_errors": summary.get("top_errors"),
+                    "n_problems": summary.get("n_problems"),
+                    "has_diagnostic": True,
+                }
+                result["msg"] = (
+                    "Diagnóstico OK · %s msgs · tablero actualizado"
+                    % summary.get("total_messages")
+                )
+        except Exception as ex:
+            if isinstance(result, dict):
+                result["tablero_error"] = str(ex)
+        return result
+
+    return _cympy_run("calidad_diagnosticar", _run)
 
 
 @app.route("/api/calidad/diagnosticar_sistema", methods=["POST"])
@@ -3692,17 +3911,79 @@ def api_calidad_hasta_limpio():
     return _cympy_run("calidad_hasta_limpio", _run)
 
 
-@app.route("/api/cabecera", methods=["POST"])
+def _cabecera_payload_from_session(s, sess):
+    """Serializa la última medición guardada (session.json) para la SPA §1."""
+    vll = sess.get("Vll_kV")
+    try:
+        vll_f = float(vll) if vll not in (None, "") else None
+    except Exception:
+        vll_f = None
+    va = sess.get("Va_kV")
+    vb = sess.get("Vb_kV")
+    vc = sess.get("Vc_kV")
+    if vll_f and vll_f > 0:
+        vln = vll_f / (3.0 ** 0.5)
+        if va in (None, ""):
+            va = round(vln, 4)
+        if vb in (None, ""):
+            vb = round(vln, 4)
+        if vc in (None, ""):
+            vc = round(vln, 4)
+    return {
+        "ok": True,
+        "feeder_id": s.get("feeder_id"),
+        "network_id": s.get("network_id"),
+        "mode": sess.get("mode") or "KW_KVAR",
+        "P_kW": sess.get("P_kW"),
+        "Q_kvar": sess.get("Q_kvar"),
+        "cosfi": sess.get("cosfi"),
+        "I_A": sess.get("I_A"),
+        "Vll_kV": vll_f,
+        "Va_kV": va,
+        "Vb_kV": vb,
+        "Vc_kV": vc,
+        "fecha_medicion": sess.get("fecha_medicion") or "",
+        "status": sess.get("status") or "empty",
+    }
+
+
+@app.route("/api/cabecera", methods=["GET", "POST"])
 def api_cabecera():
+    """GET: últimos P/Q/Vll/fases/fecha del alimentador.
+    POST: guarda sesión + escribe SetDemand/OperatingVoltage en CYMDIST.
+    """
+    if request.method == "GET":
+        feeder = (
+            (request.headers.get("X-Feeder") or "").strip()
+            or (request.args.get("feeder") or "").strip()
+            or None
+        )
+        if feeder:
+            s = load_settings(feeder_id=feeder, synthesize=True)
+        else:
+            s = _settings()
+        try:
+            sess = seed_session_from_excel(s, force=False)
+        except Exception:
+            sess = load_session(s)
+        return jsonify(_cabecera_payload_from_session(s, sess))
+
     body = request.get_json(force=True) or {}
-    # Aplicar BD/estudio del numeral 1 antes de escribir (IN112.zxst -> feeder IN112).
+    # Aplicar BD/estudio del numeral 1 antes de escribir.
+    # El alimentador lo define el estudio (PA217.zxst → PA217), no un X-Feeder viejo (IN112).
+    ctx = None
     try:
         db = (body.get("database_mdb") or "").strip() or None
         st = (body.get("study_path") or "").strip() or None
         fid_body = (body.get("feeder") or "").strip() or None
+        # Si hay estudio, el stem manda sobre feeder/header obsoleto
+        if st:
+            stem = os.path.splitext(os.path.basename(st))[0]
+            if stem and stem.upper() != "ELD":
+                fid_body = stem
         if db or st or fid_body:
             from core.feeder_context import apply_context_selection
-            apply_context_selection(
+            ctx = apply_context_selection(
                 database_mdb=db,
                 study_path=st,
                 feeder_id=fid_body,
@@ -3711,7 +3992,16 @@ def api_cabecera():
     except Exception as ex:
         return jsonify({"ok": False, "error": "Contexto BD/estudio: %s" % ex})
 
-    feeder = (body.get("feeder") or "").strip() or None
+    feeder = None
+    if ctx and ctx.get("feeder_id"):
+        feeder = str(ctx.get("feeder_id")).strip() or None
+    if not feeder:
+        feeder = (body.get("feeder") or "").strip() or None
+    if not feeder and body.get("study_path"):
+        stem = os.path.splitext(os.path.basename(str(body.get("study_path"))))[0]
+        if stem and stem.upper() != "ELD":
+            feeder = stem
+
     if feeder:
         s = load_settings(feeder_id=feeder, synthesize=True)
     else:
@@ -3720,6 +4010,13 @@ def api_cabecera():
         s["study_path"] = body.get("study_path")
     if body.get("database_mdb"):
         s["database_mdb"] = body.get("database_mdb")
+    # Alinear network_id con el feeder del estudio (nunca mezclar IN112 + PA217)
+    if ctx and ctx.get("network_id"):
+        s["network_id"] = ctx.get("network_id")
+    if feeder and s.get("feeder_id") and str(s.get("feeder_id")).upper() != str(feeder).upper():
+        s = load_settings(feeder_id=feeder, synthesize=True)
+        if body.get("study_path"):
+            s["study_path"] = body.get("study_path")
 
     preview_only = bool(body.get("preview_only") or body.get("preview") or body.get("recalc_only"))
     try:
@@ -3761,6 +4058,23 @@ def api_cabecera():
         sess["I_A"] = float(body.get("I_A"))
     if body.get("Vll_kV") not in (None, ""):
         sess["Vll_kV"] = float(body.get("Vll_kV"))
+    # Tensiones de fase LN (kV) → fuente/equivalente CYMDIST (siempre persistir)
+    import math as _math
+    for _ph_key in ("Va_kV", "Vb_kV", "Vc_kV"):
+        if body.get(_ph_key) not in (None, ""):
+            try:
+                sess[_ph_key] = float(body.get(_ph_key))
+            except Exception:
+                pass
+    # Si hay Vll pero faltan fases, derivar Vll/√3 para que la UI no las pierda
+    if sess.get("Vll_kV") not in (None, "") and all(
+        sess.get(k) in (None, "") for k in ("Va_kV", "Vb_kV", "Vc_kV")
+    ):
+        try:
+            _vln = float(sess["Vll_kV"]) / _math.sqrt(3.0)
+            sess["Va_kV"] = sess["Vb_kV"] = sess["Vc_kV"] = round(_vln, 4)
+        except Exception:
+            pass
     sess["fecha_medicion"] = (body.get("fecha_medicion") or "").strip()
     sess["status"] = "cabecera_session_ok"
     if reset_flag:
@@ -3778,7 +4092,7 @@ def api_cabecera():
     except Exception as ex:
         print("AVISO sync Excel cabecera:", ex)
 
-    # Fase 2: SetDemand en SUBPROCESO (crash COM no mata waitress)
+    # Fase 2: SetDemand + tensiones fuente en SUBPROCESO (crash COM no mata waitress)
     from core.cympy_job import run_cympy_job
     job = run_cympy_job(
         "cabecera",
@@ -3789,6 +4103,10 @@ def api_cabecera():
             "database_mdb": s.get("database_mdb"),
             "P_kW": p,
             "Q_kvar": q,
+            "Vll_kV": sess.get("Vll_kV"),
+            "Va_kV": sess.get("Va_kV"),
+            "Vb_kV": sess.get("Vb_kV"),
+            "Vc_kV": sess.get("Vc_kV"),
         },
         settings=s,
         timeout_sec=int(os.environ.get("RECYM_CABECERA_TIMEOUT") or "90"),
@@ -3802,6 +4120,11 @@ def api_cabecera():
         "ok": cymdist_ok,
         "P_kW": p,
         "Q_kvar": q,
+        "Vll_kV": sess.get("Vll_kV"),
+        "Va_kV": sess.get("Va_kV"),
+        "Vb_kV": sess.get("Vb_kV"),
+        "Vc_kV": sess.get("Vc_kV"),
+        "fecha_medicion": sess.get("fecha_medicion") or "",
         "mode": sess.get("mode"),
         "feeder_id": s.get("feeder_id"),
         "network_id": s.get("network_id"),
@@ -3816,10 +4139,10 @@ def api_cabecera():
         "elapsed_sec": job.get("elapsed_sec"),
         "error": None if cymdist_ok else (job.get("error") or "Fallo SetDemand CYMDIST"),
         "msg": (
-            ("Cabecera OK en %s · SetDemand fisico · §§2-4 restablecidos" % (s.get("feeder_id") or ""))
+            ("Cabecera OK en %s · SetDemand + Vph fuente · §§2-4 restablecidos" % (s.get("feeder_id") or ""))
             if cymdist_ok and reset_info is not None
             else (
-                "Cabecera OK en CYMDIST (Demanda Total kW/kvar)"
+                "Cabecera OK en CYMDIST (Demanda Total kW/kvar + tensiones fuente)"
                 if cymdist_ok
                 else (
                     "Sesion/Excel guardados, pero CYMDIST fallo: %s. Cierre Cyme.exe y reintente Guardar."
@@ -3845,11 +4168,21 @@ def api_clientes_radiales():
     sum_file = (request.args.get("suministro_file") or "").strip() or None
     try:
         items, used = list_radiales_from_suministro(s, suministro_file=sum_file)
+        # Compat SPA: id + alias radial/RADIAL
+        radiales = [
+            {
+                "id": it.get("id"),
+                "radial": it.get("id"),
+                "RADIAL": it.get("id"),
+                "n": it.get("n"),
+            }
+            for it in (items or [])
+        ]
         return jsonify({
             "ok": True,
             "suministro_file": used,
-            "radiales": items,
-            "n": len(items),
+            "radiales": radiales,
+            "n": len(radiales),
             "default": s.get("feeder_id"),
         })
     except Exception as ex:
@@ -4010,31 +4343,132 @@ def api_clientes_tabla():
 
 @app.route("/api/clientes/activo", methods=["POST"])
 def api_clientes_activo():
-    """Persiste checkboxes Incluir/Activo sin reescribir CYMDIST."""
+    """Persiste checkboxes Incluir/Activo.
+
+    - Si no hay tabla Excel, siembra desde inventario SpotLoad (todas Incluir).
+    - Capacidad SED (260044) NO bloquea Incluir.
+    - apply_cymdist=true: conecta + dibuja símbolo de las incluidas (best-effort).
+    - merge_inventory=false (§3): no mezcla SpotLoad residual en la tabla cruzada.
+    """
     body = request.get_json(force=True) or {}
     s, _feeder, _feeders, _all = _settings_for_clientes(body)
+    from core.clientes_suministro import (
+        merge_activo, ensure_activo,
+        save_table_json, save_table_csv, ensure_clientes_table,
+        clientes_importantes_rows,
+    )
     json_path = output_path(s, "clientes", "clientes_alimentador.json")
-    rows = load_saved_clientes_rows(json_path)
-    if not rows:
-        return jsonify({"ok": False, "error": "No hay tabla armada. Pulse «Armar tabla» primero."})
+    merge_inv = body.get("merge_inventory")
+    if merge_inv is None:
+        merge_inv = True
     try:
-        meta = {}
-        if os.path.isfile(json_path):
-            with open(json_path, "r", encoding="utf-8") as f:
-                meta = (json.load(f).get("meta") or {})
+        rows, meta, json_path = ensure_clientes_table(
+            s, merge_inventory=bool(merge_inv)
+        )
+        # §3: mantener solo filas con EA (clientes importantes)
+        if not merge_inv:
+            ci = clientes_importantes_rows(rows)
+            if ci:
+                rows = ci
         rows = merge_activo(rows, activo_map=body.get("activo"))
+        rows = ensure_activo(rows, default=True)
+        meta = dict(meta or {})
         meta["n_activos"] = sum(1 for r in rows if r.get("Activo"))
         meta["n_excluidos"] = sum(1 for r in rows if not r.get("Activo"))
+        meta["capacity_not_blocking"] = True
+        meta["merge_inventory"] = bool(merge_inv)
         save_table_json(json_path, rows, meta)
         save_table_csv(output_path(s, "clientes", "clientes_alimentador.csv"), rows)
+
+        apply_info = None
+        if body.get("apply_cymdist") or body.get("draw") or body.get("sync_model"):
+            # Solo sync SpotLoads de clientes importantes (rápido)
+            apply_info = _sync_incluir_to_cymdist(s, clientes_importantes_rows(rows) or rows)
+
+        # Refrescar tablero JSON
+        try:
+            from analysis.build_dashboard import main as build_tablero
+            build_tablero()
+        except Exception as ex_b:
+            print("AVISO rebuild tablero tras activo:", ex_b)
+
         return jsonify({
             "ok": True,
             "rows": rows,
             "n_activos": meta["n_activos"],
             "n_excluidos": meta["n_excluidos"],
+            "n": len(rows),
+            "meta": meta,
+            "apply_cymdist": apply_info,
+            "msg": (
+                "Incluir guardado · %s activas · %s excluidas"
+                % (meta["n_activos"], meta["n_excluidos"])
+                + (" · modelo actualizado" if apply_info else "")
+            ),
         })
     except Exception as ex:
+        import traceback
+        traceback.print_exc()
         return jsonify({"ok": False, "error": str(ex)})
+
+
+def _sync_incluir_to_cymdist(settings, rows):
+    """Conecta/dibuja SpotLoads Incluir=SI; desconecta las excluidas.
+
+    No aborta por capacidad conectada (260044): intenta subir ConnectedKVA
+    o PF en best-effort y sigue.
+    """
+    from core.common import require_cympy, load_json, truthy
+    from core.cympy_adapter import CymPyAdapter
+    from pipeline.model_quality_gate import _pause_gui
+
+    _pause_gui(settings)
+    api = load_json("config/cympy_api_map.json")
+    c = require_cympy(settings)
+    a = CymPyAdapter(c, api, settings)
+    a.open_study(force_backup=False)
+    report = {"ok": 0, "excluded": 0, "drawn": 0, "capacity_fix": 0, "errors": []}
+    try:
+        for r in rows:
+            lid = str(r.get("LoadID_CYMDIST") or "").strip()
+            if not lid:
+                continue
+            activo = truthy(r.get("Activo", True))
+            try:
+                if not activo:
+                    a.set_load_connected(lid, False)
+                    report["excluded"] += 1
+                    continue
+                a.set_load_connected(lid, True)
+                if a._ensure_spot_symbol(lid):
+                    report["drawn"] += 1
+                # Capacidad / FP: best-effort, nunca bloquea Incluir
+                try:
+                    a.raise_load_connected_kva(lid)
+                    report["capacity_fix"] += 1
+                except Exception:
+                    pass
+                try:
+                    a.raise_spotload_power_factor(lid, float(settings.get("min_device_pf") or 0.85))
+                except Exception:
+                    pass
+                report["ok"] += 1
+            except Exception as ex:
+                report["errors"].append("%s: %s" % (lid, ex))
+        if settings.get("save_after_fix", True):
+            try:
+                a.save_study()
+                report["saved"] = True
+            except Exception as ex_s:
+                report["saved"] = False
+                report["save_error"] = str(ex_s)
+    finally:
+        try:
+            a.close_study(save=False)
+        except Exception:
+            pass
+    report["n_errors"] = len(report["errors"])
+    return report
 
 @app.route("/api/clientes/export_xlsx", methods=["POST"])
 def api_clientes_export_xlsx():
@@ -4136,49 +4570,91 @@ def api_clientes_export_xlsx():
 
 @app.route("/api/clientes/aplicar", methods=["POST"])
 def api_clientes_aplicar():
+    """3.2 · Solo carga EA/Pot en CYMDIST desde la tabla ya armada (3.1).
+
+    No vuelve a cruzar NIS salvo que no exista tabla guardada o body.rebuild=true.
+    """
     body = request.get_json(force=True) or {}
     s, feeder, feeders, all_feeders = _settings_for_clientes(body)
     ci = (body.get("clientes_file") or "").strip()
-    if not ci:
-        return jsonify({
-            "ok": False,
-            "error": "Seleccione un archivo de clientesimportantes en el desplegable.",
-            "disponibles": list_clientes_importantes_files(s),
-        })
+    rebuild = bool(body.get("rebuild") or body.get("force_rebuild") or body.get("rearmar"))
     try:
         if not all_feeders and not feeders and not feeder:
             return jsonify({"ok": False, "error": "Seleccione al menos un alimentador (RADIAL)."})
-        rows, meta = build_feeder_clientes_table(
-            s,
-            feeder,
-            clientes_file=ci,
-            suministro_file=body.get("suministro_file") or None,
-            all_feeders=all_feeders,
-            feeders=feeders,
-        )
-        # Preferir inventario en disco (96); solo abrir CYMDIST si falta JSON
-        loads = _loads_for_feeders(
-            feeders or [s.get("feeder_id")],
-            open_cymdist=False,
-        )
-        if not loads:
+
+        json_path = output_path(s, "clientes", "clientes_alimentador.json")
+        rows = None
+        meta = {}
+        if not rebuild:
+            rows = load_saved_clientes_rows(json_path)
+            if rows:
+                try:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f).get("meta") or {}
+                except Exception:
+                    meta = {}
+                # Si la tabla guardada es de otro radial, no usarla
+                prev_fid = str(meta.get("feeder_id") or "").strip().upper()
+                cur_fid = str(s.get("feeder_id") or feeder or "").strip().upper()
+                if prev_fid and cur_fid and prev_fid != cur_fid:
+                    rows = None
+                    meta = {}
+
+        if not rows:
+            if not ci:
+                return jsonify({
+                    "ok": False,
+                    "error": (
+                        "No hay tabla cruzada guardada. Ejecute primero 3.1 · Armar tabla "
+                        "(o seleccione clientesimportantes para reconstruir)."
+                    ),
+                    "disponibles": list_clientes_importantes_files(s),
+                })
+            rows, meta = build_feeder_clientes_table(
+                s,
+                feeder,
+                clientes_file=ci,
+                suministro_file=body.get("suministro_file") or None,
+                all_feeders=all_feeders,
+                feeders=feeders,
+            )
+            # Preferir inventario en disco (96); solo abrir CYMDIST si falta JSON
             loads = _loads_for_feeders(
                 feeders or [s.get("feeder_id")],
-                open_cymdist=True,
+                open_cymdist=False,
             )
-        rows = attach_cymdist_loads(rows, loads, primary_only=True)
-        json_path = output_path(s, "clientes", "clientes_alimentador.json")
+            if not loads:
+                loads = _loads_for_feeders(
+                    feeders or [s.get("feeder_id")],
+                    open_cymdist=True,
+                )
+            rows = attach_cymdist_loads(rows, loads, primary_only=True)
+            meta["n_loads_inventory"] = len(loads or [])
+            meta["loads_feeder_id"] = s.get("feeder_id")
+        else:
+            meta = dict(meta or {})
+            meta["from_saved_table"] = True
+
+        # Solo clientes importantes (EA); quitar inventario SpotLoad mezclado
+        from core.clientes_suministro import clientes_importantes_rows
+        ci_only = clientes_importantes_rows(rows)
+        if ci_only:
+            rows = ci_only
+
         rows = merge_activo(
             rows,
             activo_map=body.get("activo"),
-            previous_rows=load_saved_clientes_rows(json_path),
+            previous_rows=load_saved_clientes_rows(json_path) if rebuild else rows,
         )
         rows = ensure_activo(rows, default=True)
         meta["n_match_sed"] = sum(1 for r in rows if r.get("Match_SED"))
         meta["n_activos"] = sum(1 for r in rows if r.get("Activo"))
         meta["n_excluidos"] = sum(1 for r in rows if not r.get("Activo"))
-        meta["loads_feeder_id"] = s.get("feeder_id")
-        meta["n_loads_inventory"] = len(loads or [])
+        meta["feeder_id"] = s.get("feeder_id")
+        meta["n_rows"] = len(rows)
+        meta["n_con_ea_pot"] = sum(
+            1 for r in rows if r.get("EA") not in (None, "") and r.get("Pot") not in (None, "")
+        )
         save_table_json(json_path, rows, meta)
         save_table_csv(output_path(s, "clientes", "clientes_alimentador.csv"), rows)
 
@@ -4192,6 +4668,7 @@ def api_clientes_aplicar():
         from core.cymdist_com import (
             pause_cymdist_for_cympy, open_cymdist_gui, is_keep_open, set_keep_open,
         )
+        from core.common import write_csv
         was_open = is_keep_open(s)
         pause_cymdist_for_cympy(s)
 
@@ -4202,6 +4679,7 @@ def api_clientes_aplicar():
         a = CymPyAdapter(c, api, s_write)
         a.open_study(force_backup=False)
         fp = float(body.get("fp") or 0.95)
+        # Solo ~12 clientes CI → API rápida (EA→Consumo KWH, Pot→kW Locked)
         report = apply_rows(a, rows, fp=fp, lock=True)
         if s.get("save_after_write", True):
             try:
@@ -4216,9 +4694,20 @@ def api_clientes_aplicar():
         ok_count = sum(1 for r in report if r.get("Estado") == "OK")
         warn_kwh = sum(1 for r in report if r.get("Estado") == "WARN_KWH")
         excluido_count = sum(1 for r in report if r.get("Estado") == "EXCLUIDO")
+        sin_sed = sum(1 for r in report if r.get("Estado") == "SIN_SED")
         kwh_verified = sum(1 for r in report if r.get("KWH_ok") is True)
+        report_path = output_path(s, "clientes", "apply_cymdist_report.csv")
+        try:
+            write_csv(
+                report_path, report,
+                ["Suministro", "Cliente", "SED", "LoadID", "EA", "Pot",
+                 "KWH_antes", "KWH_despues", "KWH_ok", "Estado", "Activo", "Detalle"],
+            )
+        except Exception as ex_rep:
+            print("AVISO report EA/Pot:", ex_rep)
+            report_path = None
 
-        # GUI Cyme en segundo plano: no bloquear HTTP (timeout 120s del navegador)
+        # GUI Cyme en segundo plano: no bloquear HTTP
         open_gui = True if body.get("open_gui") is None else bool(body.get("open_gui"))
         com = {"ok": True, "cymdist_open": False, "deferred": True}
         if open_gui:
@@ -4235,39 +4724,31 @@ def api_clientes_aplicar():
                     "ok": True,
                     "cymdist_open": True,
                     "deferred": True,
-                    "msg": "CYMDIST abriendo en segundo plano",
+                    "was_open": was_open,
                 }
             except Exception as ex_th:
-                print("AVISO thread GUI:", ex_th)
-                com = {"ok": False, "error": str(ex_th), "cymdist_open": False}
+                com = {"ok": False, "error": str(ex_th)}
+        else:
+            set_keep_open(s, was_open, reason="cargar_ea_pot_keep")
 
-        tablero = None
-        try:
-            from analysis.build_dashboard import main as build_tablero
-            build_tablero()
-            tablero = output_path(s, "diagnostics", "tablero.html")
-        except Exception:
-            tablero = None
         return jsonify({
             "ok": True,
-            "rows": rows,
-            "report": report,
             "ok_count": ok_count,
             "warn_kwh_count": warn_kwh,
-            "kwh_verified": kwh_verified,
             "excluido_count": excluido_count,
-            "total": len(report),
-            "meta": meta,
-            "tablero": tablero,
+            "sin_sed_count": sin_sed,
+            "kwh_verified": kwh_verified,
+            "total": len(rows),
+            "rows": rows,
+            "report": report,
+            "report_path": report_path,
+            "from_saved_table": bool(meta.get("from_saved_table")),
             "cymdist_open": bool(com.get("cymdist_open")),
-            "com": com,
-            "was_open": was_open,
             "msg": (
-                "EA→Consumo(KWH) + Pot→kW OK · CYMDIST abriendo en 2º plano — "
-                "siguiente: Ejecutar distribución de carga"
-                if com.get("ok")
-                else ("EA/Pot OK pero CYMDIST no abrio: %s" % com.get("error"))
+                "EA→Consumo(KWH) + Pot→kW Locked · %s OK · %s excluidas · %s sin SED · KWH verificado %s"
+                % (ok_count, excluido_count, sin_sed, kwh_verified)
             ),
+            "cymdist": com,
         })
     except Exception as ex:
         import traceback
@@ -4276,24 +4757,47 @@ def api_clientes_aplicar():
 
 @app.route("/api/distribucion", methods=["POST"])
 def api_distribucion():
-    """LoadAllocation Consumo (kWh). Si CYMDIST 130013, usa fallback por energia."""
+    """3.3 · Solo LoadAllocation.Run (API CYMDIST). Cabecera §1 + fijos de 3.2."""
     s = _settings()
 
     def _run():
         if s.get("dry_run"):
             return {"ok": True, "dry_run": True}
+        from pipeline.run_demand_allocation import seed_session_from_excel, run_load_allocation_module
         sess = seed_session_from_excel(s)
         if sess.get("P_kW") in (None, ""):
             return {"ok": False, "error": "Defina y guarde la demanda de cabecera (seccion 1)."}
-        result = run_allocation(s, sess)
+        result = run_load_allocation_module(s, sess)
         summary = {k: result[k] for k in result if k not in ("scaled", "applied")}
         summary["n_scaled"] = len(result.get("scaled") or [])
         summary["n_applied"] = len(result.get("applied") or [])
-        ok = result.get("status") in ("ok", "ok_fallback_kwh", "dry_run")
+        val = result.get("validation") or {}
+        if isinstance(val, dict) and val:
+            summary["validation"] = {
+                "ok": val.get("ok"),
+                "msg": val.get("msg") or val.get("error"),
+                "n_ok": val.get("n_ok"),
+                "n_warn": val.get("n_warn"),
+                "n_fail": val.get("n_fail"),
+                "n_zero_fixed": val.get("n_zero_fixed"),
+                "n_zero_residual": val.get("n_zero_residual"),
+                "sum_kw": val.get("sum_kw"),
+                "balance_ok": val.get("balance_ok"),
+                "balance_msg": val.get("balance_msg"),
+                "fails": [r for r in (val.get("rows") or []) if r.get("Estado") == "FAIL"][:30],
+            }
+        ok = result.get("status") in (
+            "ok", "ok_fallback_kwh", "ok_with_warnings", "ok_validation_fail", "dry_run"
+        )
         return {
             "ok": ok,
             "result": summary,
+            "validation_ok": result.get("validation_ok"),
             "error": None if ok else (result.get("fallback_error") or result.get("allocation_error")),
+            "msg": (
+                "LoadAllocation.Run · " + str((val or {}).get("msg") or "validacion pendiente")
+                if ok else None
+            ),
         }
 
     return _cympy_run("distribucion", _run)
@@ -4879,7 +5383,23 @@ def api_suite_pipeline():
 
 @app.route("/tablero")
 def tablero_page():
+    """Legado HTML. En SPA use GET /api/tablero (JSON) en el panel §2."""
     s = _settings()
+    if SPA_MODE:
+        try:
+            from analysis.build_dashboard import main as build_tablero
+            build_tablero()
+        except Exception as ex:
+            return jsonify({"ok": False, "error": str(ex)}), 500
+        path = output_path(s, "diagnostics", "tablero.json")
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["ok"] = True
+            data["deprecated_html"] = True
+            data["msg"] = "Use la SPA §2 · Calidad + Tablero (GET /api/tablero)."
+            return jsonify(data)
+        return jsonify({"ok": False, "error": "tablero.json no encontrado"}), 404
     try:
         from analysis.build_dashboard import main as build_tablero
         build_tablero()

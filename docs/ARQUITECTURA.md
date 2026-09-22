@@ -6,17 +6,18 @@
 - `projects_dir`: estudios `.zxst` por alimentador
 - `database_dir` / `database_mdb`: BD Access compartida (`.mdb`)
 
-## Capas (por alimentador)
+## Capas (por alimentador) — SPA §§1–7
 
-1. Calidad del modelo (equipos Excel → CYMDIST, correcciones, tensiones base)  
-2. Clientes importantes → SED (NIS / **EA→Consumo kWh** / **Pot→kW**; Incluir off = desconectado)  
-3. Distribución LoadAllocation método **Consumo (kWh)** (fijos Locked; residual Unlocked)  
-4. Nueva SpotLoad concentrada: P trifásica → **A/B/C = P/3, Q/3**; Locked  
-5. Flujos independientes: situacional (desconecta §3) / proyectado (conecta §3)  
-6. Informes §5 (`doc/`) actualizados tras cada flujo  
-7. Diagnóstico + tablero / Optimización / Comparación  
+1. Contexto + cabecera (BD/estudio + medición)  
+2. Calidad del modelo + Tablero dinámico  
+3. Clientes importantes → SED + distribución LoadAllocation  
+4. Nueva SpotLoad concentrada  
+5. Flujos situacional / proyectado  
+6. Informes de entrega  
+7. Optimización + Suite  
 
-Manual operativo UI: [`MANUAL_UI_DEMANDA.md`](MANUAL_UI_DEMANDA.md).
+Manual operativo UI: [`MANUAL_UI_DEMANDA.md`](MANUAL_UI_DEMANDA.md). Contrato: [`API_CONTRATO_UI.md`](API_CONTRATO_UI.md).
+
 
 ## Selección
 
