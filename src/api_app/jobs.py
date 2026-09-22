@@ -295,13 +295,22 @@ def _run_action(action, payload, feeder, job_id=None):
             ok = result.get("status") in (
                 "ok", "ok_fallback_kwh", "ok_with_warnings", "ok_validation_fail", "dry_run"
             )
+            method = str(result.get("method") or "")
+            if method.startswith("cymdist_COM") or result.get("engine") == "COM":
+                prefix = "LoadAllocation COM OK"
+            elif method.startswith("cymdist_"):
+                prefix = "LoadAllocation.Run OK"
+            elif "fallback" in method:
+                prefix = "Distribución OK (fallback KWH)"
+            else:
+                prefix = "Distribución"
             return {
                 "ok": ok,
                 "result": summary,
                 "validation_ok": result.get("validation_ok"),
                 "error": None if ok else (result.get("fallback_error") or result.get("allocation_error")),
                 "msg": (
-                    "LoadAllocation.Run OK · " + str((val or {}).get("msg") or "sin validacion")
+                    prefix + " · " + str((val or {}).get("msg") or (val or {}).get("balance_msg") or "sin validacion")
                     if ok else None
                 ),
             }
@@ -315,12 +324,26 @@ def _run_action(action, payload, feeder, job_id=None):
         update_informe = payload.get("update_informe", True)
 
         def _run():
-            result = run_load_flow(s, scenario=scenario)
+            def _prog(msg):
+                try:
+                    jid = job_id or payload.get("_job_id")
+                    if jid:
+                        label = "5.1" if scenario == "situacional" else (
+                            "5.2" if scenario == "proyectado" else "5"
+                        )
+                        _set_job(jid, message="%s · %s" % (label, msg))
+                except Exception:
+                    pass
+            s2 = dict(s)
+            s2["_job_progress"] = _prog
+            s2["skip_db_project_save"] = True
+            result = run_load_flow(s2, scenario=scenario)
             ok = result.get("status") in ("ok", "dry_run")
             informe = None
             if ok and update_informe:
                 try:
-                    informe = fill_informe(s, overwrite_copy=True)
+                    _prog("actualizando informe...")
+                    informe = fill_informe(s2, overwrite_copy=True)
                 except Exception as ex_inf:
                     informe = {"ok": False, "error": str(ex_inf)}
             return {
@@ -328,9 +351,15 @@ def _run_action(action, payload, feeder, job_id=None):
                 "result": result,
                 "error": None if ok else (result.get("error") or "LoadFlow fallo"),
                 "informe": informe,
+                "msg": (
+                    ("LoadFlow %s OK · %s" % (
+                        scenario or "general",
+                        result.get("engine") or "",
+                    )) if ok else None
+                ),
             }
 
-        return _calidad(_run)
+        return _calidad(_run, timeout_sec=300.0)
 
     if action == "build_tablero":
         from analysis.build_dashboard import main as build_tablero

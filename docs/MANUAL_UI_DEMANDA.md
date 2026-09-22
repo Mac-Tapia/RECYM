@@ -27,8 +27,10 @@ Orden obligatorio (SPA numerada):
 ## §1 — Contexto + máxima demanda de cabecera
 
 - Elija BD + estudio y pulse **1.1 Aplicar BD + estudio**.
-- Ingrese P/Q, P+cosφ o I+V+cosφ y **1.2 Guarde**.
-- Esa demanda es la entrada de **LoadAllocation** (demanda Connected+Total).
+- En **Medición de cabecera**: elija alimentador + Excel de `medicioncabecera` → se busca el medidor en `medidoralimentador.xlsx`, se lee la hoja del medidor y se rellenan P máx, Q, kVA, Vll, fecha, P promedio y factor de carga (Pprom/Pmáx).
+- También puede ingresar P/Q manualmente (o P+cosφ / I+V+cosφ en legacy) y **1.2 Guarde**.
+- Esa demanda es la entrada de **LoadAllocation** (demanda Connected+Total, tipo kW-kvar).
+- Al guardar/distribuir RECYM deja la plantilla CYME: **Total ON**, aguas abajo **Consumo kW-h**, **FdC 65 %**, **k = 0,3**, pérdidas 0 W/fase.
 - Guardar cabecera **restablece** artefactos de sesión de §§3–5 para evitar mezclar campañas.
 
 ---
@@ -54,13 +56,17 @@ Orden obligatorio (SPA numerada):
 
 ## §4 — Nueva carga concentrada (SpotLoad)
 
-1. **4.1** Actualizar inventario nodos → busque nodo.
-2. Nombre obligatorio (= DeviceNumber).
-3. P trifásica + cosφ/Q → **4.2 Conectar** (A/B/C = P/3, Q/3; Locked).
+No se crean nodos nuevos. No hay botón «actualizar inventario».
+
+1. **4.2** Una carga: buscar nodo existente → Nombre + P/cosφ|Q → **Conectar y guardar** (queda en el .zxst + reporte; genera figura de ubicación `topologia.png`).
+2. **4.3** Varias / a actualizar: plantilla CSV/Excel → subir → **Conectar en bloque** (también queda guardado; independiente de 4.2).
+3. Listado «Cargas §4 en el estudio» muestra lo que §5 usará.
 
 ---
 
 ## §5 — Flujos (LoadFlow)
+
+Independientes de 4.2/4.3: usan las SpotLoad §4 **ya guardadas** (basta 4.2 **o** 4.3).
 
 | Botón | Acción |
 |-------|--------|

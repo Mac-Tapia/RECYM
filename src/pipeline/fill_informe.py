@@ -8,6 +8,7 @@ Flujo:
   3) Genera graficas PNG desde JSON LF (o respeta override manual CYMDIST)
   4) Escribe metricas situacional/proyectado en Excel
   5) Sustituye valores clave en Word + reemplaza imagenes LF
+  6) Render final con Microsoft Word (campos, paginas, PDF)
 
 Imagenes LF obligatorias (auto desde LoadFlow o captura CYMDIST):
   situacional_tension.png | situacional_cargabilidad.png
@@ -66,7 +67,12 @@ def _num(val, default=None):
     if isinstance(val, (int, float)):
         return float(val)
     s = str(val).strip().replace(" ", "")
+    if not s:
+        return default
     if s.upper().startswith("ERR"):
+        return default
+    # Placeholders CYMDIST / macros: $KWLOSS$, $I$, etc.
+    if "$" in s:
         return default
     s = s.replace(",", ".")
     try:
@@ -109,8 +115,14 @@ def _amps(kva, vll_kv):
 def metrics_from_lf(lf_data, settings=None):
     """Normaliza un loadflow_*.json a metricas de informe."""
     lf = lf_data or {}
-    topo = lf.get("topo") or {}
+    topo = dict(lf.get("topo") or {})
     settings = settings or {}
+    # Seguridad: si JSON viejo aún trae KWTOT×3, corregir aquí también
+    try:
+        from core.cymdist_com import normalize_lf_topo_powers
+        topo = normalize_lf_topo_powers(topo, settings)
+    except Exception:
+        pass
     kw = _num(topo.get("KWTOT"))
     kvar = _num(topo.get("KVARTOT"))
     kw_loss = _num(topo.get("KWLOSS"))
@@ -132,6 +144,15 @@ def metrics_from_lf(lf_data, settings=None):
         vpuc = vpuc if (vpuc and 0.5 <= vpuc <= 1.2) else vpu
     kva = _sva(kw, kvar) if (kw is not None and kvar is not None) else None
     i_a = _num(topo.get("I")) or _amps(kva, vll)
+    # Pérdidas: None si placeholder/ausente (no fingir 0.0)
+    kva_loss = _sva(kw_loss, kvar_loss) if (kw_loss is not None and kvar_loss is not None) else None
+    if kva_loss is None and kw_loss is not None and kvar_loss is None:
+        kva_loss = abs(kw_loss)
+    elif kva_loss is None and kvar_loss is not None and kw_loss is None:
+        kva_loss = abs(kvar_loss)
+    fp_loss = None
+    if kw_loss is not None and kva_loss:
+        fp_loss = _fp_pct(kw_loss, kva_loss)
     return {
         "status": lf.get("status"),
         "scenario": lf.get("scenario"),
@@ -142,10 +163,10 @@ def metrics_from_lf(lf_data, settings=None):
         "kvar": kvar,
         "kva": kva,
         "fp_pct": _fp_pct(kw, kva),
-        "kw_loss": kw_loss if kw_loss is not None else 0.0,
-        "kvar_loss": kvar_loss if kvar_loss is not None else 0.0,
-        "kva_loss": _sva(kw_loss or 0.0, kvar_loss or 0.0),
-        "fp_loss_pct": _fp_pct(kw_loss or 0.0, _sva(kw_loss or 0.0, kvar_loss or 0.0)) if (kw_loss or kvar_loss) else 0.0,
+        "kw_loss": kw_loss,
+        "kvar_loss": kvar_loss,
+        "kva_loss": kva_loss,
+        "fp_loss_pct": fp_loss,
         "vll": vll,
         "vln": vln,
         "vpu": vpu,
@@ -157,6 +178,7 @@ def metrics_from_lf(lf_data, settings=None):
         "v_pct_c": (vpuc * 100.0) if vpuc is not None else None,
         "i_a": i_a,
         "source_node": lf.get("source_node"),
+        "power_scale_reason": topo.get("power_scale_reason"),
         "raw_topo": topo,
     }
 
@@ -216,7 +238,7 @@ def _meta_cliente(settings):
         meta["meta_source"] = ocr.get("source") or "pdf"
         for key in (
             "cliente", "ubicacion", "solicitud", "potencia_txt", "alimentador",
-            "set", "transformador", "expediente",
+            "set", "transformador", "expediente", "proyecto",
         ):
             val = ocr.get(key)
             if val is not None and str(val).strip() != "":
@@ -262,7 +284,44 @@ def _meta_cliente(settings):
         meta["potencia_txt"] = "—"
     if not (meta.get("alimentador") or "").strip():
         meta["alimentador"] = feeder
-    return meta
+    return _complete_meta_fields(meta, settings)
+
+
+def _complete_meta_fields(meta, settings=None):
+    """Completa SET/trafo/ubicacion/etc. sin romper campos OCR ya llenos."""
+    import re
+    settings = settings or {}
+    m = dict(meta or {})
+    feeder = (m.get("alimentador") or settings.get("feeder_id") or "").strip().upper()
+    if feeder:
+        m["alimentador"] = feeder
+    if not (m.get("solicitud") or "").strip():
+        m["solicitud"] = "Factibilidad y Punto de Diseño"
+    if m.get("tension_kv") is None:
+        m["tension_kv"] = _num(settings.get("voltage_ll_kv"), 22.9)
+    if not (m.get("set") or "").strip():
+        prefix = re.match(r"^([A-Z]+)", feeder or "")
+        geo = {
+            "PA": "SET Paracas", "PI": "SET Pisco", "IC": "SET Ica",
+            "CH": "SET Chincha", "NA": "SET Nazca",
+        }
+        m["set"] = geo.get((prefix.group(1) if prefix else ""), "SET %s" % (feeder or "MT"))
+    if not (m.get("transformador") or "").strip():
+        vll = _num(m.get("tension_kv"), 22.9)
+        m["transformador"] = "Transformador %s · %.1f kV (inventario CYMDIST)" % (
+            m.get("set") or "SET", vll,
+        )
+    if not (m.get("expediente") or "").strip():
+        m["expediente"] = ("RECYM-%s" % feeder) if feeder else "RECYM"
+    if not (m.get("ubicacion") or "").strip():
+        m["ubicacion"] = settings.get("region") or "Área de concesión Electro Dunas"
+    if m.get("potencia_kw") is not None and not (m.get("potencia_txt") or "").strip():
+        m["potencia_txt"] = "%dKW" % int(round(float(m["potencia_kw"])))
+    if not (m.get("sistema_electrico") or "").strip():
+        m["sistema_electrico"] = "Electro Dunas"
+    if not (m.get("codigo_se") or "").strip():
+        m["codigo_se"] = feeder or "SE-MT"
+    return m
 
 
 def _images_dir(settings):
@@ -302,76 +361,87 @@ def _write_escenario_block(ws, m, mode):
         return []
     notes = []
     feeder = m.get("feeder_id") or ""
+    has_loss = m.get("kw_loss") is not None or m.get("kvar_loss") is not None
+
+    def _round_or_none(val, nd=2):
+        if val is None:
+            return None
+        return round(val, nd)
+
     if mode == "situacional":
         ws["A2"] = "ESCENARIO ACTUAL DEL ALIMENTADOR %s" % feeder
         # Punto / cabecera
-        ws["C5"] = round(m["vpu"], 4) if m.get("vpu") is not None else None
-        ws["D5"] = round(m["vll"], 2) if m.get("vll") is not None else None
-        ws["E5"] = round(m["vln"], 2) if m.get("vln") is not None else None
-        ws["F5"] = round(m["i_a"], 1) if m.get("i_a") is not None else None
-        ws["G5"] = round(m["kva"], 2) if m.get("kva") is not None else None
-        ws["H5"] = round(m["kw"], 2) if m.get("kw") is not None else None
-        ws["I5"] = round(m["kvar"], 2) if m.get("kvar") is not None else None
+        ws["C5"] = _round_or_none(m.get("vpu"), 4)
+        ws["D5"] = _round_or_none(m.get("vll"), 2)
+        ws["E5"] = _round_or_none(m.get("vln"), 2)
+        ws["F5"] = _round_or_none(m.get("i_a"), 1)
+        ws["G5"] = _round_or_none(m.get("kva"), 2)
+        ws["H5"] = _round_or_none(m.get("kw"), 2)
+        ws["I5"] = _round_or_none(m.get("kvar"), 2)
         # Fuentes / produccion
         for row in (12, 14):
-            ws["O%d" % row] = round(m["kw"], 2) if m.get("kw") is not None else None
-            ws["P%d" % row] = round(m["kvar"], 2) if m.get("kvar") is not None else None
-            ws["Q%d" % row] = round(m["kva"], 2) if m.get("kva") is not None else None
-            ws["R%d" % row] = round(m["fp_pct"], 2) if m.get("fp_pct") is not None else None
-        # Cargas approx = fuente - perdidas
-        load_kw = (m["kw"] - (m.get("kw_loss") or 0)) if m.get("kw") is not None else None
-        load_kvar = (m["kvar"] - (m.get("kvar_loss") or 0)) if m.get("kvar") is not None else None
-        load_kva = _sva(load_kw, load_kvar) if load_kw is not None else None
-        for row in (15, 16, 20):
-            ws["O%d" % row] = round(load_kw, 2) if load_kw is not None else None
-            ws["P%d" % row] = round(load_kvar, 2) if load_kvar is not None else None
-            ws["Q%d" % row] = round(load_kva, 2) if load_kva is not None else None
-            ws["R%d" % row] = round(_fp_pct(load_kw, load_kva), 2) if load_kva else None
+            ws["O%d" % row] = _round_or_none(m.get("kw"), 2)
+            ws["P%d" % row] = _round_or_none(m.get("kvar"), 2)
+            ws["Q%d" % row] = _round_or_none(m.get("kva"), 2)
+            ws["R%d" % row] = _round_or_none(m.get("fp_pct"), 2)
+        # Cargas approx = fuente - perdidas (solo si hay perdidas validas)
+        if has_loss and m.get("kw") is not None:
+            load_kw = m["kw"] - (m.get("kw_loss") or 0)
+            load_kvar = (m["kvar"] - (m.get("kvar_loss") or 0)) if m.get("kvar") is not None else None
+            load_kva = _sva(load_kw, load_kvar) if load_kvar is not None else None
+            for row in (15, 16, 20):
+                ws["O%d" % row] = _round_or_none(load_kw, 2)
+                ws["P%d" % row] = _round_or_none(load_kvar, 2)
+                ws["Q%d" % row] = _round_or_none(load_kva, 2)
+                ws["R%d" % row] = _round_or_none(_fp_pct(load_kw, load_kva), 2)
         # Vpu fases (subtension peores)
-        ws["L15"] = round(m["vpu_a"], 4) if m.get("vpu_a") is not None else None
-        ws["L16"] = round(m["vpu_b"], 4) if m.get("vpu_b") is not None else None
-        ws["L17"] = round(m["vpu_c"], 4) if m.get("vpu_c") is not None else None
-        # Perdidas
-        for row in (24, 28):
-            ws["O%d" % row] = round(m.get("kw_loss") or 0.0, 2)
-            ws["P%d" % row] = round(m.get("kvar_loss") or 0.0, 2)
-            ws["Q%d" % row] = round(m.get("kva_loss") or 0.0, 2)
-            ws["R%d" % row] = round(m.get("fp_loss_pct") or 0.0, 2)
-        ws["C12"] = round(m.get("kw_loss") or 0.0, 2)
-        ws["C16"] = round(m.get("kw_loss") or 0.0, 2)
+        ws["L15"] = _round_or_none(m.get("vpu_a"), 4)
+        ws["L16"] = _round_or_none(m.get("vpu_b"), 4)
+        ws["L17"] = _round_or_none(m.get("vpu_c"), 4)
+        # Perdidas: solo si validas
+        if has_loss:
+            for row in (24, 28):
+                ws["O%d" % row] = _round_or_none(m.get("kw_loss"), 2)
+                ws["P%d" % row] = _round_or_none(m.get("kvar_loss"), 2)
+                ws["Q%d" % row] = _round_or_none(m.get("kva_loss"), 2)
+                ws["R%d" % row] = _round_or_none(m.get("fp_loss_pct"), 2)
+            ws["C12"] = _round_or_none(m.get("kw_loss"), 2)
+            ws["C16"] = _round_or_none(m.get("kw_loss"), 2)
         notes.append("situacional: kW=%s kvar=%s" % (m.get("kw"), m.get("kvar")))
     else:
         ws["B34"] = "ESCENARIO PROYECTADO DEL ALIMENTADOR %s" % feeder
-        ws["C39"] = round(m["vpu"], 4) if m.get("vpu") is not None else None
-        ws["D39"] = round(m["vll"], 2) if m.get("vll") is not None else None
-        ws["E39"] = round(m["vln"], 2) if m.get("vln") is not None else None
-        ws["F39"] = round(m["i_a"], 1) if m.get("i_a") is not None else None
-        ws["G39"] = round(m["kva"], 2) if m.get("kva") is not None else None
-        ws["H39"] = round(m["kw"], 2) if m.get("kw") is not None else None
-        ws["I39"] = round(m["kvar"], 2) if m.get("kvar") is not None else None
+        ws["C39"] = _round_or_none(m.get("vpu"), 4)
+        ws["D39"] = _round_or_none(m.get("vll"), 2)
+        ws["E39"] = _round_or_none(m.get("vln"), 2)
+        ws["F39"] = _round_or_none(m.get("i_a"), 1)
+        ws["G39"] = _round_or_none(m.get("kva"), 2)
+        ws["H39"] = _round_or_none(m.get("kw"), 2)
+        ws["I39"] = _round_or_none(m.get("kvar"), 2)
         for row in (46, 48):
-            ws["O%d" % row] = round(m["kw"], 2) if m.get("kw") is not None else None
-            ws["P%d" % row] = round(m["kvar"], 2) if m.get("kvar") is not None else None
-            ws["Q%d" % row] = round(m["kva"], 2) if m.get("kva") is not None else None
-            ws["R%d" % row] = round(m["fp_pct"], 2) if m.get("fp_pct") is not None else None
-        load_kw = (m["kw"] - (m.get("kw_loss") or 0)) if m.get("kw") is not None else None
-        load_kvar = (m["kvar"] - (m.get("kvar_loss") or 0)) if m.get("kvar") is not None else None
-        load_kva = _sva(load_kw, load_kvar) if load_kw is not None else None
-        for row in (49, 50, 54):
-            ws["O%d" % row] = round(load_kw, 2) if load_kw is not None else None
-            ws["P%d" % row] = round(load_kvar, 2) if load_kvar is not None else None
-            ws["Q%d" % row] = round(load_kva, 2) if load_kva is not None else None
-            ws["R%d" % row] = round(_fp_pct(load_kw, load_kva), 2) if load_kva else None
-        ws["L49"] = round(m["vpu_a"], 4) if m.get("vpu_a") is not None else None
-        ws["L50"] = round(m["vpu_b"], 4) if m.get("vpu_b") is not None else None
-        ws["L51"] = round(m["vpu_c"], 4) if m.get("vpu_c") is not None else None
-        for row in (58, 62):
-            ws["O%d" % row] = round(m.get("kw_loss") or 0.0, 2)
-            ws["P%d" % row] = round(m.get("kvar_loss") or 0.0, 2)
-            ws["Q%d" % row] = round(m.get("kva_loss") or 0.0, 2)
-            ws["R%d" % row] = round(m.get("fp_loss_pct") or 0.0, 2)
-        ws["C46"] = round(m.get("kw_loss") or 0.0, 2)
-        ws["C50"] = round(m.get("kw_loss") or 0.0, 2)
+            ws["O%d" % row] = _round_or_none(m.get("kw"), 2)
+            ws["P%d" % row] = _round_or_none(m.get("kvar"), 2)
+            ws["Q%d" % row] = _round_or_none(m.get("kva"), 2)
+            ws["R%d" % row] = _round_or_none(m.get("fp_pct"), 2)
+        if has_loss and m.get("kw") is not None:
+            load_kw = m["kw"] - (m.get("kw_loss") or 0)
+            load_kvar = (m["kvar"] - (m.get("kvar_loss") or 0)) if m.get("kvar") is not None else None
+            load_kva = _sva(load_kw, load_kvar) if load_kvar is not None else None
+            for row in (49, 50, 54):
+                ws["O%d" % row] = _round_or_none(load_kw, 2)
+                ws["P%d" % row] = _round_or_none(load_kvar, 2)
+                ws["Q%d" % row] = _round_or_none(load_kva, 2)
+                ws["R%d" % row] = _round_or_none(_fp_pct(load_kw, load_kva), 2)
+        ws["L49"] = _round_or_none(m.get("vpu_a"), 4)
+        ws["L50"] = _round_or_none(m.get("vpu_b"), 4)
+        ws["L51"] = _round_or_none(m.get("vpu_c"), 4)
+        if has_loss:
+            for row in (58, 62):
+                ws["O%d" % row] = _round_or_none(m.get("kw_loss"), 2)
+                ws["P%d" % row] = _round_or_none(m.get("kvar_loss"), 2)
+                ws["Q%d" % row] = _round_or_none(m.get("kva_loss"), 2)
+                ws["R%d" % row] = _round_or_none(m.get("fp_loss_pct"), 2)
+            ws["C46"] = _round_or_none(m.get("kw_loss"), 2)
+            ws["C50"] = _round_or_none(m.get("kw_loss"), 2)
         notes.append("proyectado: kW=%s kvar=%s" % (m.get("kw"), m.get("kvar")))
     return notes
 
@@ -385,25 +455,89 @@ def fill_excel(xlsx_path, scenarios, meta):
         notes += _write_escenario_block(ws, scenarios.get("proyectado"), "proyectado")
     if "Informe" in wb.sheetnames:
         wi = wb["Informe"]
-        wi["C4"] = meta.get("cliente")
-        wi["C5"] = meta.get("ubicacion")
-        wi["C6"] = meta.get("solicitud")
-        if meta.get("potencia_txt"):
-            wi["H6"] = meta["potencia_txt"]
+        wi["C4"] = meta.get("cliente") or ""
+        wi["C5"] = meta.get("ubicacion") or ""
+        wi["C6"] = meta.get("solicitud") or "Factibilidad y Punto de Diseño"
+        wi["H6"] = meta.get("potencia_txt") or ""
         if meta.get("potencia_kw") is not None:
             wi["C7"] = meta["potencia_kw"]
         wi["H7"] = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        wi["C8"] = meta.get("alimentador")
-        if meta.get("set"):
-            wi["H8"] = meta["set"]
+        wi["C8"] = meta.get("alimentador") or ""
+        wi["H8"] = meta.get("set") or ""
         if meta.get("tension_kv") is not None:
             wi["C9"] = meta["tension_kv"]
-        if meta.get("transformador"):
-            wi["H9"] = meta["transformador"]
-        wi["C10"] = meta.get("expediente")
-        notes.append("cabecera Informe actualizada (%s)" % meta.get("alimentador"))
+        wi["H9"] = meta.get("transformador") or ""
+        wi["C10"] = meta.get("expediente") or ""
+        notes.append("cabecera Informe completa (%s)" % meta.get("alimentador"))
     wb.save(xlsx_path)
     return notes
+
+
+def _cell_texts(tc):
+    return list(tc.iter("{%s}t" % W_NS))
+
+
+def _cell_text(tc):
+    return "".join((t.text or "") for t in _cell_texts(tc))
+
+
+def _set_cell_text(tc, value):
+    """Escribe texto en una celda: primer w:t recibe el valor; el resto se vacia."""
+    if value is None:
+        return False
+    texts = _cell_texts(tc)
+    if not texts:
+        # Crear un parrafo/run/t minimo si la celda esta vacia
+        p = ET.SubElement(tc, "{%s}p" % W_NS)
+        r = ET.SubElement(p, "{%s}r" % W_NS)
+        t = ET.SubElement(r, "{%s}t" % W_NS)
+        t.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+        t.text = str(value)
+        return True
+    texts[0].text = str(value)
+    for t in texts[1:]:
+        t.text = ""
+    return True
+
+
+def _tbl_rows(tbl):
+    rows = []
+    for tr in tbl.findall("{%s}tr" % W_NS):
+        cells = list(tr.findall("{%s}tc" % W_NS))
+        rows.append(cells)
+    return rows
+
+
+def _para_text(p):
+    return "".join((t.text or "") for t in p.iter("{%s}t" % W_NS))
+
+
+def _set_para_text(p, value):
+    texts = list(p.iter("{%s}t" % W_NS))
+    if not texts:
+        return False
+    texts[0].text = str(value)
+    for t in texts[1:]:
+        t.text = ""
+    return True
+
+
+def _replace_in_paragraph(p, old, new):
+    """Replace exact substring in a single paragraph (merged runs)."""
+    if old is None or new is None or str(old) == str(new):
+        return 0
+    texts = list(p.iter("{%s}t" % W_NS))
+    if not texts:
+        return 0
+    full = "".join((t.text or "") for t in texts)
+    if str(old) not in full:
+        return 0
+    n = full.count(str(old))
+    full = full.replace(str(old), str(new))
+    texts[0].text = full
+    for t in texts[1:]:
+        t.text = ""
+    return n
 
 
 def _merge_w_t(root):
@@ -412,121 +546,453 @@ def _merge_w_t(root):
         texts = list(p.iter("{%s}t" % W_NS))
         if len(texts) < 2:
             continue
-        # Concatenar todo el texto del parrafo en el primer w:t y vaciar el resto
         full = "".join((t.text or "") for t in texts)
         texts[0].text = full
         for t in texts[1:]:
             t.text = ""
 
 
-def _replace_in_xml(root, replacements):
-    """Aplica reemplazos exactos sobre w:t (tras merge)."""
+def _fmt_md_kw(val):
+    """Formato tipo 2,791.00 / 10156.00 para tabla MD."""
+    if val is None:
+        return None
+    try:
+        x = float(val)
+    except Exception:
+        return str(val)
+    # miles con coma, decimales con punto (estilo plantilla US)
+    int_part = int(abs(x))
+    dec = abs(x) - int_part
+    s_int = "{:,}".format(int_part)
+    s = "%s.%02d" % (s_int, int(round(dec * 100)))
+    if x < 0:
+        s = "-" + s
+    return s
+
+
+def _punto_diseno_metrics(proy, meta):
+    """Metricas del punto de diseno (nueva carga), no de cabecera alimentador."""
+    pk = _num(meta.get("potencia_kw"))
+    fp = 0.95
+    qk = None
+    kva = None
+    if pk is not None:
+        qk = pk * math.tan(math.acos(min(0.999, max(0.01, fp))))
+        kva = _sva(pk, qk)
+    vll = (proy or {}).get("vll") or _num(meta.get("tension_kv")) or 22.9
+    vln = (proy or {}).get("vln")
+    if vln is None and vll:
+        vln = vll / math.sqrt(3.0)
+    # Vp.u. del punto: preferir proy; si absurdo, 1.0 nominal
+    vpu = (proy or {}).get("vpu")
+    if vpu is None or vpu > 1.2 or vpu < 0.5:
+        vpu = 1.0
+    i_a = _amps(kva, vll) if kva else None
+    return {
+        "vpu": vpu,
+        "vll": vll,
+        "vln": vln,
+        "i_a": i_a,
+        "kva": kva,
+        "kw": pk,
+        "kvar": qk,
+    }
+
+
+def _fill_source_table(tbl, m, include_losses=True):
+    """Tabla potencia fuente + perdidas (4 filas x 5 cols)."""
     done = []
-    for old, new in replacements:
-        if old is None or new is None or str(old) == str(new):
-            continue
-        old_s, new_s = str(old), str(new)
-        count = 0
-        for t in root.iter("{%s}t" % W_NS):
-            if t.text and old_s in t.text:
-                n = t.text.count(old_s)
-                t.text = t.text.replace(old_s, new_s)
-                count += n
-        if count:
-            done.append({"old": old_s, "new": new_s, "count": count})
+    if not m:
+        return done
+    rows = _tbl_rows(tbl)
+    if len(rows) < 4:
+        return done
+    # fila potencia (idx 2): kW, kvar, kVA, FP
+    pot = rows[2]
+    if len(pot) >= 5:
+        if m.get("kw") is not None and _set_cell_text(pot[1], _fmt(m["kw"], 0, comma=False)):
+            done.append("fuente.kw")
+        if m.get("kvar") is not None and _set_cell_text(pot[2], _fmt(m["kvar"], 0, comma=False) if abs(m["kvar"] - round(m["kvar"])) < 1e-6 else _fmt(m["kvar"], 2, comma=False)):
+            done.append("fuente.kvar")
+        if m.get("kva") is not None and _set_cell_text(pot[3], _fmt(m["kva"], 0, comma=False) if abs(m["kva"] - round(m["kva"])) < 1e-6 else _fmt(m["kva"], 2, comma=False)):
+            done.append("fuente.kva")
+        if m.get("fp_pct") is not None and _set_cell_text(pot[4], _fmt(m["fp_pct"], 2)):
+            done.append("fuente.fp")
+    # fila perdidas (idx 3): solo si validas
+    if include_losses and (m.get("kw_loss") is not None or m.get("kvar_loss") is not None):
+        loss = rows[3]
+        if len(loss) >= 5:
+            if m.get("kw_loss") is not None and _set_cell_text(loss[1], _fmt(m["kw_loss"], 2, comma=False)):
+                done.append("loss.kw")
+            if m.get("kvar_loss") is not None and _set_cell_text(loss[2], _fmt(m["kvar_loss"], 2, comma=False)):
+                done.append("loss.kvar")
+            if m.get("kva_loss") is not None and _set_cell_text(loss[3], _fmt(m["kva_loss"], 2, comma=False)):
+                done.append("loss.kva")
+            if m.get("fp_loss_pct") is not None and _set_cell_text(loss[4], _fmt(m["fp_loss_pct"], 2, comma=False)):
+                done.append("loss.fp")
     return done
 
 
-def _build_word_replacements(scenarios, meta):
-    """Mapa plantilla EMAPICA → valores nuevos (siempre partiendo de plantilla limpia)."""
+def _fill_voltage_drop_table(tbl, m):
+    """Tabla caida A/B/C %."""
+    done = []
+    if not m:
+        return done
+    rows = _tbl_rows(tbl)
+    mapping = {1: "v_pct_a", 2: "v_pct_b", 3: "v_pct_c"}
+    for idx, key in mapping.items():
+        if idx >= len(rows):
+            break
+        cells = rows[idx]
+        if len(cells) < 2:
+            continue
+        val = m.get(key)
+        if val is None:
+            continue
+        if _set_cell_text(cells[1], _fmt(val, 2, comma=False) + "%"):
+            done.append(key)
+    return done
+
+
+def _fill_punto_diseno_table(tbl, pd):
+    """Tabla 1 fila datos: Vp.u. kVLL kVLN i KVA kW kvar."""
+    done = []
+    if not pd:
+        return done
+    rows = _tbl_rows(tbl)
+    if len(rows) < 2:
+        return done
+    cells = rows[1]
+    vals = [
+        _fmt(pd.get("vpu"), 2, comma=False) if pd.get("vpu") is not None else None,
+        _fmt(pd.get("vll"), 1, comma=False) if pd.get("vll") is not None else None,
+        _fmt(pd.get("vln"), 1, comma=False) if pd.get("vln") is not None else None,
+        _fmt(pd.get("i_a"), 1, comma=False) if pd.get("i_a") is not None else None,
+        _fmt(pd.get("kva"), 0, comma=False) if pd.get("kva") is not None else None,
+        _fmt(pd.get("kw"), 0, comma=False) if pd.get("kw") is not None else None,
+        _fmt(pd.get("kvar"), 0, comma=False) if pd.get("kvar") is not None else None,
+    ]
+    keys = ["vpu", "vll", "vln", "i_a", "kva", "kw", "kvar"]
+    for i, (key, val) in enumerate(zip(keys, vals)):
+        if val is None or i >= len(cells):
+            continue
+        if _set_cell_text(cells[i], val):
+            done.append("pd.%s" % key)
+    return done
+
+
+def _fill_osm_feeder_table(tbl, meta):
+    done = []
+    feeder = (meta or {}).get("alimentador")
+    if not feeder:
+        return done
+    rows = _tbl_rows(tbl)
+    if len(rows) < 2:
+        return done
+    cells = rows[1]
+    # col1 alimentador, col2 nombre SE, col3 codigo SE
+    vals = [
+        None,
+        feeder,
+        (meta or {}).get("sistema_electrico") or "Electro Dunas",
+        (meta or {}).get("codigo_se") or feeder,
+    ]
+    for i, val in enumerate(vals):
+        if val is None or i >= len(cells):
+            continue
+        if _set_cell_text(cells[i], val):
+            done.append("osm.col%d" % i)
+    return done
+
+
+def _fill_perdidas_md_table(tbl, sit, proy, meta):
+    """Tabla ESTADO ACTUAL / PROYECTADO con MD kW."""
+    done = []
+    rows = _tbl_rows(tbl)
+    if len(rows) < 3:
+        return done
+    feeder = (meta or {}).get("alimentador") or ""
+    # fila 1: situacional
+    r1 = rows[1]
+    if len(r1) >= 2:
+        label = ("ESTADO ACTUAL %s" % feeder).strip()
+        if feeder and _set_cell_text(r1[0], label):
+            done.append("md.sit.label")
+        if sit and sit.get("kw") is not None and _set_cell_text(r1[1], _fmt_md_kw(sit["kw"])):
+            done.append("md.sit.kw")
+        # Pérdidas Tec kWh-año / % solo si hay kw_loss valido
+        if sit and sit.get("kw_loss") is not None and len(r1) >= 4:
+            # kWh-año ≈ kw_loss * 8760 * factor; plantilla usa valor absoluto — actualizar % si posible
+            if sit.get("kw") and sit["kw"] > 0:
+                pct = 100.0 * sit["kw_loss"] / sit["kw"]
+                if len(r1) >= 5 and _set_cell_text(r1[4], _fmt(pct, 2, comma=False) + "%"):
+                    done.append("md.sit.pct")
+    # fila 2: proyectado
+    r2 = rows[2]
+    if len(r2) >= 2:
+        label = ("ESTADO PRYECTADO %s" % feeder).strip()
+        if feeder and _set_cell_text(r2[0], label):
+            done.append("md.proy.label")
+        if proy and proy.get("kw") is not None and _set_cell_text(r2[1], _fmt_md_kw(proy["kw"])):
+            done.append("md.proy.kw")
+        if proy and proy.get("kw_loss") is not None and proy.get("kw") and proy["kw"] > 0 and len(r2) >= 5:
+            pct = 100.0 * proy["kw_loss"] / proy["kw"]
+            if _set_cell_text(r2[4], _fmt(pct, 2, comma=False) + "%"):
+                done.append("md.proy.pct")
+    return done
+
+
+def _fill_word_tables(root, scenarios, meta):
+    """Rellena los 7 cuadros de la plantilla EMAPICA por indice."""
+    tables = list(root.iter("{%s}tbl" % W_NS))
+    sit = scenarios.get("situacional")
+    proy = scenarios.get("proyectado")
+    report = {"n_tables": len(tables), "filled": [], "cells": []}
+
+    fillers = [
+        ("situacional_fuente", lambda t: _fill_source_table(t, sit)),
+        ("situacional_caida", lambda t: _fill_voltage_drop_table(t, sit)),
+        ("proyectado_fuente", lambda t: _fill_source_table(t, proy)),
+        ("punto_diseno", lambda t: _fill_punto_diseno_table(t, _punto_diseno_metrics(proy, meta))),
+        ("proyectado_caida", lambda t: _fill_voltage_drop_table(t, proy)),
+        ("osm_alimentador", lambda t: _fill_osm_feeder_table(t, meta)),
+        ("perdidas_md", lambda t: _fill_perdidas_md_table(t, sit, proy, meta)),
+    ]
+    for i, (name, fn) in enumerate(fillers):
+        if i >= len(tables):
+            break
+        cells = fn(tables[i])
+        if cells:
+            report["filled"].append(name)
+            report["cells"].extend(["%s:%s" % (name, c) for c in cells])
+    return report
+
+
+def _build_header_replacements(meta, scenarios=None):
+    """Reemplazos que respetan la estructura de la plantilla base (frases largas)."""
     reps = []
-    # Etiquetas
-    if meta.get("alimentador"):
-        reps.append(("IC106", meta["alimentador"]))
-    if meta.get("cliente"):
-        reps.append(("MUNICIPAL DE AGUA POTABLE Y ALCANTARILLADO DE ICA S.A. - EMAPICA", meta["cliente"]))
-        reps.append(("EMAPICA", meta["cliente"][:40]))
-    if meta.get("potencia_kw") is not None:
-        reps.append(("430 KW", "%s kW" % _fmt(meta["potencia_kw"], 0, comma=False)))
-        reps.append(("430 kW", "%s kW" % _fmt(meta["potencia_kw"], 0, comma=False)))
-        reps.append(("430KW", meta.get("potencia_txt") or ("%sKW" % _fmt(meta["potencia_kw"], 0, comma=False))))
+    cliente = (meta or {}).get("cliente") or ""
+    alimentador = (meta or {}).get("alimentador") or ""
+    ubic = (meta or {}).get("ubicacion") or ""
+    pot_kw = _num((meta or {}).get("potencia_kw"))
+    pot_txt = (meta or {}).get("potencia_txt") or ""
+    expediente = (meta or {}).get("expediente") or ""
+    set_name = (meta or {}).get("set") or ""
+    trafo = (meta or {}).get("transformador") or ""
+    proyecto = (meta or {}).get("proyecto") or ""
+    if pot_kw is not None and not pot_txt:
+        pot_txt = "%sKW" % _fmt(pot_kw, 0, comma=False)
+    pot_display = ("%s kW" % _fmt(pot_kw, 0, comma=False)) if pot_kw is not None else (pot_txt or "")
 
-    sit = scenarios.get("situacional") or {}
-    proy = scenarios.get("proyectado") or {}
+    # Fecha cabecera
+    meses = (
+        "enero", "febrero", "marzo", "abril", "mayo", "junio",
+        "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+    )
+    now = datetime.now()
+    fecha_txt = "Ica, %d de %s de %d" % (now.day, meses[now.month - 1], now.year)
+    reps.append(("Ica, 14 de agosto de 2026", fecha_txt))
 
-    # Situacional — potencia fuente (valores plantilla)
-    if sit.get("kw") is not None:
-        reps.append(("2791", _fmt(sit["kw"], 0, comma=False)))
-    if sit.get("kvar") is not None:
-        reps.append(("999", _fmt(sit["kvar"], 0, comma=False)))
-    if sit.get("kva") is not None:
-        reps.append(("2965", _fmt(sit["kva"], 0, comma=False)))
-    if sit.get("fp_pct") is not None:
-        reps.append(("94,18", _fmt(sit["fp_pct"], 2)))
-        reps.append(("94.18", _fmt(sit["fp_pct"], 2, comma=False)))
-    if sit.get("kw_loss") is not None:
-        reps.append(("40.10", _fmt(sit["kw_loss"], 2, comma=False)))
-        reps.append(("40,10", _fmt(sit["kw_loss"], 2)))
-    if sit.get("kvar_loss") is not None:
-        reps.append(("54.99", _fmt(sit["kvar_loss"], 2, comma=False)))
-    if sit.get("kva_loss") is not None:
-        reps.append(("68.06", _fmt(sit["kva_loss"], 2, comma=False)))
-    if sit.get("v_pct_a") is not None:
-        reps.append(("102.30%", _fmt(sit["v_pct_a"], 2, comma=False) + "%"))
-        reps.append(("102.30", _fmt(sit["v_pct_a"], 2, comma=False)))
-    if sit.get("v_pct_b") is not None:
-        reps.append(("101.72%", _fmt(sit["v_pct_b"], 2, comma=False) + "%"))
-        reps.append(("101.72", _fmt(sit["v_pct_b"], 2, comma=False)))
-    if sit.get("v_pct_c") is not None:
-        reps.append(("102.18%", _fmt(sit["v_pct_c"], 2, comma=False) + "%"))
-        reps.append(("102.18", _fmt(sit["v_pct_c"], 2, comma=False)))
+    # Frases LARGAS primero (antes de IC106 / 430 kW / EMAPICA sueltos)
+    if cliente and pot_display:
+        label = "Carga-%s-%s" % ((proyecto or cliente)[:40], pot_display)
+        old_carga = "Carga-Bomba de Agua Residual-juan Santa-430 kW- Cod IGEA-580224223"
+        # La plantilla a veces duplica el rótulo en el mismo párrafo
+        reps.append((old_carga + old_carga, label))
+        reps.append((old_carga, label))
+    if proyecto:
+        reps.append(("Bomba de agua residual - Juan Santa", proyecto))
+        reps.append(("Bomba de Agua Residual-juan Santa", proyecto))
+    if cliente and alimentador and pot_display:
+        concl1 = (
+            "La solicitud de factibilidad y asignación de punto de diseño presentada por el predio %s, "
+            "para una demanda de %s, se encuentra dentro del área de concesión de la empresa distribuidora."
+        ) % (cliente, pot_display)
+        concl2 = (
+            "Asimismo, se evaluó el estado actual (sin proyecto) y proyectado (con proyecto) de cargabilidad "
+            "y calidad de producto del alimentador %s y de la %s, determinándose que cuentan con condiciones "
+            "operativas favorables para la incorporación de la nueva carga solicitada. Los resultados del "
+            "flujo de carga evidencian capacidad suficiente para atender la demanda requerida y mantienen "
+            "niveles de tensión dentro de los rangos establecidos por la normativa vigente."
+        ) % (alimentador, set_name or "SET asociada")
+        concl3 = (
+            "En consecuencia, para la atención de la demanda requerida por el predio %s, se recomienda "
+            "asignar el punto de diseño en el alimentador %s%s. Asimismo, se verifica que tanto el "
+            "alimentador como el transformador de potencia de la %s cuentan con capacidad disponible "
+            "para el suministro solicitado, manteniéndose los niveles de tensión dentro de los límites "
+            "permisibles y sin afectar la calidad de producto ni las condiciones operativas de la red eléctrica."
+        ) % (
+            cliente,
+            alimentador,
+            (" — proyecto «%s»" % proyecto) if proyecto else "",
+            set_name or "SET",
+        )
+        # Plantilla base trae un párrafo de rechazo (IC107): puente breve (no duplicar concl2)
+        reps.append((
+            "De acuerdo con los análisis de cargabilidad y calidad de producto realizados, no es posible asignar el punto de diseño en el alimentador IC107, debido a que este presenta niveles de cargabilidad cercanos a su capacidad máxima de operación y condiciones de caída de tensión próximas a los límites permisibles establecidos por la normativa vigente",
+            (
+                "De acuerdo con los análisis de cargabilidad y calidad de producto realizados sobre el alimentador %s "
+                "(estados situacional y proyectado), se verifica que la red mantiene niveles de tensión y "
+                "cargabilidad dentro de los parámetros operativos permitidos para la demanda solicitada."
+            ) % alimentador,
+        ))
+        reps.append((
+            "La solicitud de factibilidad y asignación de punto de diseño presentada por el predio MUNICIPAL DE AGUA POTABLE Y ALCANTARILLADO DE ICA S.A. - EMAPICA, para una demanda de 430 kW, se encuentra dentro del área de concesión de la empresa distribuidora.",
+            concl1,
+        ))
+        reps.append((
+            "para una demanda de 430 kW, se encuentra dentro del área de concesión de la empresa distribuidora.",
+            "para una demanda de %s, se encuentra dentro del área de concesión de la empresa distribuidora." % pot_display,
+        ))
+        reps.append((
+            "Asimismo, se evaluó el estado actual de cargabilidad y calidad de producto del alimentador IC106 y del transformador de potencia de la SET Ica, determinándose que ambos cuentan con condiciones operativas favorables para la incorporación de la nueva carga solicitada. Los resultados obtenidos evidencian que el alimentador IC106 dispone de capacidad suficiente para atender la demanda requerida y mantiene niveles de tensión dentro de los rangos establecidos por la normativa vigente. De igual manera, el transformador de potencia de la SET Ica presenta disponibilidad de capacidad, garantizando una operación segura y confiable del sistema.",
+            concl2,
+        ))
+        reps.append((
+            "En consecuencia, para la atención de la demanda requerida por el predio MUNICIPAL DE AGUA POTABLE Y ALCANTARILLADO DE ICA S.A. - EMAPICA, se recomienda asignar el punto de diseño en la estructura de media tensión NMT N.° COD IGEA: 580224223. Asimismo, se verifica que tanto el alimentador IC106 como el transformador de potencia de la SET Ica cuentan con capacidad disponible para el suministro solicitado, manteniéndose los niveles de tensión dentro de los límites permisibles y sin afectar la calidad de producto ni las condiciones operativas de la red eléctrica",
+            concl3,
+        ))
 
-    # Proyectado
-    if proy.get("kw") is not None:
-        reps.append(("3182.00", _fmt(proy["kw"], 2, comma=False)))
-        reps.append(("3,233.12", _fmt(proy["kw"], 2)))
-        reps.append(("3233.12", _fmt(proy["kw"], 2, comma=False)))
-    if proy.get("kvar") is not None:
-        reps.append(("1101.38", _fmt(proy["kvar"], 2, comma=False)))
-    if proy.get("kva") is not None:
-        reps.append(("3367.22", _fmt(proy["kva"], 2, comma=False)))
-    if proy.get("fp_pct") is not None:
-        reps.append(("94.50", _fmt(proy["fp_pct"], 2, comma=False)))
-        reps.append(("94,50", _fmt(proy["fp_pct"], 2)))
-    if proy.get("kw_loss") is not None:
-        reps.append(("49.86", _fmt(proy["kw_loss"], 2, comma=False)))
-    if proy.get("v_pct_a") is not None:
-        reps.append(("96.52%", _fmt(proy["v_pct_a"], 2, comma=False) + "%"))
-        reps.append(("96.52", _fmt(proy["v_pct_a"], 2, comma=False)))
-    if proy.get("v_pct_b") is not None:
-        reps.append(("95.99%", _fmt(proy["v_pct_b"], 2, comma=False) + "%"))
-        reps.append(("95.99", _fmt(proy["v_pct_b"], 2, comma=False)))
-    if proy.get("v_pct_c") is not None:
-        reps.append(("96.43%", _fmt(proy["v_pct_c"], 2, comma=False) + "%"))
-        reps.append(("96.43", _fmt(proy["v_pct_c"], 2, comma=False)))
-
-    # Punto de diseño proyectado (fila plantilla 0.97 / 430 kW)
-    if proy:
-        if proy.get("vpu") is not None:
-            reps.append(("0.97", _fmt(proy["vpu"], 2, comma=False)))
-        if proy.get("vll") is not None:
-            reps.append(("9.7", _fmt(proy["vll"], 1, comma=False)))
-        if proy.get("vln") is not None:
-            reps.append(("5.6", _fmt(proy["vln"], 1, comma=False)))
-        if proy.get("i_a") is not None and meta.get("potencia_kw"):
-            # corriente del punto ~ demanda solicitada, no cabecera
-            i_pd = _amps(_sva(meta["potencia_kw"], meta["potencia_kw"] * math.tan(math.acos(0.95))), proy.get("vll") or 22.9)
-            if i_pd:
-                reps.append(("27.1", _fmt(i_pd, 1, comma=False)))
-        if meta.get("potencia_kw") is not None:
-            pk = meta["potencia_kw"]
-            qk = pk * math.tan(math.acos(min(0.999, max(0.01, 0.95))))
-            kva = _sva(pk, qk)
-            reps.append(("455", _fmt(kva, 0, comma=False)))
-            # No reemplazar "430" suelto (aparece muchas veces en la plantilla)
-            reps.append(("142", _fmt(qk, 0, comma=False)))
+    if alimentador:
+        reps.append(("IC106", alimentador))
+        reps.append(("IC107", alimentador))
+    if cliente:
+        reps.append((
+            "MUNICIPAL DE AGUA POTABLE Y ALCANTARILLADO DE ICA S.A. - EMAPICA",
+            cliente,
+        ))
+        reps.append((
+            "PREDIO MUNICIPAL DE AGUA POTABLE Y ALCANTARILLADO DE ICA S.A. - EMAPICA",
+            cliente,
+        ))
+        reps.append(("EMAPICA", cliente[:80]))
+    if pot_display:
+        reps.append(("430 KW", pot_display))
+        reps.append(("430 kW", pot_display))
+        if pot_txt:
+            reps.append(("430KW", pot_txt))
+        reps.append((
+            "El interesado solicita Factibilidad y Punto de Diseño 430 KW.",
+            "El interesado solicita Factibilidad y Punto de Diseño %s." % pot_display,
+        ))
+        reps.append((
+            "El interesado solicita Factibilidad y Punto de Diseño 430 kW.",
+            "El interesado solicita Factibilidad y Punto de Diseño %s." % pot_display,
+        ))
+    if expediente:
+        reps.append(("EXP-2026-000434", expediente))
+    if set_name:
+        reps.append(("SET ICA", set_name))
+        reps.append(("SET Ica", set_name))
+    if trafo:
+        reps.append((
+            "El transformador de la SET ICA tiene las siguientes características 50/30/30 MVA.",
+            "El transformador de la %s tiene las siguientes características: %s." % (set_name or "SET", trafo),
+        ))
+        reps.append(("50/30/30 MVA", trafo))
+    if alimentador:
+        reps.append((
+            "El interesado se encuentra próximo al alimentador IC106.",
+            "El interesado se encuentra próximo al alimentador %s." % alimentador,
+        ))
+        reps.append((
+            "Se ha verificado que el interesado se encuentra dentro de área de la zona de influencia del alimentador IC106",
+            "Se ha verificado que el interesado se encuentra dentro del área de influencia del alimentador %s%s." % (
+                alimentador,
+                (" (%s)" % ubic) if ubic else "",
+            ),
+        ))
+    if ubic:
+        reps.append((
+            "distrito de Parcona, provincia ICA del departamento de ICA",
+            ubic,
+        ))
 
     return reps
+
+
+def _fill_word_headers(root, meta, scenarios=None):
+    """Actualiza ASUNTO / ANTECEDENTES / CONCLUSIONES con meta (estructura plantilla)."""
+    _merge_w_t(root)
+    reps = _build_header_replacements(meta, scenarios)
+    done = []
+    for old, new in reps:
+        count = 0
+        for p in root.iter("{%s}p" % W_NS):
+            count += _replace_in_paragraph(p, old, new)
+        if count:
+            done.append({"old": old[:80], "new": str(new)[:80], "count": count})
+    cliente = (meta or {}).get("cliente") or ""
+    if cliente:
+        for p in root.iter("{%s}p" % W_NS):
+            txt = _para_text(p)
+            if "ASUNTO" in txt.upper() and "FACTIBILIDAD" in txt.upper():
+                new_txt = "ASUNTO: FACTIBILIDAD AMPLIACION DE CARGA, %s." % cliente
+                if _set_para_text(p, new_txt):
+                    done.append({"old": "ASUNTO…", "new": new_txt, "count": 1})
+                break
+    # Antecedentes ubicacion (evitar duplicar "en media tensión" si ya viene en solicitud)
+    ubic = (meta or {}).get("ubicacion") or ""
+    solicitud = (meta or {}).get("solicitud") or "Factibilidad y Punto de Diseño"
+    if ubic:
+        sol_l = solicitud.lower()
+        if "media tensión" in sol_l or "media tension" in sol_l:
+            mid = "evaluación de %s, predio ubicado en %s." % (solicitud, ubic)
+        else:
+            mid = "evaluación de %s en media tensión, predio ubicado en %s." % (solicitud, ubic)
+        for p in root.iter("{%s}p" % W_NS):
+            txt = _para_text(p)
+            if "Unidad de Proyectos" in txt and "predio ubicado" in txt.lower():
+                new_txt = "La Unidad de Proyectos y Obras distribución solicita %s" % mid
+                if _set_para_text(p, new_txt):
+                    done.append({"old": "antecedentes ubic…", "new": new_txt[:80], "count": 1})
+                break
+    return done
+
+
+def _xml_escape_text(value):
+    """Escape minimo para contenido de <w:t>."""
+    s = "" if value is None else str(value)
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _iter_wt_texts(root):
+    """Lista de textos de cada <w:t> en orden de documento."""
+    out = []
+    for t in root.iter("{%s}t" % W_NS):
+        out.append(t.text if t.text is not None else "")
+    return out
+
+
+def _patch_document_xml_wt(xml_bytes, new_texts):
+    """
+    Reescribe solo el contenido de <w:t>…</w:t> en orden, sin reserializar el XML.
+    ElementTree.tostring/write corrompe namespaces de Word; este parche los preserva.
+    """
+    pattern = re.compile(br"(<w:t(?:\s[^>]*)?>)(.*?)(</w:t>)", re.DOTALL)
+    matches = list(pattern.finditer(xml_bytes))
+    if len(matches) != len(new_texts):
+        raise ValueError(
+            "Conteo <w:t> distinto tras edicion: xml=%d tree=%d"
+            % (len(matches), len(new_texts))
+        )
+    parts = []
+    last = 0
+    changed = 0
+    for i, m in enumerate(matches):
+        parts.append(xml_bytes[last:m.start()])
+        old_inner = m.group(2)
+        new_inner = _xml_escape_text(new_texts[i]).encode("utf-8")
+        if old_inner != new_inner:
+            changed += 1
+        parts.append(m.group(1) + new_inner + m.group(3))
+        last = m.end()
+    parts.append(xml_bytes[last:])
+    return b"".join(parts), changed
 
 
 def fill_word(docx_path, scenarios, meta, images_dir=None):
@@ -537,13 +1003,38 @@ def fill_word(docx_path, scenarios, meta, images_dir=None):
     with zipfile.ZipFile(docx_path, "r") as zin:
         zin.extractall(tmp)
 
-    xml_path = os.path.join(tmp, "word", "document.xml")
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
-    _merge_w_t(root)
-    reps = _build_word_replacements(scenarios, meta)
-    done = _replace_in_xml(root, reps)
-    tree.write(xml_path, encoding="UTF-8", xml_declaration=True)
+    word_dir = os.path.join(tmp, "word")
+    # document.xml + headers (REFERENCIA EMAPICA) — nunca reserializar con ET.write
+    xml_targets = ["document.xml"]
+    if os.path.isdir(word_dir):
+        for name in sorted(os.listdir(word_dir)):
+            low = name.lower()
+            if low.startswith("header") and low.endswith(".xml"):
+                xml_targets.append(name)
+
+    header_done = []
+    tables_report = {"n_tables": 0, "filled": [], "cells": []}
+    wt_changed_total = 0
+
+    for xml_name in xml_targets:
+        xml_path = os.path.join(word_dir, xml_name)
+        if not os.path.isfile(xml_path):
+            continue
+        with open(xml_path, "rb") as f:
+            original_xml = f.read()
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        done = _fill_word_headers(root, meta, scenarios)
+        if xml_name == "document.xml":
+            tables_report = _fill_word_tables(root, scenarios, meta)
+            header_done = done
+        elif done:
+            header_done.extend([dict(x, where=xml_name) for x in done])
+        new_texts = _iter_wt_texts(root)
+        patched_xml, wt_changed = _patch_document_xml_wt(original_xml, new_texts)
+        with open(xml_path, "wb") as f:
+            f.write(patched_xml)
+        wt_changed_total += wt_changed
 
     images_replaced = []
     if images_dir and os.path.isdir(images_dir):
@@ -554,7 +1045,6 @@ def fill_word(docx_path, scenarios, meta, images_dir=None):
                 shutil.copy2(src, dst)
                 images_replaced.append({"src": src, "dst": dst_rel})
 
-    # Rezip
     out_tmp = docx_path + ".__new.docx"
     if os.path.isfile(out_tmp):
         os.remove(out_tmp)
@@ -566,7 +1056,15 @@ def fill_word(docx_path, scenarios, meta, images_dir=None):
                 zout.write(full, rel)
     shutil.move(out_tmp, docx_path)
     shutil.rmtree(tmp, ignore_errors=True)
-    return {"replacements": done, "images_replaced": images_replaced}
+    return {
+        "replacements": header_done,
+        "tables_filled": tables_report.get("filled") or [],
+        "tables_cells": tables_report.get("cells") or [],
+        "n_tables": tables_report.get("n_tables"),
+        "images_replaced": images_replaced,
+        "wt_patched": wt_changed_total,
+        "xml_targets": xml_targets,
+    }
 
 
 def delivery_status(settings=None):
@@ -610,6 +1108,207 @@ def delivery_status(settings=None):
     }
 
 
+def _metric_snapshot(scenarios):
+    metric_keys = ("kw", "kvar", "kva", "fp_pct", "kw_loss", "vpu", "v_pct_a", "v_pct_b", "v_pct_c", "i_a")
+    return {
+        "situacional": bool(scenarios.get("situacional")),
+        "proyectado": bool(scenarios.get("proyectado")),
+        "situacional_metrics": (
+            {k: scenarios["situacional"].get(k) for k in metric_keys}
+            if scenarios.get("situacional") else None
+        ),
+        "proyectado_metrics": (
+            {k: scenarios["proyectado"].get(k) for k in metric_keys}
+            if scenarios.get("proyectado") else None
+        ),
+    }
+
+
+def _confirm_path(paths):
+    return os.path.join(paths["doc_dir"], "entrega_confirmada.json")
+
+
+def load_entrega_confirmada(settings=None):
+    """Lee confirmación de entrega (cierre tras vista preliminar)."""
+    s = settings or load_settings()
+    paths = informe_paths(s)
+    path = _confirm_path(paths)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def build_informe_preview(settings=None):
+    """
+    Vista preliminar del informe ya creado (sin regenerar).
+    Usar antes de cerrar/confirmar entrega.
+    """
+    s = settings or load_settings()
+    scenarios = _load_scenarios(s)
+    meta = _meta_cliente(s)
+    paths = scenarios["paths"]
+    img_dir = _images_dir(s)
+    mkdir(img_dir)
+
+    images = []
+    for name in list(REQUIRED_LF_IMAGES) + ["topologia.png", "trafo_cargabilidad.png"]:
+        full = os.path.join(img_dir, name)
+        if os.path.isfile(full):
+            images.append({
+                "name": name,
+                "url": "/api/informe/imagen/%s" % name,
+                "bytes": os.path.getsize(full),
+                "mtime": datetime.fromtimestamp(os.path.getmtime(full)).isoformat(timespec="seconds"),
+                "required": name in REQUIRED_LF_IMAGES,
+            })
+
+    doc_inf = paths.get("informe_doc") or ""
+    doc_jus = paths.get("justificacion_doc") or ""
+    doc_pdf = os.path.join(paths["doc_dir"], "informe.pdf") if paths.get("doc_dir") else ""
+    docs = {
+        "informe": {
+            "exists": bool(doc_inf and os.path.isfile(doc_inf)),
+            "path": doc_inf,
+            "url": "/api/informe/archivo/informe",
+            "bytes": os.path.getsize(doc_inf) if doc_inf and os.path.isfile(doc_inf) else 0,
+        },
+        "justificacion": {
+            "exists": bool(doc_jus and os.path.isfile(doc_jus)),
+            "path": doc_jus,
+            "url": "/api/informe/archivo/justificacion",
+            "bytes": os.path.getsize(doc_jus) if doc_jus and os.path.isfile(doc_jus) else 0,
+        },
+        "pdf": {
+            "exists": bool(doc_pdf and os.path.isfile(doc_pdf)),
+            "path": doc_pdf,
+            "url": "/api/informe/archivo/pdf",
+            "bytes": os.path.getsize(doc_pdf) if doc_pdf and os.path.isfile(doc_pdf) else 0,
+        },
+    }
+
+    # Paginas rasterizadas del render Word (si existen)
+    page_previews = []
+    prev_dir = os.path.join(paths["doc_dir"], "informe_preview") if paths.get("doc_dir") else ""
+    if prev_dir and os.path.isdir(prev_dir):
+        for name in sorted(os.listdir(prev_dir)):
+            if not name.lower().endswith((".jpg", ".jpeg", ".png")):
+                continue
+            full = os.path.join(prev_dir, name)
+            page_previews.append({
+                "name": name,
+                "url": "/api/informe/pagina/%s" % name,
+                "bytes": os.path.getsize(full),
+            })
+
+    filled = docs["informe"]["exists"] and docs["justificacion"]["exists"]
+    required_imgs = [i for i in images if i.get("required")]
+    preview_ok = filled and len(required_imgs) >= len(REQUIRED_LF_IMAGES)
+    confirm = load_entrega_confirmada(s)
+
+    word_replacements = []
+    man_path = os.path.join(paths["doc_dir"], "fill_manifest.json")
+    if os.path.isfile(man_path):
+        try:
+            with open(man_path, "r", encoding="utf-8") as f:
+                man = json.load(f)
+            word_replacements = ((man.get("word") or {}).get("replacements") or [])[:40]
+            if not scenarios.get("situacional") and man.get("scenarios_used"):
+                # fallback metrics from last fill
+                pass
+        except Exception:
+            man = {}
+    else:
+        man = {}
+
+    scenarios_used = man.get("scenarios_used") or _metric_snapshot(scenarios)
+    render_info = man.get("render") or {}
+
+    return {
+        "ok": True,
+        "preview_ok": preview_ok,
+        "can_close": preview_ok and not bool((confirm or {}).get("confirmed")),
+        "closed": bool((confirm or {}).get("confirmed")),
+        "confirm": confirm,
+        "feeder_id": s.get("feeder_id"),
+        "filled_at": man.get("filled_at"),
+        "meta": {
+            "cliente": meta.get("cliente") or "",
+            "ubicacion": meta.get("ubicacion") or "",
+            "solicitud": meta.get("solicitud") or "",
+            "potencia_kw": meta.get("potencia_kw"),
+            "potencia_txt": meta.get("potencia_txt") or "",
+            "alimentador": meta.get("alimentador") or s.get("feeder_id") or "",
+            "set": meta.get("set") or "",
+            "tension_kv": meta.get("tension_kv"),
+            "transformador": meta.get("transformador") or "",
+            "expediente": meta.get("expediente") or "",
+            "proyecto": meta.get("proyecto") or "",
+            "meta_source": meta.get("meta_source"),
+        },
+        "scenarios_used": scenarios_used,
+        "images": images,
+        "images_dir": img_dir,
+        "docs": docs,
+        "page_previews": page_previews,
+        "render": {
+            "ok": bool(render_info.get("ok")),
+            "pages": render_info.get("pages"),
+            "pdf": render_info.get("pdf") or (doc_pdf if docs["pdf"]["exists"] else None),
+            "rendered_at": render_info.get("rendered_at"),
+        },
+        "word_replacements": word_replacements,
+        "msg": (
+            "Vista preliminar lista — valide datos y gráficas antes de cerrar."
+            if preview_ok else
+            "Informe incompleto: rellene §6.2 (Word/Excel + 4 gráficas LF)."
+        ),
+    }
+
+
+def confirm_informe_entrega(settings=None, note="", force=False):
+    """
+    Cierra la entrega tras validar la vista preliminar.
+    Exige docs + 4 PNG; escribe doc/entrega_confirmada.json.
+    """
+    s = settings or load_settings()
+    preview = build_informe_preview(s)
+    if not preview.get("preview_ok") and not force:
+        return {
+            "ok": False,
+            "error": "No se puede cerrar: falta vista preliminar completa (docs o gráficas).",
+            "preview": preview,
+        }
+    paths = informe_paths(s)
+    mkdir(paths["doc_dir"])
+    payload = {
+        "ok": True,
+        "confirmed": True,
+        "confirmed_at": datetime.now().isoformat(timespec="seconds"),
+        "feeder_id": s.get("feeder_id"),
+        "note": (note or "").strip(),
+        "preview_snapshot": {
+            "meta": preview.get("meta"),
+            "scenarios_used": preview.get("scenarios_used"),
+            "images": [i.get("name") for i in (preview.get("images") or [])],
+            "docs": {
+                "informe": (preview.get("docs") or {}).get("informe", {}).get("path"),
+                "justificacion": (preview.get("docs") or {}).get("justificacion", {}).get("path"),
+            },
+            "filled_at": preview.get("filled_at"),
+        },
+    }
+    path = _confirm_path(paths)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+    payload["path"] = path
+    payload["msg"] = "Entrega confirmada · informe validado en vista preliminar"
+    return payload
+
+
 def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     """
     Copia plantilla → doc/ y rellena Excel + Word con LoadFlow.
@@ -620,10 +1319,17 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     s = settings or load_settings()
     scenarios = _load_scenarios(s)
     meta = _meta_cliente(s)
+    # Persistir meta completa (SET/trafo/etc.) para UI §6.1
+    try:
+        from pipeline.extract_informe_meta_pdf import save_informe_meta
+        save_informe_meta(s, meta)
+    except Exception as ex:
+        notes = ["aviso save meta: %s" % ex]
+    else:
+        notes = []
     paths = scenarios["paths"]
     img_dir = _images_dir(s)
     mkdir(img_dir)
-    notes = []
     charts_res = None
 
     if scenarios.get("situacional") or scenarios.get("proyectado"):
@@ -635,6 +1341,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
                     "proyectado": scenarios.get("proyectado"),
                 },
                 paths=paths,
+                force=True,
             )
             notes.append(
                 "charts generated: %d skipped: %d"
@@ -649,23 +1356,24 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
             }
             notes.append("charts error: %s" % ex)
 
+    # Mapa satelite §2.1: ubicacion de la carga nueva (nodo X/Y → WGS84)
+    map_res = None
+    try:
+        from pipeline.generate_location_map import generate_location_map
+        map_res = generate_location_map(s, out_dir=img_dir, force=True)
+        if map_res.get("ok"):
+            notes.append("topologia.png mapa carga nueva OK")
+        else:
+            notes.append("topologia.png omitido: %s" % (map_res.get("error") or "?"))
+    except Exception as ex:
+        map_res = {"ok": False, "error": str(ex)}
+        notes.append("topologia.png error: %s" % ex)
+
     delivery_ready, missing = _check_delivery_gates(
         scenarios, meta, img_dir, charts_res, settings=s
     )
 
-    metric_keys = ("kw", "kvar", "kva", "fp_pct", "kw_loss", "vpu", "v_pct_a", "v_pct_b", "v_pct_c", "i_a")
-    scenarios_used = {
-        "situacional": bool(scenarios["situacional"]),
-        "proyectado": bool(scenarios["proyectado"]),
-        "situacional_metrics": (
-            {k: scenarios["situacional"].get(k) for k in metric_keys}
-            if scenarios["situacional"] else None
-        ),
-        "proyectado_metrics": (
-            {k: scenarios["proyectado"].get(k) for k in metric_keys}
-            if scenarios["proyectado"] else None
-        ),
-    }
+    scenarios_used = _metric_snapshot(scenarios)
 
     if require_delivery and not delivery_ready:
         err = (
@@ -689,11 +1397,12 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
             "required_lf_images": list(REQUIRED_LF_IMAGES),
             "charts_generated": (charts_res or {}).get("generated") or [],
             "charts": charts_res,
+            "location_map": map_res,
             "scenarios_used": scenarios_used,
             "notes": notes,
             "aviso_imagenes": (
                 "Graficas LF se generan desde loadflow_*.json. "
-                "Override opcional: capturas CYMDIST en %s (mismos nombres)."
+                "topologia.png = mapa satelite carga nueva. Override en %s."
                 % img_dir
             ),
         }
@@ -710,16 +1419,45 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     if not base.get("ok"):
         return base
 
+    # Rellenar de nuevo invalida cierre previo (hay que revalidar preliminar).
+    try:
+        conf = _confirm_path(paths)
+        if os.path.isfile(conf):
+            os.remove(conf)
+            notes.append("entrega_confirmada.json invalidada (relleno nuevo)")
+    except Exception as ex:
+        notes.append("aviso invalidar confirm: %s" % ex)
+
     xnotes = fill_excel(paths["justificacion_doc"], scenarios, meta)
     notes.extend(xnotes)
     wres = fill_word(paths["informe_doc"], scenarios, meta, images_dir=img_dir)
     notes.append("word replacements: %d" % len(wres.get("replacements") or []))
+    _tbl = ", ".join(wres.get("tables_filled") or []) or "(none)"
+    notes.append("word tables: %s" % _tbl)
     notes.append("images replaced: %d" % len(wres.get("images_replaced") or []))
 
     replaced_names = [
         os.path.basename(x.get("src") or "") for x in (wres.get("images_replaced") or [])
     ]
     lf_replaced = [n for n in REQUIRED_LF_IMAGES if n in replaced_names]
+
+    # Render final Word: campos, paginado y PDF de entrega
+    render_res = None
+    try:
+        from pipeline.render_informe import render_informe as _render_informe
+        render_res = _render_informe(s, export_pdf=True, preview_pages=True)
+        if render_res.get("ok"):
+            notes.append(
+                "render Word ok · paginas=%s · pdf=%s"
+                % (render_res.get("pages"), "si" if render_res.get("pdf") else "no")
+            )
+            for n in (render_res.get("notes") or [])[:8]:
+                notes.append("render: %s" % n)
+        else:
+            notes.append("aviso render Word: %s" % (render_res.get("error") or "fallo"))
+    except Exception as ex:
+        render_res = {"ok": False, "error": str(ex)}
+        notes.append("aviso render Word: %s" % ex)
 
     manifest = {
         "ok": True,
@@ -735,14 +1473,19 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
         "required_lf_images": list(REQUIRED_LF_IMAGES),
         "charts_generated": (charts_res or {}).get("generated") or [],
         "charts": charts_res,
+        "location_map": map_res,
         "scenarios_used": scenarios_used,
         "excel_notes": xnotes,
         "word": wres,
+        "render": render_res,
         "lf_images_replaced": lf_replaced,
         "notes": notes,
+        "preview_url": "/api/informe/preview",
+        "needs_preview_confirm": True,
         "aviso_imagenes": (
-            "Graficas LF desde JSON (o override CYMDIST) en %s. "
-            "topologia/trafo siguen opcionales."
+            "Graficas LF desde JSON en %s. "
+            "topologia.png = mapa satelite de la carga nueva (nodo de conexion). "
+            "Valide la vista preliminar (§6.3) antes de cerrar la entrega."
             % img_dir
         ),
     }

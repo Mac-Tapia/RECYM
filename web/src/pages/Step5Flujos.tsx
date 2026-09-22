@@ -26,7 +26,9 @@ export function Step5Flujos() {
     <section className="panel">
       <h2>5 · Análisis CYMDIST (flujos)</h2>
       <p className="muted">
-        Alimentador <b>{feeder || "—"}</b>. Situacional desconecta SpotLoad §4; proyectado las conecta.
+        Alimentador <b>{feeder || "—"}</b>. Independiente de §4.1 (eliminado).
+        Situacional desconecta las SpotLoad §4 ya guardadas; proyectado las conecta.
+        Basta con haber conectado cargas vía <b>4.2</b> <i>o</i> <b>4.3</b> (no hace falta ambos).
         Cada botón es independiente. Tras OK se intenta actualizar §6.
       </p>
       <div className="actions">

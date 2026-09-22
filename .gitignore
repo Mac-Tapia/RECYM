@@ -9,3 +9,8 @@ web/dist/
 
 # Archivos >100MB (limite GitHub); mantener locales
 data/input/common/clientesimportantes/*.xlsb
+
+# Mediciones cabecera (Excel pesados locales)
+data/input/common/medicioncabecera/*.xls
+data/input/common/medicioncabecera/*.xlsx
+

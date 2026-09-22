@@ -31,7 +31,31 @@ def read_lf_stamp(settings):
         return None
 
 
-def write_lf_stamp(settings, config_id="DEFAULT", notes=None):
+def invalidate_lf_stamp(settings, reason=""):
+    """Marca el sello como no OK (p.ej. tras 130013 real en LoadAllocation/LF)."""
+    path = lf_stamp_path(settings)
+    data = {
+        "ok": False,
+        "loadallocation_native_ok": False,
+        "reason": str(reason or "")[:200],
+        "feeder_id": (settings or {}).get("feeder_id"),
+        "network_id": (settings or {}).get("network_id"),
+        "study_path": (settings or {}).get("study_path"),
+        "fixed_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if path:
+        try:
+            folder = os.path.dirname(path)
+            if folder and not os.path.isdir(folder):
+                os.makedirs(folder)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as ex:
+            print("AVISO invalidate_lf_stamp:", ex)
+    return data
+
+
+def write_lf_stamp(settings, config_id="DEFAULT", notes=None, loadallocation_native_ok=None):
     path = lf_stamp_path(settings)
     if not path:
         return None
@@ -46,6 +70,8 @@ def write_lf_stamp(settings, config_id="DEFAULT", notes=None):
         "fixed_at": datetime.now().isoformat(timespec="seconds"),
         "notes": (notes or [])[:8],
     }
+    if loadallocation_native_ok is not None:
+        data["loadallocation_native_ok"] = bool(loadallocation_native_ok)
     try:
         from core.feeder_context import resolve_cymdist_binding
         bind = resolve_cymdist_binding(settings)
@@ -292,7 +318,40 @@ def try_repair_loadflow_defaults(cympy):
         notes.append("DCLoadFlowParametersConfigID=clear")
     except Exception:
         pass
-    # Capas de salida + Mode oficiales (evitan 130013 por complementos no validos)
+    # Capas de salida + Mode oficiales (evitan 130013 por complementos no validos).
+    # Mode de scaling NO admite "None" en CYME 9.2 — usar enum Global vía properties.
+    try:
+        from cympy.properties.CymeEnums import (
+            _CymdistDataEnum_LoadFlowFactorTypeEnum as FactorType,
+        )
+        for attr in (
+            "LoadFlowLoadScalingFactors",
+            "LoadFlowGenerationScalingFactors",
+            "LoadFlowMotorScalingFactors",
+        ):
+            try:
+                getattr(cfg, attr).Mode = FactorType.Global
+                notes.append("%s.Mode=Global" % attr)
+            except Exception as ex:
+                notes.append("%s.Mode FAIL: %s" % (attr, ex))
+    except Exception as ex:
+        notes.append("FactorType enum FAIL: %s" % ex)
+    try:
+        cfg.AdjustDCLinks = False
+        notes.append("AdjustDCLinks=False")
+    except Exception:
+        pass
+    try:
+        cfg.TemperatureAdjustment.EnableTemperatureAdjustment = False
+        notes.append("EnableTemperatureAdjustment=False")
+    except Exception:
+        pass
+    try:
+        cfg.FlowAnalysisOutput.DisplayIterationReportNonConvergence = False
+        notes.append("DisplayIterationReportNonConvergence=False")
+    except Exception:
+        pass
+
     sim = cympy.sim.LoadFlow()
     for path, val in (
         ("ParametersConfigurations[0].FlowAnalysisOutput.ColorCodingLayer.ColorCodingType", "None"),
@@ -304,9 +363,6 @@ def try_repair_loadflow_defaults(cympy):
         ("ParametersConfigurations[0].FlowAnalysisOutput.EnableResultTags", False),
         ("ParametersConfigurations[0].DisplayStatus", False),
         ("ParametersConfigurations[0].LoadFlowVoltageSensitivityLoadModel.Mode", "FromLibrary"),
-        ("ParametersConfigurations[0].LoadFlowLoadScalingFactors.Mode", "None"),
-        ("ParametersConfigurations[0].LoadFlowGenerationScalingFactors.Mode", "None"),
-        ("ParametersConfigurations[0].LoadFlowMotorScalingFactors.Mode", "None"),
     ):
         try:
             sim.SetValue(val, path)

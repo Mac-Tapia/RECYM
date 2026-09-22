@@ -12,5 +12,6 @@
   "catalog_workbook": "",
   "output_dir": "",
   "notes": "Sintetizado automáticamente para diagnóstico de red BD",
-  "synthesized": true
+  "synthesized": true,
+  "via_eld": true
 }

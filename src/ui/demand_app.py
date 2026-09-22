@@ -26,10 +26,17 @@ from pipeline.inventory_loads import collect_loads
 from pipeline.apply_clientes_to_cymdist import apply_rows
 from pipeline.add_spot_load import (
     search_nodes, resolve_connection, connect_spot_load,
-    get_topology, append_report,
+    parse_batch_file, build_batch_template_csv, build_batch_template_xlsx,
+    connect_spot_loads_bulk, list_pending_spot_loads, normalize_batch_row,
+    get_topology, append_report, attach_location_map, list_connected_spot_loads,
 )
 from pipeline.assemble_informe import assemble_informe, informe_paths
-from pipeline.fill_informe import fill_informe, delivery_status
+from pipeline.fill_informe import (
+    fill_informe,
+    delivery_status,
+    build_informe_preview,
+    confirm_informe_entrega,
+)
 from pipeline.extract_informe_meta_pdf import (
     extract_informe_meta_from_pdf,
     load_informe_meta,
@@ -417,12 +424,33 @@ tr.off-row{opacity:.55;background:#fafaf9}
       </div>
     </div>
     <div class="actions">
-      <button type="button" class="ghost" onclick="refreshNodes(true)">Actualizar inventario nodos</button>
-      <button type="button" id="btnConnectLoad" onclick="connectLoad()" disabled>Conectar carga en CYMDIST</button>
-      <span class="muted" id="loadMsg">Busque un nodo para habilitar la conexión.</span>
+      <button type="button" id="btnConnectLoad" onclick="connectLoad()" disabled>4.2 · Conectar y guardar en CYMDIST</button>
+      <span class="muted" id="loadMsg">Busque un nodo (sin inventario manual: se resuelve solo).</span>
     </div>
     <div id="loadResolve" class="muted" style="margin-top:8px"></div>
     <div id="loadHistory" style="max-height:220px;overflow:auto;margin-top:10px"></div>
+
+    <h3 style="margin-top:18px">4.3 · Cargas en bloque (CSV / Excel)</h3>
+    <p class="muted">Independiente de 4.2. Descargue plantilla, complete filas y conéctelas.
+      Accion = <code>NUEVA</code> o <code>ACTUALIZAR</code>. Quedan guardadas para §5.</p>
+    <div class="actions">
+      <button type="button" class="ghost" onclick="downloadSpotTemplate('xlsx')">Plantilla .xlsx</button>
+      <button type="button" class="ghost" onclick="downloadSpotTemplate('csv')">Plantilla .csv</button>
+      <label class="ghost" style="display:inline-block;padding:8px 12px;border:1px solid #ccc;border-radius:8px;cursor:pointer">
+        Cargar CSV/Excel
+        <input type="file" id="spotBatchFile" accept=".csv,.xlsx,.xlsm" style="display:none" onchange="previewSpotBatch(this)"/>
+      </label>
+      <button type="button" id="btnSpotBatch" onclick="connectSpotBatch()" disabled>4.3 · Conectar en bloque</button>
+      <span class="muted" id="spotBatchMsg"></span>
+    </div>
+    <div id="spotBatchTable" style="max-height:260px;overflow:auto;margin-top:8px"></div>
+    <h3 style="margin-top:14px">4.3b · Pendientes</h3>
+    <div class="actions">
+      <button type="button" class="ghost" onclick="loadSpotPending()">Actualizar listado</button>
+      <button type="button" id="btnSpotPending" onclick="retrySpotPending()" disabled>Reintentar pendientes</button>
+      <span class="muted" id="spotPendingMsg"></span>
+    </div>
+    <div id="spotPendingTable" style="max-height:180px;overflow:auto;margin-top:8px"></div>
   </section>
 
   <section class="panel">
@@ -3004,7 +3032,7 @@ async function searchNodes(){
     });
     document.getElementById('loadMsg').textContent =
       (pack.feeder?('['+pack.feeder+'] '):'')
-      + ((j.nodes||[]).length ? ('Coincidencias: '+(j.nodes||[]).length) : 'Sin nodos. Pulse «Actualizar inventario nodos».');
+      + ((j.nodes||[]).length ? ('Coincidencias: '+(j.nodes||[]).length) : 'Sin nodos para esa búsqueda.');
     _resolved = null;
     document.getElementById('autoSection').value = '';
     document.getElementById('autoLoadId').value = '';
@@ -3154,6 +3182,144 @@ async function connectLoad(){
   }finally{
     document.getElementById('btnConnectLoad').disabled = !document.getElementById('nodeSelect').value;
   }
+}
+
+/* —— SpotLoad lote CSV/Excel —— */
+let _spotBatchRows = [];
+let _spotPendingRows = [];
+
+async function downloadSpotTemplate(fmt){
+  const pack = (typeof getActiveFeederPack === 'function') ? getActiveFeederPack() : {};
+  const h = {};
+  if (pack.feeder) h['X-Feeder'] = pack.feeder;
+  const r = await fetch('/api/cargas/plantilla?fmt='+(fmt||'xlsx'), {headers:h});
+  if(!r.ok) throw new Error(await r.text());
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'spotload_lote.'+(fmt||'xlsx');
+  a.click();
+  URL.revokeObjectURL(a.href);
+  const msg = document.getElementById('spotBatchMsg');
+  if (msg) msg.textContent = 'Plantilla descargada.';
+}
+
+function renderSpotBatchTable(rows){
+  const box = document.getElementById('spotBatchTable');
+  if (!box) return;
+  if (!rows || !rows.length){
+    box.innerHTML = '<div class="muted">Sin filas.</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>#</th><th>Accion</th><th>NodeID</th><th>Nombre</th><th>P_kW</th><th>Estado</th></tr></thead><tbody>';
+  rows.forEach(function(r,i){
+    const st = r.error || ((r.errors||[]).join('; ')) || r.Estado || (r.ok===false?'ERROR':'OK');
+    html += '<tr><td>'+(r.row||i+1)+'</td><td>'+(r.Accion||'')+'</td><td>'+(r.NodeID||'')
+      +'</td><td>'+(r.Nombre||r.LoadID||'')+'</td><td>'+(r.P_kW??'')+'</td><td>'+st+'</td></tr>';
+  });
+  html += '</tbody></table>';
+  box.innerHTML = html;
+}
+
+async function previewSpotBatch(input){
+  const f = input && input.files && input.files[0];
+  if (!f) return;
+  const msg = document.getElementById('spotBatchMsg');
+  const btn = document.getElementById('btnSpotBatch');
+  try{
+    if (msg) msg.textContent = 'Leyendo '+f.name+'…';
+    const fd = new FormData();
+    fd.append('file', f);
+    const pack = (typeof getActiveFeederPack === 'function') ? getActiveFeederPack() : {};
+    const h = {};
+    if (pack.feeder) h['X-Feeder'] = pack.feeder;
+    const r = await fetch('/api/cargas/lote/preview', {method:'POST', headers:h, body:fd});
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error||'Error preview');
+    _spotBatchRows = j.rows || [];
+    renderSpotBatchTable(_spotBatchRows);
+    if (btn) btn.disabled = !_spotBatchRows.some(function(x){ return x.ok !== false; });
+    if (msg) msg.textContent = 'Válidas '+(j.n_ok||0)+' · errores '+(j.n_error||0);
+  }catch(e){
+    _spotBatchRows = [];
+    if (btn) btn.disabled = true;
+    if (msg) msg.innerHTML = '<span class="err">'+e+'</span>';
+  }finally{
+    if (input) input.value = '';
+  }
+}
+
+async function connectSpotBatch(rows){
+  const data = rows || _spotBatchRows;
+  const msg = document.getElementById('spotBatchMsg');
+  const btn = document.getElementById('btnSpotBatch');
+  if (!data.length){ if (msg) msg.textContent = 'Cargue un archivo primero.'; return; }
+  if (!confirm('¿Conectar en bloque '+data.filter(function(x){return x.ok!==false;}).length+' SpotLoad?')) return;
+  try{
+    if (btn) btn.disabled = true;
+    if (msg) msg.textContent = 'Conectando lote…';
+    const j = await spotFetch('/api/cargas/lote/conectar', {rows: data});
+    if (j.ok === false && !j.n_ok) throw new Error(j.error||'Error lote');
+    _spotBatchRows = j.results || data;
+    renderSpotBatchTable(_spotBatchRows);
+    if (msg) msg.textContent = j.msg || ('OK '+(j.n_ok||0)+' · err '+(j.n_error||0));
+    loadSpotPending();
+  }catch(e){
+    if (msg) msg.innerHTML = '<span class="err">'+e+'</span>';
+  }finally{
+    if (btn) btn.disabled = !_spotBatchRows.some(function(x){ return x.ok !== false; });
+  }
+}
+
+async function loadSpotPending(){
+  const msg = document.getElementById('spotPendingMsg');
+  const btn = document.getElementById('btnSpotPending');
+  const box = document.getElementById('spotPendingTable');
+  try{
+    const j = await spotFetch('/api/cargas/pendientes');
+    if (j && j.ok === false) throw new Error(j.error||'Error');
+    // spotFetch may POST; pendientes is GET
+  }catch(_e){ /* fallback GET */ }
+  try{
+    const pack = (typeof getActiveFeederPack === 'function') ? getActiveFeederPack() : {};
+    const h = {};
+    if (pack.feeder) h['X-Feeder'] = pack.feeder;
+    const r = await fetch('/api/cargas/pendientes', {headers:h});
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error||'Error');
+    _spotPendingRows = j.rows || [];
+    if (btn) btn.disabled = !_spotPendingRows.length;
+    if (msg) msg.textContent = _spotPendingRows.length
+      ? (_spotPendingRows.length+' pendiente(s)')
+      : 'Sin pendientes.';
+    if (box){
+      if (!_spotPendingRows.length) box.innerHTML = '<div class="muted">Ninguna.</div>';
+      else {
+        let html = '<table><thead><tr><th>Nombre</th><th>NodeID</th><th>P_kW</th><th>Estado</th></tr></thead><tbody>';
+        _spotPendingRows.forEach(function(p){
+          html += '<tr><td>'+(p.Nombre||p.LoadID||'')+'</td><td>'+(p.NodeID||'')
+            +'</td><td>'+(p.P_kW??'')+'</td><td>'+(p.Estado||'')+'</td></tr>';
+        });
+        html += '</tbody></table>';
+        box.innerHTML = html;
+      }
+    }
+  }catch(e){
+    if (msg) msg.innerHTML = '<span class="err">'+e+'</span>';
+  }
+}
+
+async function retrySpotPending(){
+  const rows = (_spotPendingRows||[]).map(function(p,i){
+    return {
+      row: i+1, Accion:'ACTUALIZAR', NodeID:p.NodeID||'', Nombre:p.Nombre||p.LoadID||'',
+      Modo:'KW_COSFI', P_kW:p.P_kW, Q_kvar:p.Q_kvar, cosfi:p.cosfi||'0.95',
+      ok: !!(p.NodeID && (p.Nombre||p.LoadID) && p.P_kW!=null && p.P_kW!==''),
+    };
+  });
+  _spotBatchRows = rows;
+  renderSpotBatchTable(rows);
+  await connectSpotBatch(rows);
 }
 
 /* —— §6 Optimización + §7 Suite —— */
@@ -3746,10 +3912,12 @@ def api_ui_reset():
         if feeder:
             s = load_settings(feeder_id=feeder, synthesize=True)
         sess = load_session(s)
-        for k in ("P_kW", "Q_kvar", "I_A", "Va_kV", "Vb_kV", "Vc_kV"):
+        for k in ("P_kW", "Q_kvar", "I_A", "Va_kV", "Vb_kV", "Vc_kV", "S_kVA", "P_avg_kW", "factor_carga_pct"):
             sess[k] = None
         sess["Vll_kV"] = None
         sess["fecha_medicion"] = ""
+        sess["medidor"] = ""
+        sess["medicion_file"] = ""
         sess["status"] = "empty"
         sess.pop("allocation", None)
         sess.pop("last_allocation", None)
@@ -3936,6 +4104,11 @@ def _cabecera_payload_from_session(s, sess):
         "mode": sess.get("mode") or "KW_KVAR",
         "P_kW": sess.get("P_kW"),
         "Q_kvar": sess.get("Q_kvar"),
+        "S_kVA": sess.get("S_kVA"),
+        "P_avg_kW": sess.get("P_avg_kW"),
+        "factor_carga_pct": sess.get("factor_carga_pct"),
+        "medidor": sess.get("medidor") or "",
+        "medicion_file": sess.get("medicion_file") or "",
         "cosfi": sess.get("cosfi"),
         "I_A": sess.get("I_A"),
         "Vll_kV": vll_f,
@@ -3945,6 +4118,96 @@ def _cabecera_payload_from_session(s, sess):
         "fecha_medicion": sess.get("fecha_medicion") or "",
         "status": sess.get("status") or "empty",
     }
+
+
+@app.route("/api/cabecera/medicion/archivos")
+def api_cabecera_medicion_archivos():
+    """Lista Excel de medicioncabecera + path del mapeo medidor."""
+    try:
+        from core.cabecera_medicion_excel import (
+            list_medicioncabecera_files,
+            medidoralimentador_path,
+            medicioncabecera_dir,
+        )
+        from core.common import load_json
+        global_s = load_json("config/settings.json")
+        files = list_medicioncabecera_files(global_s)
+        return jsonify({
+            "ok": True,
+            "files": files,
+            "medicioncabecera_dir": medicioncabecera_dir(global_s),
+            "medidoralimentador": medidoralimentador_path(global_s),
+            "n_files": len(files),
+        })
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex), "files": []})
+
+
+@app.route("/api/cabecera/medicion/resolver", methods=["GET", "POST"])
+def api_cabecera_medicion_resolver():
+    """Lookup medidor + Vll + Excel candidatos (sin leer series temporales)."""
+    try:
+        from core.cabecera_medicion_excel import resolve_cabecera_medicion
+        from core.common import load_json
+        global_s = load_json("config/settings.json")
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+        else:
+            body = {}
+        feeder = (
+            (body.get("feeder") or "").strip()
+            or (request.args.get("feeder") or "").strip()
+            or (request.headers.get("X-Feeder") or "").strip()
+        )
+        if not feeder:
+            return jsonify({"ok": False, "error": "Indique alimentador (feeder)"})
+        return jsonify(resolve_cabecera_medicion(feeder, settings=global_s))
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/cabecera/medicion/extraer", methods=["GET", "POST"])
+def api_cabecera_medicion_extraer():
+    """Lookup medidor + extrae Pmax/Q/kVA/Pprom/FdC desde medicioncabecera.
+
+    Si el Excel elegido no tiene la hoja del medidor, auto-localiza el correcto
+    (auto_find_file=true por defecto) para evitar errores de selección.
+    """
+    try:
+        from core.cabecera_medicion_excel import extract_cabecera_medicion
+        from core.common import load_json
+        global_s = load_json("config/settings.json")
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+        else:
+            body = {}
+        feeder = (
+            (body.get("feeder") or "").strip()
+            or (request.args.get("feeder") or "").strip()
+            or (request.headers.get("X-Feeder") or "").strip()
+        )
+        medicion_file = (
+            (body.get("medicion_file") or body.get("file") or "").strip()
+            or (request.args.get("medicion_file") or request.args.get("file") or "").strip()
+            or None
+        )
+        auto_find = body.get("auto_find_file")
+        if auto_find is None:
+            # Default: sí auto-corregir archivo incorrecto (robustez UI)
+            auto_find = request.args.get("auto_find_file", "1") not in ("0", "false", "False")
+        else:
+            auto_find = bool(auto_find)
+        if not feeder:
+            return jsonify({"ok": False, "error": "Indique alimentador (feeder)"})
+        result = extract_cabecera_medicion(
+            feeder,
+            medicion_file=medicion_file,
+            settings=global_s,
+            auto_find_file=auto_find,
+        )
+        return jsonify(result)
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
 
 
 @app.route("/api/cabecera", methods=["GET", "POST"])
@@ -4076,6 +4339,17 @@ def api_cabecera():
         except Exception:
             pass
     sess["fecha_medicion"] = (body.get("fecha_medicion") or "").strip()
+    # Campos opcionales de extracción Excel (máx / promedio / FdC)
+    for _k in ("S_kVA", "P_avg_kW", "factor_carga_pct"):
+        if body.get(_k) not in (None, ""):
+            try:
+                sess[_k] = float(body.get(_k))
+            except Exception:
+                pass
+    if body.get("medidor") not in (None, ""):
+        sess["medidor"] = str(body.get("medidor")).strip()
+    if body.get("medicion_file") not in (None, ""):
+        sess["medicion_file"] = str(body.get("medicion_file")).strip()
     sess["status"] = "cabecera_session_ok"
     if reset_flag:
         sess["fixed_loads"] = []
@@ -4120,6 +4394,11 @@ def api_cabecera():
         "ok": cymdist_ok,
         "P_kW": p,
         "Q_kvar": q,
+        "S_kVA": sess.get("S_kVA"),
+        "P_avg_kW": sess.get("P_avg_kW"),
+        "factor_carga_pct": sess.get("factor_carga_pct"),
+        "medidor": sess.get("medidor") or "",
+        "medicion_file": sess.get("medicion_file") or "",
         "Vll_kV": sess.get("Vll_kV"),
         "Va_kV": sess.get("Va_kV"),
         "Vb_kV": sess.get("Vb_kV"),
@@ -4318,6 +4597,62 @@ def api_clientes_tabla():
             meta["attach_note"] = attach_note
         save_table_csv(csv_path, rows)
         save_table_json(json_path, rows, meta)
+
+        # Anti-saturación: al re-armar 3.1, liberar en CYMDIST los CI previos
+        # que ya no están en la tabla nueva (Unlocked + KWH/kW=0) y guardar.
+        cym_refresh = {"skipped": True}
+        try:
+            from pipeline.apply_clientes_to_cymdist import (
+                previous_applied_load_ids,
+                keep_load_ids_from_rows,
+                release_clientes_loads,
+            )
+            from pipeline.run_demand_allocation import load_session, save_session
+            prev_ids = previous_applied_load_ids(s)
+            keep_ids = keep_load_ids_from_rows(rows, solo_activos=False)
+            stale = prev_ids - keep_ids
+            if stale:
+                from core.cymdist_com import pause_cymdist_for_cympy
+                from core.common import require_cympy, load_json
+                from core.cympy_adapter import CymPyAdapter
+                pause_cymdist_for_cympy(s)
+                s_w = dict(s)
+                s_w["skip_db_project_save"] = True
+                api = load_json("config/cympy_api_map.json")
+                c = require_cympy(s_w)
+                a = CymPyAdapter(c, api, s_w)
+                a.open_study(force_backup=False)
+                released = release_clientes_loads(a, stale, reconnect=True)
+                if s.get("save_after_write", True):
+                    try:
+                        a.save_study()
+                    except Exception as ex_sv:
+                        print("AVISO save post 3.1 liberar:", ex_sv)
+                try:
+                    a.close_study(save=False)
+                except Exception:
+                    pass
+                cym_refresh = {
+                    "skipped": False,
+                    "n_liberados": released.get("n_liberados"),
+                    "n_stale": len(stale),
+                    "saved": True,
+                }
+                print("[3.1] CYMDIST liberados:", cym_refresh)
+            else:
+                cym_refresh = {"skipped": True, "reason": "sin_stale", "n_prev": len(prev_ids)}
+            try:
+                sess = load_session(s)
+                sess["alloc_locks_ready"] = False
+                sess.pop("alloc_locks_fixed_key", None)
+                sess["tabla_armada_at"] = __import__("time").strftime("%Y-%m-%dT%H:%M:%S")
+                save_session(s, sess)
+            except Exception:
+                pass
+        except Exception as ex_ref:
+            print("AVISO refresh CYMDIST 3.1:", ex_ref)
+            cym_refresh = {"skipped": True, "error": str(ex_ref)}
+
         tablero = None
         # Tablero es opcional y lento; no bloquear la tabla cruzada
         try:
@@ -4327,6 +4662,11 @@ def api_clientes_tabla():
                 tablero = output_path(s, "diagnostics", "tablero.html")
         except Exception as ex_tab:
             print("AVISO tablero:", ex_tab)
+        msg31 = "Tabla cruzada: %d filas" % len(rows or [])
+        if not cym_refresh.get("skipped") and cym_refresh.get("n_liberados"):
+            msg31 += " · CYMDIST liberó %d SED previos (anti-saturación)" % int(
+                cym_refresh.get("n_liberados") or 0
+            )
         return jsonify({
             "ok": True,
             "rows": rows,
@@ -4334,7 +4674,8 @@ def api_clientes_tabla():
             "csv": csv_path,
             "tablero": tablero,
             "n_rows": len(rows or []),
-            "msg": "Tabla cruzada: %d filas" % len(rows or []),
+            "cymdist_refresh": cym_refresh,
+            "msg": msg31,
         })
     except Exception as ex:
         import traceback
@@ -4679,13 +5020,33 @@ def api_clientes_aplicar():
         a = CymPyAdapter(c, api, s_write)
         a.open_study(force_backup=False)
         fp = float(body.get("fp") or 0.95)
-        # Solo ~12 clientes CI → API rápida (EA→Consumo KWH, Pot→kW Locked)
-        report = apply_rows(a, rows, fp=fp, lock=True)
+        # Anti-saturación: liberar CI previos fuera de la tabla, luego escribir EA/Pot
+        from pipeline.apply_clientes_to_cymdist import (
+            previous_applied_load_ids,
+            refresh_clientes_in_cymdist,
+        )
+        prev_ids = previous_applied_load_ids(s)
+        report, released, keep_ids = refresh_clientes_in_cymdist(
+            a, rows, fp=fp, previous_ids=prev_ids
+        )
         if s.get("save_after_write", True):
             try:
                 a.save_study()
             except Exception as ex_save:
                 print("AVISO save post EA/Pot:", ex_save)
+        # Invalidar sello de locks 3.3: al recargar EA/Pot hay que
+        # reafirmar Locked/Unlocked en la proxima distribucion.
+        try:
+            from pipeline.run_demand_allocation import load_session, save_session
+            sess32 = load_session(s)
+            sess32["alloc_locks_ready"] = False
+            sess32.pop("alloc_locks_fixed_key", None)
+            sess32["ea_pot_loaded_at"] = __import__("time").strftime("%Y-%m-%dT%H:%M:%S")
+            sess32["ea_pot_n_keep"] = len(keep_ids or [])
+            sess32["ea_pot_n_liberados"] = int((released or {}).get("n_liberados") or 0)
+            save_session(s, sess32)
+        except Exception as ex_sess:
+            print("AVISO session post 3.2:", ex_sess)
         try:
             a.close_study(save=False)
         except Exception:
@@ -4696,12 +5057,14 @@ def api_clientes_aplicar():
         excluido_count = sum(1 for r in report if r.get("Estado") == "EXCLUIDO")
         sin_sed = sum(1 for r in report if r.get("Estado") == "SIN_SED")
         kwh_verified = sum(1 for r in report if r.get("KWH_ok") is True)
+        n_liberados = int((released or {}).get("n_liberados") or 0)
         report_path = output_path(s, "clientes", "apply_cymdist_report.csv")
         try:
             write_csv(
                 report_path, report,
                 ["Suministro", "Cliente", "SED", "LoadID", "EA", "Pot",
-                 "KWH_antes", "KWH_despues", "KWH_ok", "Estado", "Activo", "Detalle"],
+                 "KWH_antes", "KWH_despues", "KWH_ok", "Estado", "Activo",
+                 "Detalle", "ConnectionStatus"],
             )
         except Exception as ex_rep:
             print("AVISO report EA/Pot:", ex_rep)
@@ -4731,6 +5094,15 @@ def api_clientes_aplicar():
         else:
             set_keep_open(s, was_open, reason="cargar_ea_pot_keep")
 
+        msg32 = (
+            "3.2 OK · EA→Consumo(KWH) %d · excluidas %d · sin SED %d · KWH verificado %d"
+            % (ok_count, excluido_count, sin_sed, kwh_verified)
+        )
+        if n_liberados:
+            msg32 += " · liberados previos %d (anti-saturación)" % n_liberados
+        if warn_kwh:
+            msg32 += " · WARN KWH %d" % warn_kwh
+
         return jsonify({
             "ok": True,
             "ok_count": ok_count,
@@ -4738,16 +5110,15 @@ def api_clientes_aplicar():
             "excluido_count": excluido_count,
             "sin_sed_count": sin_sed,
             "kwh_verified": kwh_verified,
+            "n_liberados": n_liberados,
+            "released": released,
             "total": len(rows),
             "rows": rows,
             "report": report,
             "report_path": report_path,
             "from_saved_table": bool(meta.get("from_saved_table")),
             "cymdist_open": bool(com.get("cymdist_open")),
-            "msg": (
-                "EA→Consumo(KWH) + Pot→kW Locked · %s OK · %s excluidas · %s sin SED · KWH verificado %s"
-                % (ok_count, excluido_count, sin_sed, kwh_verified)
-            ),
+            "msg": msg32,
             "cymdist": com,
         })
     except Exception as ex:
@@ -4878,6 +5249,112 @@ def api_informe_armar():
         return jsonify({"ok": False, "error": str(ex)})
 
 
+@app.route("/api/informe/preview")
+def api_informe_preview():
+    """Vista preliminar del informe creado (meta + métricas + gráficas) antes de cerrar."""
+    s = _settings()
+    try:
+        return jsonify(build_informe_preview(s))
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/informe/mapa_ubicacion", methods=["POST"])
+def api_informe_mapa_ubicacion():
+    """Regenera topologia.png = mapa satelite de la carga nueva (nodo de conexion)."""
+    s = _settings()
+    body = request.get_json(silent=True) or {}
+    try:
+        from pipeline.generate_location_map import generate_location_map
+        res = generate_location_map(s, force=True)
+        return jsonify(res)
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/informe/cerrar", methods=["POST"])
+def api_informe_cerrar():
+    """Confirma/cierra entrega solo tras validar la vista preliminar."""
+    s = _settings()
+    body = request.get_json(silent=True) or {}
+    if not body.get("validated"):
+        return jsonify({
+            "ok": False,
+            "error": "Marque que validó la vista preliminar antes de cerrar la entrega.",
+        })
+    try:
+        return jsonify(confirm_informe_entrega(
+            s,
+            note=body.get("note") or "",
+            force=bool(body.get("force")),
+        ))
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/informe/imagen/<name>")
+def api_informe_imagen(name):
+    """Sirve PNG de gráficas del informe (vista preliminar)."""
+    s = _settings()
+    try:
+        safe = os.path.basename(name or "")
+        if not safe.lower().endswith(".png") or ".." in safe:
+            return jsonify({"ok": False, "error": "Imagen no permitida"}), 400
+        from pipeline.fill_informe import _images_dir
+        path = os.path.join(_images_dir(s), safe)
+        if not os.path.isfile(path):
+            return jsonify({"ok": False, "error": "No existe: %s" % safe}), 404
+        return send_file(path, mimetype="image/png")
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)}), 500
+
+
+@app.route("/api/informe/archivo/<kind>")
+def api_informe_archivo(kind):
+    """Descarga informe.docx, justificacion.xlsx o informe.pdf rellenados."""
+    s = _settings()
+    try:
+        paths = informe_paths(s)
+        key = (kind or "").strip().lower()
+        if key in ("informe", "docx", "word"):
+            path = paths.get("informe_doc")
+            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            download = "informe.docx"
+        elif key in ("justificacion", "xlsx", "excel"):
+            path = paths.get("justificacion_doc")
+            mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            download = "justificacion.xlsx"
+        elif key in ("pdf", "informe_pdf"):
+            path = os.path.join(paths.get("doc_dir") or "", "informe.pdf")
+            mime = "application/pdf"
+            download = "informe.pdf"
+        else:
+            return jsonify({"ok": False, "error": "kind=informe|justificacion|pdf"}), 400
+        if not path or not os.path.isfile(path):
+            return jsonify({"ok": False, "error": "Archivo no generado. Rellene informes primero."}), 404
+        return send_file(path, mimetype=mime, as_attachment=True, download_name=download)
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)}), 500
+
+
+@app.route("/api/informe/pagina/<name>")
+def api_informe_pagina(name):
+    """Sirve JPEG de pagina renderizada (doc/informe_preview/)."""
+    s = _settings()
+    try:
+        safe = os.path.basename(name or "")
+        if not safe or ".." in safe:
+            return jsonify({"ok": False, "error": "nombre invalido"}), 400
+        paths = informe_paths(s)
+        path = os.path.join(paths.get("doc_dir") or "", "informe_preview", safe)
+        if not os.path.isfile(path):
+            return jsonify({"ok": False, "error": "No existe: %s" % safe}), 404
+        mime = "image/jpeg" if safe.lower().endswith((".jpg", ".jpeg")) else "image/png"
+        return send_file(path, mimetype=mime)
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)}), 500
+
+
 @app.route("/api/informe/meta", methods=["GET", "POST"])
 def api_informe_meta():
     s = _settings()
@@ -4915,9 +5392,13 @@ def api_informe_meta_pdf():
     """Upload PDF → OCR/texto → informe_meta.json."""
     s = _settings()
     try:
-        f = request.files.get("pdf")
+        # SPA y clientes pueden enviar "pdf" o "file"
+        f = request.files.get("pdf") or request.files.get("file")
         if f is None or not f.filename:
-            return jsonify({"ok": False, "error": "Adjunte un archivo PDF (campo pdf)."})
+            return jsonify({
+                "ok": False,
+                "error": "Adjunte un archivo PDF (campo pdf).",
+            })
         dest_dir = os.path.dirname(output_path(s, "demand", "informe_meta.json"))
         mkdir(dest_dir)
         safe = re.sub(r"[^\w.\-]+", "_", os.path.basename(f.filename)) or "solicitud.pdf"
@@ -4955,6 +5436,7 @@ def api_nodos_buscar():
     q = request.args.get("q") or ""
     limit = int(request.args.get("limit") or 80)
     try:
+        # Sin botón inventario: si no hay cache, search_nodes lo genera
         nodes = search_nodes(s, query=q, limit=limit, refresh=False)
         return jsonify({"ok": True, "nodes": nodes, "q": q})
     except Exception as ex:
@@ -4966,6 +5448,8 @@ def api_nodos_resolver():
     body = request.get_json(force=True) or {}
     try:
         topo, _ = get_topology(s, refresh=False)
+        if not (topo.get("nodes") or []):
+            topo, _ = get_topology(s, refresh=True)
         resolved = resolve_connection(
             topo,
             body.get("node_id"),
@@ -4976,9 +5460,27 @@ def api_nodos_resolver():
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 
+@app.route("/api/cargas/conectadas", methods=["GET"])
+def api_cargas_conectadas():
+    """Cargas §4 guardadas (4.2 o 4.3). §5 las usa sin repetir conexión."""
+    s = _settings()
+    try:
+        rows = list_connected_spot_loads(s)
+        return jsonify({
+            "ok": True,
+            "n": len(rows),
+            "rows": rows,
+            "msg": (
+                "%s carga(s) §4 en estudio — listas para §5"
+                % len(rows)
+            ) if rows else "Sin cargas §4 aún (use 4.2 o 4.3).",
+        })
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
 @app.route("/api/cargas/nueva", methods=["POST"])
 def api_cargas_nueva():
-    """SpotLoad concentrada trifasica: nodo + nombre + P + (cosfi|Q). Sin EA."""
+    """SpotLoad concentrada: guarda en estudio + figura ubicación. §5 independiente."""
     s = _settings()
     body = request.get_json(force=True) or {}
     node_id = (body.get("node_id") or body.get("NodeID") or "").strip()
@@ -4993,7 +5495,7 @@ def api_cargas_nueva():
             "error": "Indique el nombre de la carga concentrada (aparecerá dibujado en CYMDIST).",
         })
     try:
-        # Validacion previa (mensajes claros en UI)
+        import time as _time
         compute_pq(body.get("mode"), body.get("P_kW"), body.get("Q_kvar"), body.get("cosfi"))
         result = connect_spot_load(
             s,
@@ -5009,8 +5511,16 @@ def api_cargas_nueva():
         )
         report = append_report(s, result)
         result["report"] = report
+        result["saved_for_simulations"] = True
+        try:
+            map_res = attach_location_map(s, result)
+            if map_res.get("ok"):
+                result["location_map_url"] = (
+                    "/api/informe/imagen/topologia.png?t=%d" % int(_time.time())
+                )
+        except Exception as ex:
+            result["location_map"] = {"ok": False, "error": str(ex)}
         _invalidate_caches()
-        # Actualizar inventario local de cargas con la nueva entrada
         if result.get("LoadID"):
             try:
                 inv = output_path(s, "inventory", "loads.json")
@@ -5023,6 +5533,7 @@ def api_cargas_nueva():
                     "LoadID": result.get("LoadID"),
                     "Tipo": "SpotLoad",
                     "SectionID": result.get("SectionID"),
+                    "NodeID": result.get("NodeID"),
                     "kW": str(result.get("P_kW")),
                     "kvar": str(result.get("Q_kvar")),
                     "LoadValueType": "LoadValueKW_KVAR",
@@ -5038,6 +5549,103 @@ def api_cargas_nueva():
             except Exception:
                 pass
         return jsonify({"ok": True, "result": result})
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/cargas/plantilla", methods=["GET"])
+def api_cargas_plantilla():
+    """Descarga plantilla CSV o Excel para SpotLoad en bloque."""
+    s = _settings()
+    fmt = (request.args.get("fmt") or request.args.get("format") or "xlsx").lower().strip()
+    feeder = (s.get("feeder_id") or "feeder").strip() or "feeder"
+    try:
+        if fmt in ("csv", "txt"):
+            data = build_batch_template_csv()
+            fname = "spotload_lote_%s.csv" % feeder
+            return send_file(
+                io.BytesIO(data),
+                mimetype="text/csv; charset=utf-8",
+                as_attachment=True,
+                download_name=fname,
+            )
+        data = build_batch_template_xlsx()
+        fname = "spotload_lote_%s.xlsx" % feeder
+        return send_file(
+            io.BytesIO(data),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=fname,
+        )
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/cargas/pendientes", methods=["GET"])
+def api_cargas_pendientes():
+    """Lista SpotLoad §4 fallidas / pendientes de actualizar."""
+    s = _settings()
+    try:
+        rows = list_pending_spot_loads(s)
+        return jsonify({"ok": True, "n": len(rows), "rows": rows})
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/cargas/lote/preview", methods=["POST"])
+def api_cargas_lote_preview():
+    """Sube CSV/Excel y devuelve filas validadas (sin escribir CYMDIST)."""
+    s = _settings()
+    try:
+        rows = []
+        f = request.files.get("file") or request.files.get("csv") or request.files.get("excel")
+        if f and f.filename:
+            raw = f.read()
+            rows = parse_batch_file(raw, filename=f.filename or "")
+        else:
+            body = request.get_json(force=True, silent=True) or {}
+            if body.get("rows"):
+                rows = [normalize_batch_row(r, i) for i, r in enumerate(body.get("rows") or [])]
+            else:
+                return jsonify({"ok": False, "error": "Adjunte un CSV/Excel o envíe rows[]."})
+        n_ok = sum(1 for r in rows if r.get("ok"))
+        return jsonify({
+            "ok": True,
+            "feeder_id": s.get("feeder_id"),
+            "n": len(rows),
+            "n_ok": n_ok,
+            "n_error": len(rows) - n_ok,
+            "rows": rows,
+        })
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/cargas/lote/conectar", methods=["POST"])
+def api_cargas_lote_conectar():
+    """Conecta en bloque; guarda estudio + figura ubicación. Independiente de 4.2 unitaria."""
+    s = _settings()
+    try:
+        import time as _time
+        rows = []
+        f = request.files.get("file") or request.files.get("csv") or request.files.get("excel")
+        if f and f.filename:
+            raw = f.read()
+            rows = parse_batch_file(raw, filename=f.filename or "")
+        else:
+            body = request.get_json(force=True, silent=True) or {}
+            if body.get("rows"):
+                rows = [normalize_batch_row(r, i) for i, r in enumerate(body.get("rows") or [])]
+            else:
+                return jsonify({"ok": False, "error": "Adjunte un CSV/Excel o envíe rows[]."})
+        result = connect_spot_loads_bulk(s, rows, open_gui=True)
+        result["saved_for_simulations"] = bool(result.get("n_ok"))
+        if (result.get("location_map") or {}).get("ok"):
+            result["location_map_url"] = (
+                "/api/informe/imagen/topologia.png?t=%d" % int(_time.time())
+            )
+        _invalidate_caches()
+        return jsonify({"ok": bool(result.get("ok")), **result})
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 
@@ -5264,7 +5872,24 @@ def api_suite_fix_default():
     try:
         from pipeline.fix_default_aaac_xlpe import main as fix_main
         from core.cymdist_com import pause_cymdist_for_cympy
+        import core.cympy_adapter as ca
         pause_cymdist_for_cympy(s)
+        # fix_default hace ConnectDatabaseByName limpio: hay que cerrar estudio
+        # reutilizado por otras rutas §7 (export/sync/pipeline) en el mismo proceso.
+        try:
+            api = load_json("config/cympy_api_map.json")
+            c = require_cympy(s)
+            a = CymPyAdapter(c, api, s)
+            a.close_study(save=False)
+            try:
+                import cympy.db as db
+                db.DisconnectDatabase()
+            except Exception:
+                pass
+            ca._PROCESS_STUDY_PATH = None
+            ca._PROCESS_DB_NAME = None
+        except Exception as ex:
+            print("AVISO pre-close fix_default:", ex)
         rc = fix_main([])
         return jsonify({
             "ok": rc == 0,
@@ -5324,7 +5949,9 @@ def api_suite_nuevo_alimentador():
             name=(body.get("name") or fid),
             network_id=(body.get("network_id") or ""),
             study_path=(body.get("study_path") or ""),
-            voltage_kv=float(body.get("voltage_kv") or 22.9),
+            voltage_kv=float(
+                body.get("voltage_kv") or body.get("voltage_ll_kv") or 22.9
+            ),
         )
         dest = os.path.join(ROOT, "data", "input", "feeders", fid)
         os.makedirs(dest, exist_ok=True)

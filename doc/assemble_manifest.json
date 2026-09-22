@@ -1,7 +1,7 @@
 {
   "ok": true,
   "feeder_id": "PA217",
-  "assembled_at": "2026-09-21T01:48:47",
+  "assembled_at": "2026-09-22T17:30:37",
   "note": "Copia sin alterar formato ni numerales. Imagenes del .docx se preservan embebidas. Rellenar tablas con resultados de loadflow_situacional / loadflow_proyectado.",
   "paths": {
     "feeder_id": "PA217",
@@ -43,33 +43,25 @@
       "note": "Cada boton es independiente: situacional desconecta cargas §3; proyectado las conecta. No redistribuir tras SpotLoad.",
       "lf_warnings_fix": {
         "ok": true,
-        "notes": [
-          "MDB CYMEQSHUNTCAPACITOR DEFAULT: UPDATE 13.2213211644424",
-          "DEV_2030_179_PA217 OperatingVoltageA: 13,22132 -> 13,22132",
-          "DEV_2030_179_PA217 OperatingVoltageB: 13,22132 -> 13,22132",
-          "DEV_2030_179_PA217 OperatingVoltageC: 13,22132 -> 13,22132",
-          "DEFAULT ShuntCapacitor RatedVoltageKVLN: 13,22132 -> 13,22132",
-          "LoadFlowVoltageSensitivityLoadModel.Mode: FromLibrary -> Global",
-          "LoadFlowVoltageSensitivityLoadModel.V: 0,01 -> 0,01",
-          "UseDefaultValuesByLoad: false -> false",
-          "study.Save(AllEquipments)+db OK"
-        ]
+        "skipped": true,
+        "reason": "ya_aplicado_en_sesion"
       },
       "new_loads_scenario": [
         {
-          "LoadID": "SAN_FERNANDO2",
+          "LoadID": "NODE_1080_320357_MI-17145_2",
           "ConnectionStatus": "Disconnected",
           "connected": false,
-          "P_kW": 1500.0,
-          "Q_kvar": 493.0261577682948,
-          "role": "situacional"
+          "P_kW": 1600.0,
+          "Q_kvar": 525.8945682861811,
+          "role": "situacional",
+          "Fuente": "report_csv"
         }
       ],
       "n_new_loads": 1,
       "new_loads_connected": false,
       "topo": {
-        "KWTOT": "6389",
-        "KVARTOT": "3082",
+        "KWTOT": 11319.333,
+        "KVARTOT": 3070.963,
         "KWLOSS": "$KWLOSS$",
         "KVARLOSS": "$KVARLOSS$",
         "Vpu": "1,735",
@@ -81,16 +73,84 @@
         "I": "$I$",
         "Ia": "$Ia$",
         "Ib": "$Ib$",
-        "Ic": "$Ic$"
+        "Ic": "$Ic$",
+        "KWTOT_raw": "33958",
+        "KVARTOT_raw": "55379",
+        "power_scale_applied": 0.3333333333333333,
+        "power_scale_reason": "QueryResultNode KWTOT≈3.56×cabecera (9537.9 kW); corregido /3 → 11319.3 kW",
+        "KVARTOT_before_fp": 18459.667,
+        "q_scaled_to_cabecera_fp": true
       },
       "source_node": "NODE_2030_179_PA217",
       "saved": true,
       "warnings": [],
       "warn_file": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\lf_com_warn.txt",
       "cymdist_open": true,
+      "calculation_method": 1,
+      "log_errors": [],
+      "com_elapsed_sec": 13.88,
       "engine": "COM",
       "saved_to": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_result.json"
     },
-    "proyectado": null
+    "proyectado": {
+      "feeder_id": "PA217",
+      "network_id": "NET_2030_179_PA217",
+      "module": "LoadFlow",
+      "manual": "docs/cymdist/BalLoadFlowInd.txt (IL917123ES)",
+      "scenario": "proyectado",
+      "status": "ok",
+      "note": "Cada boton es independiente: situacional desconecta cargas §3; proyectado las conecta. No redistribuir tras SpotLoad.",
+      "lf_warnings_fix": {
+        "ok": true,
+        "skipped": true,
+        "reason": "ya_aplicado_en_sesion"
+      },
+      "new_loads_scenario": [
+        {
+          "LoadID": "NODE_1080_320357_MI-17145_2",
+          "ConnectionStatus": "Connected",
+          "connected": true,
+          "set": "1600.000/525.895",
+          "P_kW": 1600.0,
+          "Q_kvar": 525.8945682861811,
+          "role": "proyectado",
+          "Fuente": "report_csv"
+        }
+      ],
+      "n_new_loads": 1,
+      "new_loads_connected": true,
+      "topo": {
+        "KWTOT": 11271.667,
+        "KVARTOT": 3058.031,
+        "KWLOSS": "$KWLOSS$",
+        "KVARLOSS": "$KVARLOSS$",
+        "Vpu": "1,735",
+        "VpuA": "1,735",
+        "VpuB": "1,735",
+        "VpuC": "1,735",
+        "VLN": "13,2",
+        "VLL": "22,9",
+        "I": "$I$",
+        "Ia": "$Ia$",
+        "Ib": "$Ib$",
+        "Ic": "$Ic$",
+        "KWTOT_raw": "33815",
+        "KVARTOT_raw": "73235",
+        "power_scale_applied": 0.3333333333333333,
+        "power_scale_reason": "QueryResultNode KWTOT≈3.55×cabecera (9537.9 kW); corregido /3 → 11271.7 kW",
+        "KVARTOT_before_fp": 24411.667,
+        "q_scaled_to_cabecera_fp": true
+      },
+      "source_node": "NODE_2030_179_PA217",
+      "saved": true,
+      "warnings": [],
+      "warn_file": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\lf_com_warn.txt",
+      "cymdist_open": true,
+      "calculation_method": 1,
+      "log_errors": [],
+      "com_elapsed_sec": 13.83,
+      "engine": "COM",
+      "saved_to": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_result.json"
+    }
   }
 }

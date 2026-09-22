@@ -504,6 +504,18 @@ def main(argv=None):
 
     import cympy
     import cympy.db as db
+    import cympy.study as study
+    # Si otro paso del proceso dejó un .zxst abierto, ConnectDatabase falla.
+    try:
+        close_fn = getattr(study, "Close", None)
+        if callable(close_fn):
+            close_fn()
+    except Exception as ex:
+        print("[fix-default] AVISO study.Close:", ex)
+    try:
+        db.DisconnectDatabase()
+    except Exception:
+        pass
     db.ConnectDatabaseByName(settings.get("database_connection_name") or "20260919")
     targets = resolve_targets(cympy, settings, mdb)
     # Persist newly created Switch to MDB

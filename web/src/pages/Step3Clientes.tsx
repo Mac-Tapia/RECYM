@@ -82,26 +82,37 @@ export function Step3Clientes() {
       return;
     }
     setBusy("3.1");
-    setMsg(`3.1 · Armando tabla · cruzar NIS · ${fid}…`);
+    // Limpiar tabla/consola previas al re-pulsar (anti-saturación UI + modelo)
+    setRows([]);
+    setActivo({});
+    setMsg(`3.1 · ${fid} · limpiando CI previos en CYMDIST y cruzando NIS…`);
     try {
-      const j = await api<{ ok?: boolean; error?: string; rows?: Json[]; msg?: string }>(
-        "/api/clientes/tabla",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            suministro_file: suministro,
-            clientes_file: clientesFile,
-            feeders: [fid],
-            feeder: fid,
-          }),
-          timeoutMs: 180000,
-        }
-      );
+      const j = await api<{
+        ok?: boolean;
+        error?: string;
+        rows?: Json[];
+        msg?: string;
+        cymdist_refresh?: Json;
+      }>("/api/clientes/tabla", {
+        method: "POST",
+        body: JSON.stringify({
+          suministro_file: suministro,
+          clientes_file: clientesFile,
+          feeders: [fid],
+          feeder: fid,
+        }),
+        timeoutMs: 180000,
+      });
       if (!j.ok) throw new Error(j.error || "Error armar tabla");
       const list = j.rows || [];
       setRows(list);
       syncActivoFromRows(list);
-      setMsg(j.msg || `3.1 OK · Tabla cruzada: ${list.length} filas · ${fid} · todas Incluir`);
+      const ref = (j.cymdist_refresh as Json) || {};
+      const nLib = Number(ref.n_liberados ?? 0);
+      setMsg(
+        (j.msg || `3.1 OK · Tabla cruzada: ${list.length} filas · ${fid} · todas Incluir`) +
+          (nLib > 0 ? `\nCYMDIST: liberados ${nLib} SED previos (Unlocked/0)` : "")
+      );
     } catch (e) {
       setMsg(String(e));
     } finally {
@@ -168,7 +179,7 @@ export function Step3Clientes() {
     }
     setBusy("3.2");
     setMsg(
-      `3.2 · Cargando EA/Pot · ${nIncluidas} incluidas · ${nExcluidas} se desconectan en el modelo…`
+      `3.2 · ${fid} · liberando CI previos y cargando EA/Pot · ${nIncluidas} incluidas · ${nExcluidas} se desconectan…`
     );
     try {
       const j = await api<{
@@ -180,6 +191,7 @@ export function Step3Clientes() {
         sin_sed_count?: number;
         warn_kwh_count?: number;
         kwh_verified?: number;
+        n_liberados?: number;
         from_saved_table?: boolean;
         rows?: Json[];
         report?: Json[];
@@ -210,9 +222,11 @@ export function Step3Clientes() {
           return `${st} ${sed} KWH=${kwh}`;
         })
         .join("\n");
+      const nLib = Number(j.n_liberados ?? 0);
       setMsg(
         (j.msg ||
           `3.2 OK · EA→Consumo(KWH) ${j.ok_count} · excluidas ${j.excluido_count ?? 0} · sin SED ${j.sin_sed_count ?? 0} · KWH verificado ${j.kwh_verified ?? 0}`) +
+          (nLib > 0 ? `\nLiberados previos: ${nLib} SED (anti-saturación)` : "") +
           (j.warn_kwh_count ? ` · WARN KWH ${j.warn_kwh_count}` : "") +
           (rep ? `\n${rep}` : "")
       );
@@ -226,15 +240,19 @@ export function Step3Clientes() {
   async function runDistrib() {
     setBusy("3.3");
     const fid = (feeder || "").trim();
-    setMsg(`3.3 · ${fid || "alimentador"} · iniciando API LoadAllocation…`);
+    // Limpiar consola previa al re-pulsar (evita mezclar resultados viejos)
+    setMsg(
+      `3.3 · ${fid || "alimentador"} · limpiando residual previo y redistribuyendo…`
+    );
     try {
       const j = await runJob("distribucion", { feeder: fid || undefined }, (job) => {
         const m = String(job.message || "");
-        if (m) setMsg(m);
+        if (m) setMsg(`3.3 · ${m}`);
       });
       const res = (j.result as Json) || j;
       const timing = (res.timing as Json) || {};
       const val = (res.validation as Json) || {};
+      const cleared = (res.residual_cleared as Json) || {};
       const fails = (val.fails as Json[] | undefined) || [];
       const failLines = fails
         .slice(0, 12)
@@ -254,6 +272,7 @@ export function Step3Clientes() {
             : nWarn > 0
               ? "OK con WARN"
               : "OK";
+      const nCleared = Number(cleared.n_clear ?? 0);
       setMsg(
         `3.3 ${label} · ${String(res.feeder_id || feeder || "")}` +
           ` · ${String(res.method || res.status || "")}` +
@@ -262,6 +281,9 @@ export function Step3Clientes() {
           ` · locks ${String(timing.locks_sec ?? "?")}s` +
           ` · val ${String(timing.validation_sec ?? "?")}s` +
           ` · save ${String(timing.save_sec ?? "0")}s)` +
+          (nCleared > 0
+            ? `\nResidual previo limpiado: ${nCleared} SED → 0 kW (fijos intactos)`
+            : "") +
           `\n${String(val.msg || res.aviso || "")}` +
           ` · OK ${String(val.n_ok ?? 0)} · WARN ${String(val.n_warn ?? 0)} · FAIL ${String(val.n_fail ?? 0)}` +
           ` · ceros fijos ${String(val.n_zero_fixed ?? 0)} · ceros residual ${String(val.n_zero_residual ?? 0)}` +
@@ -279,9 +301,11 @@ export function Step3Clientes() {
     <section className="panel">
       <h2>3 · Clientes importantes → SED + distribución</h2>
       <p className="muted">
-        <b>3.1</b> cruzar NIS · <b>3.2</b> cargar EA→Consumo(KWH) y Pot Locked ·{" "}
-        <b>3.3</b> = <b>API CYMDIST</b> sobre el alimentador de §1: su estudio
-        (<code>.zxst</code>) + BD del proyecto (<b>20260919</b>). No fijo a PA217.
+        <b>3.1</b> cruzar NIS (libera CI previos fuera de tabla) ·{" "}
+        <b>3.2</b> EA→Consumo(KWH) y Pot Locked (actualiza/sobrescribe) ·{" "}
+        <b>3.3</b> = <b>API CYMDIST</b> (limpia residual y redistribuye) sobre el
+        alimentador de §1: su estudio (<code>.zxst</code>) + BD del proyecto (
+        <b>20260919</b>). No fijo a PA217.
         {" · "}Alimentador: <b>{feeder || "— (configure §1)"}</b>
       </p>
 

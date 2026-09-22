@@ -17,6 +17,36 @@ import sys
 import copy
 from core.common import load_json, save_json, p, mkdir
 
+# Estudio .zxst vacío o corrupto (p.ej. 0 bytes) no es usable por CYMDIST.
+_MIN_STUDY_BYTES = 1024
+
+
+def is_usable_study_file(path, min_bytes=None):
+    """True si el .zxst/.sxst existe y tiene tamaño mínimo (no vacío/corrupto)."""
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        sz = os.path.getsize(path)
+    except Exception:
+        return False
+    need = _MIN_STUDY_BYTES if min_bytes is None else int(min_bytes)
+    return sz >= need
+
+
+def resolve_eld_study_path(settings=None):
+    """Ruta del estudio ELD (96 redes) usable."""
+    settings = settings or load_json("config/settings.json")
+    eld = (settings.get("eld_study_path") or "").strip()
+    if is_usable_study_file(eld):
+        return eld
+    projects = (settings.get("projects_dir") or "").strip()
+    if projects:
+        cand = os.path.join(projects, "ELD.zxst")
+        if is_usable_study_file(cand):
+            return cand
+    return eld if eld else ""
+
+
 def _parse_feeder_arg(argv=None):
     argv = list(argv if argv is not None else sys.argv[1:])
     for i, a in enumerate(argv):
@@ -65,7 +95,7 @@ def list_study_files(settings=None):
             if not ext:
                 continue
             full = os.path.join(root, name)
-            if not os.path.isfile(full):
+            if not is_usable_study_file(full):
                 continue
             stem = name[: -len(ext)]
             key = stem.upper()
@@ -75,6 +105,7 @@ def list_study_files(settings=None):
                 "dir": root,
                 "feeder_id": stem,
                 "ext": ext,
+                "size": os.path.getsize(full),
             }
             prev = by_stem.get(key)
             if prev is None or rank.get(ext, 9) < rank.get(prev.get("ext"), 9):
@@ -219,10 +250,16 @@ def apply_context_selection(database_mdb=None, study_path=None, feeder_id=None, 
         sp = str(study_path).strip()
         if not os.path.isfile(sp):
             raise RuntimeError("Estudio/proyecto no encontrado: %s" % sp)
+        if not is_usable_study_file(sp):
+            raise RuntimeError(
+                "Estudio inválido o vacío (0 bytes): %s. "
+                "Use ELD.zxst + alimentador de BD, o un .zxst propio válido."
+                % sp
+            )
         global_s["ui_study_path"] = sp
         global_s["ui_study_file"] = os.path.basename(sp)
         stem = os.path.splitext(os.path.basename(sp))[0]
-        # El alimentador lo define el estudio (IN112.zxst → IN112), no el default PA217.
+        # El alimentador lo define el estudio (IN112.zxst → IN112), no un default fijo.
         if stem and stem.upper() != "ELD":
             resolved_feeder = stem
             global_s["active_feeder"] = stem
@@ -265,12 +302,12 @@ def apply_context_selection(database_mdb=None, study_path=None, feeder_id=None, 
             )
         if nid:
             fc["network_id"] = nid
-        # Estudio propio o ELD compartido
+        # Estudio propio válido o ELD compartido (96 redes)
         sp_own = ""
         projects = (global_s.get("projects_dir") or "").strip()
         for ext in (".zxst", ".sxst", ".zsxst"):
             cand = os.path.join(projects, fid + ext) if projects else ""
-            if cand and os.path.isfile(cand):
+            if is_usable_study_file(cand):
                 sp_own = cand
                 break
         if sp_own:
@@ -278,13 +315,20 @@ def apply_context_selection(database_mdb=None, study_path=None, feeder_id=None, 
             fc["study_file"] = os.path.basename(sp_own)
             global_s["ui_study_path"] = sp_own
             global_s["ui_study_file"] = os.path.basename(sp_own)
+            fc["via_eld"] = False
         else:
-            eld = (global_s.get("eld_study_path") or "").strip()
-            if eld and os.path.isfile(eld):
-                fc["study_path"] = eld
-                fc["study_file"] = os.path.basename(eld)
-                global_s["ui_study_path"] = eld
-                global_s["ui_study_file"] = os.path.basename(eld)
+            eld = resolve_eld_study_path(global_s)
+            if not is_usable_study_file(eld):
+                raise RuntimeError(
+                    "Alimentador %s sin estudio propio válido y ELD.zxst no disponible. "
+                    "Coloque %s.zxst en proyectos o configure eld_study_path."
+                    % (fid, fid)
+                )
+            fc["study_path"] = eld
+            fc["study_file"] = os.path.basename(eld)
+            fc["via_eld"] = True
+            global_s["ui_study_path"] = eld
+            global_s["ui_study_file"] = os.path.basename(eld)
         global_s["active_feeder"] = fid
         if persist:
             save_json("config/feeders/%s.json" % fid, fc)
@@ -357,19 +401,27 @@ def synthesize_feeder_config(feeder_id, network_id=None, persist=False, global_s
     elif projects:
         candidates.append(os.path.join(projects, "ELD.zxst"))
     for cand in candidates:
-        if cand and os.path.isfile(cand):
+        if is_usable_study_file(cand):
             study_path = cand
             study_file = os.path.basename(cand)
             break
+    # Si el candidato propio era vacío/corrupto, forzar ELD
+    if not study_path:
+        eld2 = resolve_eld_study_path(global_s)
+        if is_usable_study_file(eld2):
+            study_path = eld2
+            study_file = os.path.basename(eld2)
     nid = str(network_id or "").strip() or lookup_bd_network_id(fid, global_s)
     if not nid:
         nid = "NET_" + fid
+    via_eld = bool(study_path) and os.path.basename(study_path).upper().startswith("ELD.")
     data = {
         "name": fid,
         "description": "Auto desde BD/estudio (sin config/feeders previa)",
         "network_id": nid,
         "study_file": study_file,
         "study_path": study_path,
+        "via_eld": via_eld,
         "voltage_ll_kv": float(global_s.get("default_voltage_ll_kv") or 22.9),
         "region": "",
         "substation": "",
@@ -414,9 +466,9 @@ def _default_paths(feeder_id):
     }
 
 def resolve_study_path(merged, feeder):
-    """Prioridad: study_path absoluto > projects_dir + study_file > projects_dir + <ID>.zxst."""
+    """Prioridad: study_path usable > projects_dir + study_file > <ID>.zxst > ELD."""
     sp = (merged.get("study_path") or "").strip()
-    if sp and os.path.isfile(sp):
+    if is_usable_study_file(sp):
         return sp
     projects = (merged.get("projects_dir") or "").strip()
     study_file = (feeder.get("study_file") or merged.get("study_file") or "").strip()
@@ -424,12 +476,17 @@ def resolve_study_path(merged, feeder):
         study_file = merged.get("feeder_id", "") + ".zxst"
     if projects and study_file:
         cand = os.path.join(projects, study_file)
-        if os.path.isfile(cand):
+        if is_usable_study_file(cand):
             return cand
         alt = os.path.splitext(cand)[0] + ".sxst"
-        if os.path.isfile(alt):
+        if is_usable_study_file(alt):
             return alt
-    return sp
+    # Fallback ELD (cualquier alimentador de la BD sin .zxst propio)
+    eld = resolve_eld_study_path(merged)
+    if is_usable_study_file(eld):
+        return eld
+    return sp if sp else ""
+
 
 def resolve_cymdist_binding(settings):
     """Enlace obligatorio por alimentador: su estudio .zxst + BD compartida (20260919).
@@ -451,8 +508,12 @@ def resolve_cymdist_binding(settings):
         raise RuntimeError(
             "Falta study_path para alimentador %s. Elija estudio en §1." % (fid or "?")
         )
-    if not os.path.isfile(study):
-        raise RuntimeError("No existe el estudio del alimentador %s: %s" % (fid or "?", study))
+    if not is_usable_study_file(study):
+        raise RuntimeError(
+            "Estudio inválido/vacío para alimentador %s: %s. "
+            "Use ELD.zxst (96 redes) o un .zxst propio con contenido."
+            % (fid or "?", study)
+        )
     if not mdb:
         raise RuntimeError(
             "Falta database_mdb en config/settings.json (BD compartida, p.ej. 20260919)."

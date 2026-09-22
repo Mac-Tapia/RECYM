@@ -114,7 +114,7 @@ export function Step7Suite() {
       <div className="actions">
         <button type="button" disabled={busy}
           onClick={() => call("/api/suite/nuevo_alimentador", "Nuevo feeder", {
-            feeder_id: nfId, name: nfName, network_id: nfNet, voltage_ll_kv: Number(nfKv),
+            feeder_id: nfId, name: nfName, network_id: nfNet, voltage_kv: Number(nfKv),
           })}>
           7.4 · Crear alimentador
         </button>

@@ -45,6 +45,112 @@ def _guess_source_node(network_id, settings=None):
     return net
 
 
+def _parse_com_number(raw):
+    """Parsea número COM (coma decimal europea o punto)."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s or s.startswith("$") or s.startswith("ERR:") or "Invalid" in s:
+        return None
+    s = s.replace(" ", "").replace("\u00a0", "")
+    # 1.234,56 (miles) vs 1,735 (decimal)
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        parts = s.split(",")
+        if len(parts) == 2 and len(parts[1]) <= 3:
+            s = s.replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def normalize_lf_topo_powers(topo, settings=None, p_cabecera_kw=None):
+    """
+    Corrige KWTOT/KVARTOT de QueryResultNode en fuente cuando salen ~3×.
+
+    En esta instalación CYME, QueryResultNode('KWTOT', source) a menudo
+    reporta ≈3× la potencia trifásica real del alimentador (suma de fases
+    ya totales). La cabecera §1 (~9.5 MW) queda en ~34 MW y el informe no
+    cuadra / no convergería.
+
+    Si KWTOT > 2.2 × P_cabecera → dividir KWTOT y KVARTOT entre 3.
+    """
+    topo = dict(topo or {})
+    settings = settings or {}
+    p_ref = p_cabecera_kw
+    if p_ref is None:
+        try:
+            from pipeline.run_demand_allocation import load_session
+            p_ref = (load_session(settings) or {}).get("P_kW")
+        except Exception:
+            p_ref = settings.get("P_kW")
+    try:
+        p_ref = float(p_ref) if p_ref not in (None, "") else None
+    except Exception:
+        p_ref = None
+
+    kw = _parse_com_number(topo.get("KWTOT"))
+    kvar = _parse_com_number(topo.get("KVARTOT"))
+    if kw is None or not p_ref or p_ref <= 0:
+        return topo
+
+    ratio = kw / p_ref
+    # Margen: cabecera + SpotLoad nueva (~1.6 MW) + pérdidas → hasta ~1.4× OK
+    if ratio >= 2.2:
+        topo["KWTOT_raw"] = topo.get("KWTOT")
+        topo["KVARTOT_raw"] = topo.get("KVARTOT")
+        topo["KWTOT"] = round(kw / 3.0, 3)
+        if kvar is not None:
+            topo["KVARTOT"] = round(kvar / 3.0, 3)
+        topo["power_scale_applied"] = 1.0 / 3.0
+        topo["power_scale_reason"] = (
+            "QueryResultNode KWTOT≈%.2f×cabecera (%.1f kW); corregido /3 → %.1f kW"
+            % (ratio, p_ref, kw / 3.0)
+        )
+        print("[LF]", topo["power_scale_reason"], flush=True)
+        kw = float(topo["KWTOT"])
+        kvar = _parse_com_number(topo.get("KVARTOT"))
+    else:
+        # Normalizar formato numérico aunque no haya escala
+        topo["KWTOT"] = kw
+        if kvar is not None:
+            topo["KVARTOT"] = kvar
+
+    # Q absurda vs cabecera (p.ej. |Q|/P >> Qcab/Pcab): reescalar Q al FP de §1
+    q_ref = None
+    try:
+        from pipeline.run_demand_allocation import load_session
+        q_ref = (load_session(settings) or {}).get("Q_kvar")
+    except Exception:
+        q_ref = settings.get("Q_kvar")
+    try:
+        q_ref = float(q_ref) if q_ref not in (None, "") else None
+    except Exception:
+        q_ref = None
+    if kw and kvar is not None and p_ref and q_ref is not None and p_ref > 0:
+        ratio_q = abs(kvar) / max(abs(kw), 1e-6)
+        ratio_cab = abs(q_ref) / p_ref
+        if ratio_cab > 1e-6 and ratio_q > max(1.5 * ratio_cab, ratio_cab + 0.35):
+            topo["KVARTOT_before_fp"] = kvar
+            # Mantener signo; magnitud = P × (Qcab/Pcab)
+            q_fix = (1.0 if kvar >= 0 else -1.0) * abs(kw) * ratio_cab
+            topo["KVARTOT"] = round(q_fix, 3)
+            topo["q_scaled_to_cabecera_fp"] = True
+            print(
+                "[LF] KVARTOT absurdo (Q/P=%.2f vs cab=%.2f); Q→%.1f kvar (FP cabecera)"
+                % (ratio_q, ratio_cab, q_fix),
+                flush=True,
+            )
+    return topo
+
+
 def _com_location(location, node_id=None, from_node=None, to_node=None):
     """
     Enum COM de ubicacion en tramo (distinto a CymPy):
@@ -446,6 +552,10 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
             if method_used is not None:
                 break
 
+        # Corregir KWTOT/KVARTOT ~3× vs cabecera §1 (informe / convergencia)
+        if method_used is not None and topo:
+            topo = normalize_lf_topo_powers(topo, settings)
+
         warnings = []
         log_errors = []
         try:
@@ -541,3 +651,174 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
                 )
             except Exception:
                 pass
+
+
+def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
+                           method="KWH", kill_existing=True):
+    """
+    Distribucion de carga via COM (Cymdist.LoadAllocation).
+
+    CymPy standalone en esta instalacion falla con 130013 (complementos de
+    simulacion no autenticados). El motor COM de Cyme.exe si ejecuta
+    LoadAllocation — mismo patron que run_loadflow_com.
+
+    method: KWH | KVA | ActualKVA | REA  (default Consumo kWh).
+    Retorna dict ok/engine/ret/error/timing.
+    """
+    import time as _time
+
+    _ensure_comtypes(settings.get("cyme_root"))
+    import comtypes.client
+    import comtypes.gen.CYMDISTLib as lib
+
+    mdb = settings.get("database_mdb") or ""
+    study = settings.get("study_path") or ""
+    net = str(network_id or settings.get("network_id") or "")
+    if not mdb or not os.path.isfile(mdb):
+        return {"ok": False, "error": "database_mdb no existe: %s" % mdb, "engine": "COM"}
+    if not study or not os.path.isfile(study):
+        return {"ok": False, "error": "study_path no existe: %s" % study, "engine": "COM"}
+    if not net:
+        return {"ok": False, "error": "Falta network_id", "engine": "COM"}
+    if p_kw is None:
+        return {"ok": False, "error": "Falta P_kW cabecera", "engine": "COM"}
+
+    p_kw = float(p_kw)
+    q_kvar = float(q_kvar or 0.0)
+
+    method_map = {
+        "KWH": lib.CymLoadAllocationMethod.cymKWH,
+        "KWHMethod": lib.CymLoadAllocationMethod.cymKWH,
+        "KVA": lib.CymLoadAllocationMethod.cymKVA,
+        "ConnectedKVA": lib.CymLoadAllocationMethod.cymKVA,
+        "ActualKVA": lib.CymLoadAllocationMethod.cymActualKVA,
+        "REA": lib.CymLoadAllocationMethod.cymREA,
+    }
+    method_enum = method_map.get(str(method or "KWH"), lib.CymLoadAllocationMethod.cymKWH)
+
+    if kill_existing:
+        _kill_cyme()
+        try:
+            _time.sleep(0.4)
+        except Exception:
+            pass
+
+    t0 = _time.time()
+    app = None
+    study_obj = None
+    try:
+        app = comtypes.client.CreateObject("Cymdist.Application")
+        try:
+            app.ShowWindow(0)
+        except Exception:
+            pass
+        app.SelectUniqueDatabaseAccess(mdb, 0, _access_version())
+        study_obj = app.OpenStudy(study)
+
+        la = comtypes.client.CreateObject("Cymdist.LoadAllocation")
+        la.Method = int(method_enum)
+        la.DemandType = int(lib.CymDemandType.cymFeederDemand)
+        try:
+            la.Tolerance = float(settings.get("loadallocation_tolerance") or 0.01)
+        except Exception:
+            pass
+        try:
+            la.RunVoltageDrop = 0
+        except Exception:
+            pass
+        try:
+            # No desbloquear fijos Locked por 3.2 / residuales Unlocked
+            la.UnlockLoads = 0
+        except Exception:
+            pass
+        try:
+            # No tocar cargas que ya vienen Locked (clientes 3.2)
+            la.UnlockAllInitiallyFixedLoads = 0
+        except Exception:
+            pass
+        for _flag in (
+            "RemoveConstraintsInitiallyLockedLoads",
+            "RemoveConstraints",
+            "RemoveConstraintsDownstreamMeters",
+        ):
+            try:
+                setattr(la, _flag, 0)
+            except Exception:
+                pass
+
+        dem = la.GetFeederDemand(net, "")
+        demand_mode = "per_phase_balanced"
+        # Preferir Total (cymTotal=0) = casillero «Total» de Propiedades de la red.
+        # Fallback: A/B/C = P/3 (misma suma, Total desmarcado en GUI).
+        try:
+            dem.SetKW(int(lib.cymTotal), p_kw)
+            dem.SetKVAR(int(lib.cymTotal), q_kvar)
+            demand_mode = "total"
+        except Exception:
+            for phase in (
+                lib.CymPhase.cymPhaseA,
+                lib.CymPhase.cymPhaseB,
+                lib.CymPhase.cymPhaseC,
+            ):
+                dem.SetKW(int(phase), p_kw / 3.0)
+                dem.SetKVAR(int(phase), q_kvar / 3.0)
+            demand_mode = "per_phase_balanced"
+        # pVal = ICustomerInfo (NULL=0): sin factores de cliente adicionales
+        la.SetFeederDemand(net, "", dem, 0)
+
+        try:
+            la.InitialLosses = 0.0
+            initial_losses = 0.0
+        except Exception:
+            initial_losses = None
+
+        t_run = _time.time()
+        ret = la.RunFromID(net)
+        run_sec = round(_time.time() - t_run, 2)
+
+        try:
+            study_obj.Save()
+            saved = True
+        except Exception as ex_save:
+            saved = False
+            return {
+                "ok": False,
+                "engine": "COM",
+                "error": "LoadAllocation OK pero Save fallo: %s" % ex_save,
+                "ret": ret,
+                "demand_mode": demand_mode,
+                "InitialLosses": initial_losses,
+                "timing": {"total_sec": round(_time.time() - t0, 2), "run_sec": run_sec},
+            }
+
+        return {
+            "ok": True,
+            "engine": "COM",
+            "method": "cymdist_COM_LoadAllocation_%s" % (method or "KWH"),
+            "ret": ret,
+            "saved": saved,
+            "network_id": net,
+            "P_kW": p_kw,
+            "Q_kvar": q_kvar,
+            "demand_mode": demand_mode,
+            "InitialLosses": initial_losses,
+            "timing": {
+                "total_sec": round(_time.time() - t0, 2),
+                "run_sec": run_sec,
+            },
+        }
+    except Exception as ex:
+        return {
+            "ok": False,
+            "engine": "COM",
+            "error": str(ex),
+            "timing": {"total_sec": round(_time.time() - t0, 2)},
+        }
+    finally:
+        if app is not None:
+            try:
+                app.Close()
+            except Exception:
+                pass
+        if kill_existing:
+            _kill_cyme()

@@ -68,10 +68,61 @@ def compute_head_pq(mode, p_kw, q_kvar=None, cosfi=None, i_a=None, v_ll_kv=None)
         raise RuntimeError("Modo de cabecera no soportado: " + mode)
     return p, q
 
-def set_network_demand(cympy, network_id, p_kw, q_kvar):
+def _demand_template_defaults(settings=None):
+    """Plantilla Propiedades de la red > Demanda (captura correcta para LoadAllocation)."""
+    s = settings or {}
+    try:
+        fdc = float(s.get("network_load_factor_pct", 65.0))
+    except Exception:
+        fdc = 65.0
+    try:
+        k = float(s.get("network_loss_load_factor_k", 0.3))
+    except Exception:
+        k = 0.3
+    try:
+        losses_w = float(s.get("network_losses_per_phase_w", 0.0))
+    except Exception:
+        losses_w = 0.0
+    return {
+        "LoadModel": "DEFAULT",
+        "Method": "KWHMethod",
+        "Method_UI": "Consumo (kWh)",
+        "DemandType": "FeederDemand",
+        "Demand_Connected": True,
+        "Demand_Total": True,
+        "Demand_Unit": "kW-kvar",
+        "Downstream_Unit": "Consumo kW-h",
+        "LoadFactor_pct": fdc,
+        "LossLoadFactorK": k,
+        "LossesPerPhase_W": losses_w,
+    }
+
+
+def apply_network_topo_annual_losses(cympy, network_id, load_factor_pct=65.0, loss_k=0.3):
+    """Escribe FdC (%) y constante k en Topo = Pérdidas anuales de la red."""
+    net = str(network_id or "").strip()
+    out = {"LoadFactor_pct": None, "LossLoadFactorK": None, "errors": []}
+    if not net:
+        out["errors"].append("sin network_id")
+        return out
+    try:
+        cympy.study.SetValueTopo(float(load_factor_pct), "LoadFactor", net)
+        out["LoadFactor_pct"] = float(load_factor_pct)
+    except Exception as ex:
+        out["errors"].append("LoadFactor: %s" % ex)
+    try:
+        cympy.study.SetValueTopo(float(loss_k), "LossLoadFactorK", net)
+        out["LossLoadFactorK"] = float(loss_k)
+    except Exception as ex:
+        out["errors"].append("LossLoadFactorK: %s" % ex)
+    return out
+
+
+def set_network_demand(cympy, network_id, p_kw, q_kvar, settings=None):
     """
     Escribe demanda física en CYMDIST = Propiedades de la red > Demanda:
-    Ingresar demanda + Conectado + Total + tipo kW-kvar → casilleros (P, Q).
+    Ingresar demanda + Conectado + Total + tipo kW-kvar → casilleros (P, Q),
+    Pérdidas 0 W/fase, FdC 65 % y k=0,3 (plantilla correcta para distribución).
     Solo API CymPy (nada inventado).
     """
     from cympy.properties import properties as props
@@ -81,6 +132,7 @@ def set_network_demand(cympy, network_id, p_kw, q_kvar):
         raise RuntimeError("Falta network_id para escribir Demanda de cabecera en CYMDIST")
     p_kw = float(p_kw)
     q_kvar = float(q_kvar)
+    tmpl = _demand_template_defaults(settings)
 
     # Asegurar red cargada/activa en el estudio físico
     try:
@@ -97,6 +149,11 @@ def set_network_demand(cympy, network_id, p_kw, q_kvar):
                 "No se pudo cargar la red %s en el estudio CYMDIST: %s" % (net, ex)
             )
 
+    try:
+        cympy.study.SelectLoadModel(str(tmpl["LoadModel"]))
+    except Exception as ex:
+        print("AVISO SelectLoadModel:", ex)
+
     lap = props.LoadAllocation()
     la = lap._cympyObject
     meter = cympy.study.Meter()
@@ -104,8 +161,46 @@ def set_network_demand(cympy, network_id, p_kw, q_kvar):
     meter.IsTotalDemand = True
     meter.LoadValueType = cympy.enums.LoadValueType.KW_KVAR
     meter.DemandTotal = cympy.study.LoadValue(p_kw, q_kvar)
+    # Pérdidas por fase (W) — casillero «Pérdidas» de la plantilla
+    losses_w = float(tmpl["LossesPerPhase_W"])
+    losses_ok = False
+    for attr in ("LossesPerPhase", "Losses"):
+        if hasattr(meter, attr):
+            try:
+                setattr(meter, attr, losses_w)
+                losses_ok = True
+                break
+            except Exception:
+                pass
+    if not losses_ok:
+        try:
+            lap.InitialLossesKW = 0.0
+            lap.InitialLossesKVAR = 0.0
+        except Exception:
+            try:
+                la.InitialLosses = 0.0
+            except Exception:
+                pass
     la.SetDemand(net, meter)
-    print("SetDemand OK", net, "P=", p_kw, "Q=", q_kvar)
+
+    topo = apply_network_topo_annual_losses(
+        cympy,
+        net,
+        load_factor_pct=tmpl["LoadFactor_pct"],
+        loss_k=tmpl["LossLoadFactorK"],
+    )
+    print(
+        "SetDemand OK",
+        net,
+        "P=",
+        p_kw,
+        "Q=",
+        q_kvar,
+        "Total=1 FdC=",
+        tmpl["LoadFactor_pct"],
+        "k=",
+        tmpl["LossLoadFactorK"],
+    )
     return {
         "network_id": net,
         "P_kW": p_kw,
@@ -113,7 +208,13 @@ def set_network_demand(cympy, network_id, p_kw, q_kvar):
         "Connected": True,
         "Total": True,
         "Tipo": "kW-kvar",
-        "api": "cympy.LoadAllocation.SetDemand",
+        "LoadModel": tmpl["LoadModel"],
+        "Downstream_Unit": tmpl["Downstream_Unit"],
+        "LoadFactor_pct": topo.get("LoadFactor_pct"),
+        "LossLoadFactorK": topo.get("LossLoadFactorK"),
+        "LossesPerPhase_W": losses_w if losses_ok else None,
+        "topo_errors": topo.get("errors") or [],
+        "api": "cympy.LoadAllocation.SetDemand+SetValueTopo",
     }
 
 
@@ -235,7 +336,7 @@ def apply_cabecera_medicion(settings, p_kw, q_kvar, save=True,
     c = require_cympy(settings)
     a = CymPyAdapter(c, api, settings)
     a.open_study(force_backup=False)
-    info = set_network_demand(c, settings.get("network_id"), p_kw, q_kvar)
+    info = set_network_demand(c, settings.get("network_id"), p_kw, q_kvar, settings=settings)
     info["study_path"] = settings.get("study_path")
     info["feeder_id"] = settings.get("feeder_id")
 
@@ -362,6 +463,62 @@ def _parse_num(v):
     except Exception:
         return 0.0
 
+def clear_residual_loads_kw(adapter, network_id, fixed_ids):
+    """Pone kW/kvar=0 en residuales (no fijos) antes de re-ejecutar 3.3.
+
+    Conserva Consumo(KWH) — peso del prorrateo — y no toca clientes Locked 3.2.
+    Evita duplicar/acumular potencia de una distribución previa al pulsar 3.3 otra vez.
+    """
+    c = adapter.cympy
+    fixed = set(str(x) for x in (fixed_ids or set()))
+    devices = list(c.study.ListDevices(c.enums.DeviceType.SpotLoad, str(network_id or "")))
+    cl = "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues"
+    n_clear = n_skip = n_fixed = 0
+    for d in devices:
+        lid = str(getattr(d, "DeviceNumber", "") or "")
+        if not lid:
+            continue
+        if lid in fixed:
+            n_fixed += 1
+            continue
+        wrote = False
+        for ph in range(0, 4):
+            base = "%s[%d].LoadValue" % (cl, ph)
+            try:
+                kw = _parse_num(d.GetValue(base + ".KW"))
+            except Exception:
+                if ph > 0:
+                    break
+                kw = None
+            if kw is None and ph > 0:
+                break
+            if kw is None:
+                continue
+            if abs(float(kw)) <= 0.005:
+                continue
+            try:
+                d.SetValue(0.0, base + ".KW")
+                wrote = True
+            except Exception:
+                pass
+            try:
+                d.SetValue(0.0, base + ".KVAR")
+            except Exception:
+                pass
+            # KW_PF: dejar PF; potencia ya en 0
+        if wrote:
+            n_clear += 1
+        else:
+            n_skip += 1
+    return {
+        "ok": True,
+        "n_clear": n_clear,
+        "n_skip": n_skip,
+        "n_fixed_kept": n_fixed,
+        "n_devices": len(devices),
+    }
+
+
 def allocate_residual_by_kwh(adapter, network_id, fixed_ids, p_res, q_res):
     """
     Fallback equivalente a metodo CYME «Consumo (kWh)» (IL917115ES):
@@ -370,12 +527,22 @@ def allocate_residual_by_kwh(adapter, network_id, fixed_ids, p_res, q_res):
     - Se escribe el RESULTADO en kW/kvar (lo que luego usa LoadFlow).
     - KWH <= 0 → porcion 0 (kW=kvar=0). No se inventa peso=1: CYME no asigna
       demanda a cargas sin consumo cuando el metodo es Consumo (kWh).
+
+    Optimizado (cuello 3.3): una sola pasada ListDevices; escribe directo en el
+    Device sin GetDevice/relecturas; omite SetValue si el valor ya coincide.
     """
+    import math
     c = adapter.cympy
     devices = list(c.study.ListDevices(c.enums.DeviceType.SpotLoad, network_id))
-    with_energy = []
-    zero_energy = []
     base = "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0]"
+    vb = base + ".LoadValue"
+    p_res = float(p_res or 0.0)
+    q_res = float(q_res or 0.0)
+    tol = 0.005
+
+    # Pasada 1: clasificar residuales (sin escribir)
+    with_energy = []  # (device, lid, kwh)
+    zero_energy = []  # (device, lid, cur_kw)
     for d in devices:
         lid = str(getattr(d, "DeviceNumber", "") or "")
         if not lid or lid in fixed_ids:
@@ -384,31 +551,136 @@ def allocate_residual_by_kwh(adapter, network_id, fixed_ids, p_res, q_res):
             kwh = _parse_num(d.GetValue(base + ".KWH"))
         except Exception:
             kwh = 0.0
+        cur_kw = 0.0
+        try:
+            cur_kw = _parse_num(d.GetValue(vb + ".KW"))
+        except Exception:
+            cur_kw = 0.0
         if kwh > 0:
-            with_energy.append((lid, kwh))
+            with_energy.append((d, lid, kwh, cur_kw))
         else:
-            zero_energy.append(lid)
-    total = sum(w for _, w in with_energy) or 1.0
+            zero_energy.append((d, lid, cur_kw))
+
+    total = sum(w for _, _, w, _ in with_energy) or 1.0
     scaled = []
-    for lid, kwh in with_energy:
-        share = kwh / total
-        kw = p_res * share
-        kvar = q_res * share
-        before, after = adapter.set_load_pq(lid, kw, kvar, lock=False)
+    n_write = n_skip = 0
+
+    def _write_pq(d, lid, kw, kvar, kwh, share, weight):
+        nonlocal n_write, n_skip
+        kw = float(kw)
+        kvar = float(kvar)
+        # Tipo LoadValue: preferir KW_KVAR; si es KW_PF escribir PF
+        lvt = ""
+        try:
+            lvt = str(d.GetValue(vb + ".GetType()") or "")
+        except Exception:
+            lvt = ""
+        try:
+            cur_kw = _parse_num(d.GetValue(vb + ".KW"))
+        except Exception:
+            cur_kw = None
+        if cur_kw is not None and abs(cur_kw - kw) <= tol and abs(kw) <= tol and abs(kvar) <= tol:
+            # Ya en 0 (o casi): no tocar
+            n_skip += 1
+            scaled.append({
+                "LoadID": lid, "kW": kw, "kvar": kvar, "share": share,
+                "KWH": kwh, "weight": weight, "skipped": True,
+            })
+            return
+        if lvt == "LoadValueKW_PF":
+            sabs = math.sqrt(kw * kw + kvar * kvar) or 1.0
+            pf = max(0.01, min(1.0, abs(kw) / sabs))
+            # Si el PF del modelo estaba en % (>1.5), escribir %
+            try:
+                pf_raw = _parse_num(d.GetValue(vb + ".PF"))
+            except Exception:
+                pf_raw = None
+            write_pf = (pf * 100.0) if (pf_raw is not None and pf_raw > 1.5) else pf
+            if cur_kw is not None and abs(cur_kw - kw) <= tol:
+                try:
+                    cur_pf = _parse_num(d.GetValue(vb + ".PF"))
+                    same_pf = (
+                        cur_pf is not None
+                        and abs((cur_pf / 100.0 if cur_pf > 1.5 else cur_pf) - pf) <= 1e-3
+                    )
+                except Exception:
+                    same_pf = False
+                if same_pf:
+                    n_skip += 1
+                    scaled.append({
+                        "LoadID": lid, "kW": kw, "kvar": kvar, "share": share,
+                        "KWH": kwh, "weight": weight, "skipped": True,
+                    })
+                    return
+            d.SetValue(kw, vb + ".KW")
+            d.SetValue(float(write_pf), vb + ".PF")
+        else:
+            if cur_kw is not None and abs(cur_kw - kw) <= tol:
+                try:
+                    cur_q = _parse_num(d.GetValue(vb + ".KVAR"))
+                except Exception:
+                    cur_q = None
+                if cur_q is not None and abs(cur_q - kvar) <= tol:
+                    n_skip += 1
+                    scaled.append({
+                        "LoadID": lid, "kW": kw, "kvar": kvar, "share": share,
+                        "KWH": kwh, "weight": weight, "skipped": True,
+                    })
+                    return
+            d.SetValue(kw, vb + ".KW")
+            try:
+                d.SetValue(kvar, vb + ".KVAR")
+            except Exception:
+                # Sin KVAR (KW_PF u otro): ya cubierto arriba; forzar tipo si hace falta
+                if "PF" not in (lvt or "").upper():
+                    raise
+        n_write += 1
         scaled.append({
             "LoadID": lid, "kW": kw, "kvar": kvar, "share": share,
-            "KWH": kwh, "weight": "KWH",
+            "KWH": kwh, "weight": weight,
         })
-    # Sin energia: 0 kW/kvar (manual: porcion segun consumo; consumo 0 => 0)
-    for lid in zero_energy:
-        before, after = adapter.set_load_pq(lid, 0.0, 0.0, lock=False)
-        scaled.append({
-            "LoadID": lid, "kW": 0.0, "kvar": 0.0, "share": 0.0,
-            "KWH": 0.0, "weight": "KWH_zero",
-        })
+
+    # Residual ~0: solo limpiar residuales que aún tienen kW
+    if abs(p_res) < 0.05:
+        for d, lid, cur_kw in zero_energy:
+            if abs(cur_kw or 0.0) > tol:
+                _write_pq(d, lid, 0.0, 0.0, 0.0, 0.0, "KWH_zero")
+            else:
+                n_skip += 1
+                scaled.append({
+                    "LoadID": lid, "kW": 0.0, "kvar": 0.0, "share": 0.0,
+                    "KWH": 0.0, "weight": "KWH_zero", "skipped": True,
+                })
+        for d, lid, kwh, cur_kw in with_energy:
+            if abs(cur_kw or 0.0) > tol:
+                _write_pq(d, lid, 0.0, 0.0, kwh, 0.0, "KWH")
+            else:
+                n_skip += 1
+                scaled.append({
+                    "LoadID": lid, "kW": 0.0, "kvar": 0.0, "share": 0.0,
+                    "KWH": kwh, "weight": "KWH", "skipped": True,
+                })
+        print(
+            "Fallback Consumo(kWh) residual~0: write=%d skip=%d (fijos fuera=%d)"
+            % (n_write, n_skip, len(fixed_ids))
+        )
+        return scaled
+
+    for d, lid, kwh, _cur in with_energy:
+        share = kwh / total
+        _write_pq(d, lid, p_res * share, q_res * share, kwh, share, "KWH")
+    for d, lid, cur_kw in zero_energy:
+        if abs(cur_kw or 0.0) > tol:
+            _write_pq(d, lid, 0.0, 0.0, 0.0, 0.0, "KWH_zero")
+        else:
+            n_skip += 1
+            scaled.append({
+                "LoadID": lid, "kW": 0.0, "kvar": 0.0, "share": 0.0,
+                "KWH": 0.0, "weight": "KWH_zero", "skipped": True,
+            })
     print(
-        "Fallback Consumo(kWh): %d con energia, %d sin KWH(=0 kW), residual %.1f kW"
-        % (len(with_energy), len(zero_energy), p_res)
+        "Fallback Consumo(kWh): %d con energia, %d sin KWH, residual %.1f kW · write=%d skip=%d"
+        % (len(with_energy), len(zero_energy), p_res, n_write, n_skip)
     )
     return scaled
 
@@ -814,17 +1086,7 @@ def run_load_allocation_module(settings, session=None):
             "Cabecera=§1 · fijos Locked=§3.2. Anti-130013 se guarda en el estudio activo."
             % (fid or "alimentador", nid or "red")
         ),
-        "cymdist_settings": {
-            "LoadModel": "DEFAULT",
-            "Method": "KWHMethod",
-            "Method_UI": "Consumo (kWh)",
-            "DemandType": "FeederDemand",
-            "LoadFlowParamConfigID": "DEFAULT",
-            "Demand_Connected": True,
-            "Demand_Total": True,
-            "Demand_Unit": "kW-kvar",
-            "Downstream_Unit": "Consumo (kWh)",
-        },
+        "cymdist_settings": dict(_demand_template_defaults(s), LoadFlowParamConfigID="DEFAULT"),
         "applied": [],
         "scaled": [],
         "status": "ok",
@@ -845,6 +1107,13 @@ def run_load_allocation_module(settings, session=None):
     print("[%s] 3.3 LoadAllocation API (rapido)" % s.get("feeder_id"))
     print("  Cabecera §1 P/Q:", Phead, "/", round(Qhead, 3))
     print("  Fijos 3.2:", len(fixed), "->", round(Pfixed, 3), "kW")
+    print(
+        "  Plantilla Demanda: Total+kW-kvar · aguas abajo Consumo kW-h · FdC=%.1f%% · k=%.2f"
+        % (
+            float(result["cymdist_settings"]["LoadFactor_pct"]),
+            float(result["cymdist_settings"]["LossLoadFactorK"]),
+        )
+    )
 
     if s.get("dry_run"):
         result["status"] = "dry_run"
@@ -882,11 +1151,12 @@ def run_load_allocation_module(settings, session=None):
             "CYME LF templates: Scaling/Sensitivity As Defined|FromLibrary",
             "Sandia/CymPy: ActivateRefresh(False) en automatizacion",
             "Flujo: alimentador → su .zxst + BD 20260919",
+            "Plantilla Demanda: Conectado+Total kW-kvar + Consumo kW-h + FdC/k",
         ],
     }
 
     def _progress(msg):
-        print("[3.3]", msg)
+        print("[3.3]", msg, flush=True)
         try:
             cb = (settings or {}).get("_job_progress")
             if callable(cb):
@@ -925,11 +1195,12 @@ def run_load_allocation_module(settings, session=None):
     result["timing"]["open_study_sec"] = round(_time.time() - t1, 2)
     net = str(s.get("network_id") or "")
     study_dirty = False
+    _progress("plantilla LF / locks...")
 
     t_sp = _time.time()
     from core.sim_params import (
         ensure_loadflow_networks, try_repair_loadflow_defaults,
-        read_lf_stamp, write_lf_stamp,
+        read_lf_stamp, write_lf_stamp, invalidate_lf_stamp,
     )
     stamp = read_lf_stamp(s) or {}
     lf_cfg_id = str(
@@ -937,18 +1208,38 @@ def run_load_allocation_module(settings, session=None):
         or sess.get("lf_params_config_id")
         or "DEFAULT"
     )
-    lf_already = bool(stamp.get("ok") or sess.get("lf_params_fixed_130013"))
+    # Solo confiar en sello si LoadAllocation.Run nativo ya funcionó alguna vez.
+    native_ok = bool(
+        stamp.get("loadallocation_native_ok")
+        or sess.get("loadallocation_native_ok")
+    )
+    native_broken = bool(
+        sess.get("loadallocation_native_broken")
+        or (stamp.get("ok") is False and stamp.get("loadallocation_native_ok") is False)
+    )
+    prefer_com = str(s.get("loadflow_engine") or "").upper() == "COM" or bool(
+        s.get("prefer_loadallocation_com")
+    )
+    lf_already = bool(stamp.get("ok") and native_ok)
     try:
         ensure_loadflow_networks(c, net)
         if lf_already:
             result["sim_params_repair"] = {
                 "ok": True,
                 "skipped_full": True,
-                "reason": "stamp_or_session",
+                "reason": "native_ok_stamp",
                 "ConfigID": lf_cfg_id,
                 "stamp": stamp.get("fixed_at"),
             }
-            _progress("LF listo (sello) · Run...")
+            _progress("LF nativo OK (sello) · Run...")
+        elif native_broken or prefer_com:
+            result["sim_params_repair"] = {
+                "ok": False,
+                "skipped_full": True,
+                "reason": "prefer_COM_or_cympy_130013",
+                "ConfigID": lf_cfg_id,
+            }
+            _progress("CymPy LA omitido · motor COM...")
         else:
             repair = try_repair_loadflow_defaults(c)
             result["sim_params_repair"] = {
@@ -959,15 +1250,7 @@ def run_load_allocation_module(settings, session=None):
             if repair.get("ConfigID"):
                 lf_cfg_id = str(repair["ConfigID"])
             study_dirty = True
-            write_lf_stamp(s, lf_cfg_id, repair.get("notes"))
-            try:
-                from datetime import datetime
-                sess["lf_params_fixed_130013"] = True
-                sess["lf_params_fixed_at"] = datetime.now().isoformat(timespec="seconds")
-                sess["lf_params_config_id"] = lf_cfg_id
-                save_session(s, sess)
-            except Exception as ex_sess:
-                print("AVISO session flag 130013:", ex_sess)
+            # No marcar sello OK hasta que Run nativo confirme
             _progress("LF reparado · Run...")
     except Exception as ex:
         print("AVISO sim_params:", ex)
@@ -982,28 +1265,53 @@ def run_load_allocation_module(settings, session=None):
     fixed_ids = set(str(r.get("LoadID")) for r in fixed)
     fixed_key = ",".join(sorted(fixed_ids))
     t_lock = _time.time()
-    locks_ready = (
-        sess.get("alloc_locks_ready")
-        and str(sess.get("alloc_locks_fixed_key") or "") == fixed_key
-    )
-    if locks_ready:
-        result["unlock"] = {"skipped": True, "reason": "mismos_fijos_ya_locked"}
-    else:
+    # SIEMPRE reafirmar locks: residual Unlocked + fijos Locked.
+    # El skip por sess.alloc_locks_ready dejaba 250+ residuales Locked
+    # (p.ej. tras LF o si el Save pre-COM no persistió) y COM solo
+    # podía escalar ~4 cargas → suma kW >> cabecera.
+    try:
+        unlock_info = a.ensure_locks_for_allocation(net, fixed_ids)
+        result["unlock"] = unlock_info
+        n_write_locks = int(unlock_info.get("n_write") or 0)
+        n_res = int(unlock_info.get("n_residual") or 0)
+        n_unlocked = len(unlock_info.get("unlocked") or [])
+        if n_write_locks > 0:
+            study_dirty = True
+        # Si casi no hay residual Unlocked, forzar dirty para Save pre-COM
+        if n_res > 0 and n_unlocked < max(1, int(n_res * 0.5)):
+            result["unlock"]["warn_few_unlocked"] = True
+            study_dirty = True
         try:
-            unlock_info = a.ensure_locks_for_allocation(net, fixed_ids)
-            result["unlock"] = unlock_info
-            if unlock_info.get("n_write", 0) > 0:
-                study_dirty = True
-            try:
-                sess["alloc_locks_ready"] = True
-                sess["alloc_locks_fixed_key"] = fixed_key
-                save_session(s, sess)
-            except Exception:
-                pass
-        except Exception as ex:
-            print("AVISO unlock residual:", ex)
-            result["unlock_error"] = str(ex)
+            sess["alloc_locks_ready"] = True
+            sess["alloc_locks_fixed_key"] = fixed_key
+            sess["alloc_locks_n_residual"] = n_res
+            sess["alloc_locks_n_unlocked"] = n_unlocked
+            save_session(s, sess)
+        except Exception:
+            pass
+    except Exception as ex:
+        print("AVISO unlock residual:", ex)
+        result["unlock_error"] = str(ex)
     result["timing"]["locks_sec"] = round(_time.time() - t_lock, 2)
+
+    # Reentrada 3.3: limpiar kW residual previos (campos) para no acumular
+    t_clr = _time.time()
+    try:
+        _progress("limpiando residual previo...")
+        clr = clear_residual_loads_kw(a, net, fixed_ids)
+        result["residual_cleared"] = clr
+        if int(clr.get("n_clear") or 0) > 0:
+            study_dirty = True
+            print(
+                "[3.3] residual limpio: %d cargas → 0 kW (fijos intactos=%d)"
+                % (clr.get("n_clear"), clr.get("n_fixed_kept"))
+            )
+        else:
+            print("[3.3] residual ya en 0 · nada que limpiar")
+    except Exception as ex_clr:
+        print("AVISO clear residual:", ex_clr)
+        result["residual_clear_error"] = str(ex_clr)
+    result["timing"]["clear_residual_sec"] = round(_time.time() - t_clr, 2)
 
     def _configure_and_run_allocation(cfg_id):
         from cympy.properties import properties as props
@@ -1023,6 +1331,11 @@ def run_load_allocation_module(settings, session=None):
                 lap.Tolerance = 0.01
             except Exception:
                 pass
+            try:
+                lap.InitialLossesKW = 0.0
+                lap.InitialLossesKVAR = 0.0
+            except Exception:
+                pass
         except Exception:
             la.SetValue("FeederDemand", "DemandType")
             la.SetValue("KWHMethod", "Method")
@@ -1030,74 +1343,219 @@ def run_load_allocation_module(settings, session=None):
                 la.SetValue(str(cfg_id or "DEFAULT"), "LoadFlowParamConfigID")
             except Exception:
                 pass
-        meter = c.study.Meter()
-        meter.Connected = True
-        meter.IsTotalDemand = True
-        meter.LoadValueType = c.enums.LoadValueType.KW_KVAR
-        meter.DemandTotal = c.study.LoadValue(float(Phead), float(Qhead))
-        la.SetDemand(net, meter)
+        # Plantilla correcta: Conectado+Total kW-kvar + FdC/k + pérdidas 0
+        demand_info = set_network_demand(c, net, float(Phead), float(Qhead), settings=s)
+        result["demand_template"] = demand_info
         print("SetDemand API §1", net, "P=", Phead, "Q=", round(Qhead, 3), "LF=", cfg_id)
         la.Run([net])
 
     t_run = _time.time()
     allocated = False
     alloc_error = None
-    try:
-        _configure_and_run_allocation(lf_cfg_id)
-        result["method"] = "cymdist_LoadAllocation_KWH"
-        result["status"] = "ok"
-        result["allocation_ok"] = True
-        allocated = True
-        study_dirty = True
-        _progress("LoadAllocation.Run OK")
-    except Exception as ex:
-        alloc_error = str(ex)
-        print("AVISO LoadAllocation.Run:", alloc_error)
-        need_retry = (
-            "130013" in alloc_error
-            or "simulacion no validos" in alloc_error.lower()
-            or "simulación no válidos" in alloc_error.lower()
-        )
-        if need_retry:
+    skip_cympy = bool((native_broken and not native_ok) or prefer_com)
+
+    def _run_com_allocation():
+        """COM LoadAllocation en SUBPROCESO con timeout (no cuelga la UI).
+
+        Antes: SetDemand+Save+COM en el mismo proceso CymPy → deadlock frecuente
+        tras «estudio…» / Cyme.exe. Ahora: cerrar estudio ya, COM aislado, y si
+        timeout/falla → el caller hace fallback KWH.
+        """
+        nonlocal study_dirty
+        from core.cympy_job import run_cympy_job
+        from core import cympy_adapter as _cym_ad
+
+        # Persistir locks residual=Unlocked ANTES de COM. Sin Save,
+        # close(save=False) descartaba el unlock y COM veía todo Locked.
+        if study_dirty and s.get("save_after_write", True):
+            _progress("guardando locks pre-COM...")
+            t_pre = _time.time()
             try:
-                repair2 = try_repair_loadflow_defaults(c)
-                cfg2 = str(repair2.get("ConfigID") or lf_cfg_id)
-                result["sim_params_retry"] = {"ok": repair2.get("ok"), "ConfigID": cfg2}
-                _configure_and_run_allocation(cfg2)
-                result["method"] = "cymdist_LoadAllocation_KWH"
-                result["status"] = "ok"
-                result["allocation_ok"] = True
-                result["allocation_retry"] = True
-                allocated = True
-                study_dirty = True
-                lf_cfg_id = cfg2
-                write_lf_stamp(s, cfg2, repair2.get("notes"))
+                a.save_study()
+                result["locks_saved_pre_com"] = True
+                study_dirty = False
+            except Exception as ex_sv:
+                print("AVISO save pre-COM:", ex_sv)
+                result["locks_saved_pre_com"] = False
+                result["save_pre_com_error"] = str(ex_sv)
+            result["timing"]["save_pre_com_sec"] = round(_time.time() - t_pre, 2)
+
+        # La demanda P/Q la escribe el worker COM; FdC/k ya están de §1.
+        _progress("COM: liberando estudio CymPy...")
+        try:
+            a.close_study(save=False)
+        except Exception as ex_cl:
+            print("AVISO close pre-COM:", ex_cl)
+        try:
+            _cym_ad._PROCESS_STUDY_PATH = None
+        except Exception:
+            pass
+
+        timeout_com = float(
+            s.get("loadallocation_com_timeout_sec")
+            or s.get("cympy_job_timeout_sec")
+            or 90
+        )
+        _progress("COM LoadAllocation (subproceso ≤%ss)..." % int(timeout_com))
+        com_res = run_cympy_job(
+            "loadallocation_com",
+            {
+                "feeder_id": s.get("feeder_id"),
+                "network_id": net,
+                "study_path": s.get("study_path"),
+                "database_mdb": s.get("database_mdb"),
+                "database_connection_name": s.get("database_connection_name"),
+                "P_kW": float(Phead),
+                "Q_kvar": float(Qhead),
+                "method": "KWH",
+            },
+            settings=s,
+            timeout_sec=timeout_com,
+        )
+        result["com_allocation"] = {
+            k: com_res.get(k)
+            for k in (
+                "ok", "engine", "method", "ret", "error", "timing", "saved",
+                "demand_mode", "InitialLosses", "elapsed_sec", "log_tail",
+            )
+        }
+        if com_res.get("saved"):
+            result["saved"] = True
+            # Exponer en UI (antes quedaba save 0s aunque COM sí guardó)
+            pre = float(result["timing"].get("save_pre_com_sec") or 0)
+            result["timing"]["save_sec"] = round(pre + 0.01, 2)
+        if not com_res.get("ok"):
+            # Dejar estudio listo para fallback SetValue en el caller
+            _progress("COM falló/timeout · reabriendo para fallback...")
+            try:
+                a.open_study(force_backup=False)
+            except Exception as ex_re:
+                print("AVISO reopen post-COM fail:", ex_re)
+            return com_res
+
+        # COM ya guardó .zxst (allocation + demanda). Reabrir solo para lectura.
+        # NUNCA save_study aquí: study.Save tras COM cuelga el worker de la UI
+        # (síntoma: mensaje queda en «COM OK · reabriendo estudio…»).
+        _progress("COM OK · abriendo para validación...")
+        a.open_study(force_backup=False)
+        demand_mode = str(com_res.get("demand_mode") or "")
+        if demand_mode and demand_mode != "total":
+            try:
+                restore = set_network_demand(
+                    c, net, float(Phead), float(Qhead), settings=s
+                )
+                result["demand_template_restored"] = restore
+                # Sin Save: evita deadlock; el final de 3.3 tampoco marca study_dirty
+            except Exception as ex_rst:
+                print("AVISO restaurar plantilla Demanda post-COM:", ex_rst)
+        else:
+            result["demand_template_restored"] = {
+                "skipped": True,
+                "reason": "COM demand_mode=total (ya en .zxst)",
+            }
+        return com_res
+
+    if not skip_cympy:
+        try:
+            _configure_and_run_allocation(lf_cfg_id)
+            result["method"] = "cymdist_LoadAllocation_KWH"
+            result["status"] = "ok"
+            result["allocation_ok"] = True
+            allocated = True
+            study_dirty = True
+            try:
+                write_lf_stamp(s, lf_cfg_id, loadallocation_native_ok=True)
+                sess["loadallocation_native_ok"] = True
+                sess["loadallocation_native_broken"] = False
+                sess["lf_params_fixed_130013"] = True
+                sess["lf_params_config_id"] = lf_cfg_id
+                save_session(s, sess)
+            except Exception:
+                pass
+            _progress("LoadAllocation.Run OK (CymPy)")
+        except Exception as ex:
+            alloc_error = str(ex)
+            print("AVISO LoadAllocation.Run CymPy:", alloc_error)
+            if "130013" in alloc_error:
                 try:
-                    from datetime import datetime
-                    sess["lf_params_fixed_130013"] = True
-                    sess["lf_params_fixed_at"] = datetime.now().isoformat(timespec="seconds")
-                    sess["lf_params_config_id"] = cfg2
+                    invalidate_lf_stamp(s, reason=alloc_error)
+                    sess["loadallocation_native_broken"] = True
+                    sess["loadallocation_native_ok"] = False
                     save_session(s, sess)
                 except Exception:
                     pass
-                _progress("LoadAllocation.Run OK (reintento)")
-            except Exception as ex2:
-                alloc_error = "%s | retry: %s" % (alloc_error, ex2)
-                print("AVISO reintento API fallo:", ex2)
+    else:
+        alloc_error = "CymPy omitido (130013 conocido o loadflow_engine=COM)"
+        result["allocation_skipped_native"] = True
+
+    # Motor robusto: COM Cyme.exe (documentado: CymPy no autentica complementos)
+    if not allocated:
+        try:
+            com_res = _run_com_allocation()
+            if com_res.get("ok"):
+                result["method"] = com_res.get("method") or "cymdist_COM_LoadAllocation_KWH"
+                result["status"] = "ok"
+                result["allocation_ok"] = True
+                result["engine"] = "COM"
+                allocated = True
+                study_dirty = False  # COM ya guardó .zxst
+                result["aviso"] = (
+                    "3.3 via COM Cymdist.LoadAllocation (KWH). "
+                    "CymPy LoadAllocation falla 130013 en esta instalacion."
+                )
+                try:
+                    sess["loadallocation_com_ok"] = True
+                    sess["loadallocation_native_broken"] = True  # CymPy sigue roto
+                    save_session(s, sess)
+                except Exception:
+                    pass
+                _progress("COM LoadAllocation OK")
+            else:
+                alloc_error = "%s | COM: %s" % (alloc_error or "", com_res.get("error"))
+                print("AVISO COM LoadAllocation:", com_res.get("error"))
+                # Asegurar estudio abierto para fallback SetValue
+                try:
+                    a.open_study(force_backup=False)
+                except Exception:
+                    pass
+        except Exception as ex_com:
+            alloc_error = "%s | COM: %s" % (alloc_error or "", ex_com)
+            print("AVISO COM LoadAllocation excepcion:", ex_com)
+            try:
+                a.open_study(force_backup=False)
+            except Exception:
+                pass
 
     if not allocated:
+        try:
+            invalidate_lf_stamp(s, reason=alloc_error or "LoadAllocation fail")
+            sess["loadallocation_native_broken"] = True
+            sess["loadallocation_native_ok"] = False
+            sess["lf_params_fixed_130013"] = False
+            save_session(s, sess)
+        except Exception:
+            pass
         q_res = float(Qhead) * (float(Pres) / float(Phead)) if Phead else 0.0
         try:
+            _progress("fallback KWH SetValue...")
             result["scaled"] = allocate_residual_by_kwh(a, net, fixed_ids, Pres, q_res)
             result["method"] = "fallback_KWH_api"
             result["status"] = "ok_fallback_kwh"
             result["allocation_ok"] = True
             result["allocation_error"] = alloc_error
             result["aviso"] = (
-                "LoadAllocation.Run (API) fallo. Fallback Consumo(kWh) via API SetValue."
+                "CymPy+COM LoadAllocation no disponibles. "
+                "Fallback Consumo(kWh) via SetValue."
             )
             allocated = True
-            study_dirty = True
+            n_scaled_write = sum(
+                1 for r in (result.get("scaled") or []) if not r.get("skipped")
+            )
+            result["n_scaled_write"] = n_scaled_write
+            if n_scaled_write > 0:
+                study_dirty = True
+            else:
+                result["save_skipped"] = "sin_writes_residual"
         except Exception as ex_fb:
             result["status"] = "error"
             result["allocation_ok"] = False
@@ -1111,17 +1569,116 @@ def run_load_allocation_module(settings, session=None):
         t_val = _time.time()
         _progress("validacion fijos...")
         try:
-            if result.get("method") == "cymdist_LoadAllocation_KWH":
+            method = str(result.get("method") or "")
+            if method.startswith("cymdist_LoadAllocation") or method.startswith("cymdist_COM"):
                 validation = validate_allocation_fixed_only(
                     a, fixed, Phead, Pfixed, tol_pct=0.08
                 )
+                # Balance residual con lectura indexada rapida
+                try:
+                    snap = a.snapshot_spot_loads_indexed(net)
+                    sum_all = sum(float((v or {}).get("kW") or 0) for v in snap.values())
+                    delta_pct = (
+                        abs(sum_all - float(Phead)) / float(Phead) * 100.0 if Phead else 0.0
+                    )
+                    validation["sum_kw"] = sum_all
+                    validation["P_cabecera_kW"] = Phead
+                    validation["balance_ok"] = delta_pct <= 8.0
+                    validation["balance_msg"] = (
+                        "Suma kW=%.1f vs cabecera=%.1f (d=%.1f%%) · motor=%s"
+                        % (sum_all, Phead, delta_pct, method)
+                    )
+                    if not validation.get("balance_ok"):
+                        validation["ok"] = False
+                        validation["n_fail"] = int(validation.get("n_fail") or 0) + 1
+                        # Auto-corregir residual por KWH y guardar (datos nuevos /
+                        # residual Locked previo dejan balance >> 8%).
+                        try:
+                            _progress("balance fuera · corrigiendo residual KWH...")
+                            q_res = (
+                                float(Qhead) * (float(Pres) / float(Phead))
+                                if Phead else 0.0
+                            )
+                            # Asegurar residual Unlocked antes de SetValue
+                            try:
+                                a.ensure_locks_for_allocation(net, fixed_ids)
+                            except Exception:
+                                pass
+                            scaled = allocate_residual_by_kwh(
+                                a, net, fixed_ids, Pres, q_res
+                            )
+                            result["scaled"] = scaled
+                            result["balance_corrected"] = True
+                            result["method_before_correct"] = method
+                            result["method"] = method + "+fallback_KWH"
+                            n_sw = sum(
+                                1 for r in (scaled or []) if not r.get("skipped")
+                            )
+                            result["n_scaled_write"] = n_sw
+                            if n_sw > 0:
+                                study_dirty = True
+                            snap2 = a.snapshot_spot_loads_indexed(net)
+                            sum2 = sum(
+                                float((v or {}).get("kW") or 0) for v in snap2.values()
+                            )
+                            d2 = (
+                                abs(sum2 - float(Phead)) / float(Phead) * 100.0
+                                if Phead else 0.0
+                            )
+                            validation["sum_kw_before_correct"] = sum_all
+                            validation["sum_kw"] = sum2
+                            validation["balance_ok"] = d2 <= 8.0
+                            validation["balance_msg"] = (
+                                "Suma kW=%.1f vs cabecera=%.1f (d=%.1f%%) · "
+                                "corregido KWH (antes d=%.1f%%)"
+                                % (sum2, Phead, d2, delta_pct)
+                            )
+                            if validation.get("balance_ok"):
+                                # Quitar el FAIL de balance si ya cuadra
+                                validation["ok"] = (
+                                    int(validation.get("n_fail") or 0) <= 1
+                                    and validation.get("n_zero_fixed", 0) == 0
+                                )
+                                if validation.get("ok"):
+                                    validation["n_fail"] = max(
+                                        0, int(validation.get("n_fail") or 0) - 1
+                                    )
+                                    validation["msg"] = (
+                                        "Validacion OK tras correccion KWH · %s"
+                                        % validation["balance_msg"]
+                                    )
+                        except Exception as ex_corr:
+                            validation["correct_error"] = str(ex_corr)
+                            print("AVISO correccion balance:", ex_corr)
+                except Exception as ex_bal:
+                    validation["balance_msg"] = "sin snapshot: %s" % ex_bal
             else:
-                validation = validate_allocation_sed_loads(
-                    a, net, fixed, Phead, tol_pct=0.08, fast=True
+                validation = validate_allocation_fixed_only(
+                    a, fixed, Phead, Pfixed, tol_pct=0.08
                 )
+                sum_scaled = sum(float(r.get("kW") or 0) for r in (result.get("scaled") or []))
+                sum_kw = float(Pfixed) + float(sum_scaled)
+                delta_pct = (
+                    abs(sum_kw - float(Phead)) / float(Phead) * 100.0 if Phead else 0.0
+                )
+                validation["sum_kw"] = sum_kw
+                validation["P_cabecera_kW"] = Phead
+                validation["sum_scaled_kW"] = sum_scaled
+                validation["balance_ok"] = delta_pct <= 8.0
+                validation["balance_msg"] = (
+                    "Suma kW=%.1f (fijos=%.1f + residual=%.1f) vs cabecera=%.1f (d=%.1f%%)"
+                    % (sum_kw, Pfixed, sum_scaled, Phead, delta_pct)
+                )
+                validation["fast"] = True
+                validation["n_loads"] = len(fixed) + len(result.get("scaled") or [])
+                if not validation.get("balance_ok"):
+                    validation["ok"] = False
+                    validation["n_fail"] = int(validation.get("n_fail") or 0) + 1
             result["validation"] = validation
             result["validation_ok"] = bool(validation.get("ok"))
-            if not validation.get("ok"):
+            if validation.get("ok") and result.get("balance_corrected"):
+                result["status"] = "ok"
+            elif not validation.get("ok"):
                 if result.get("status") == "ok":
                     result["status"] = (
                         "ok_with_warnings" if validation.get("n_fail", 0) == 0 else "ok_validation_fail"
@@ -1152,11 +1709,23 @@ def run_load_allocation_module(settings, session=None):
         try:
             a.save_study()
             result["sim_params_saved"] = True
-            write_lf_stamp(s, lf_cfg_id)
+            result["saved"] = True
+            if result.get("method") == "cymdist_LoadAllocation_KWH" or (
+                "fallback_KWH" in str(result.get("method") or "")
+            ):
+                try:
+                    write_lf_stamp(s, lf_cfg_id, loadallocation_native_ok=True)
+                except Exception:
+                    pass
         except Exception as ex:
             result["save_error"] = str(ex)
             print("AVISO save_study:", ex)
         result["timing"]["save_sec"] = round(_time.time() - t_save, 2)
+    elif result.get("saved") and "save_sec" not in result.get("timing", {}):
+        # COM guardó; dejar métrica visible en UI
+        result["timing"]["save_sec"] = float(
+            result["timing"].get("save_pre_com_sec") or 0.01
+        )
 
     if refresh_off:
         try:
@@ -1167,10 +1736,17 @@ def run_load_allocation_module(settings, session=None):
             except Exception:
                 pass
 
-    try:
-        a.close_study(save=False)
-    except Exception:
-        pass
+    # Mantener estudio abierto en CymPy evita ~8s de open_study en el siguiente 3.3/§5.
+    # Solo cerrar si no hay sesión keep_open (GUI) ni flag explícito.
+    keep_study = bool(keep or s.get("keep_study_open_after_alloc", True))
+    if keep_study:
+        result["study_left_open"] = True
+    else:
+        try:
+            a.close_study(save=False)
+        except Exception:
+            pass
+        result["study_left_open"] = False
 
     # No reabrir Cyme por defecto (reopen GUI era 15-40s)
     resume_gui = bool(s.get("resume_gui_after_alloc"))
@@ -1269,17 +1845,7 @@ def _run_allocation_full(settings, session=None):
         "Q_residual_kvar": q_res,
         "n_fijos": len(fixed),
         "fijos_fuente": "clientesimportantes" if fixed_cli else "session",
-        "cymdist_settings": {
-            "LoadModel": "DEFAULT",
-            "Method": "KWHMethod",
-            "Method_UI": "Consumo (kWh)",
-            "DemandType": "FeederDemand",
-            "LoadFlowParamConfigID": "DEFAULT",
-            "Demand_Connected": True,
-            "Demand_Total": True,
-            "Demand_Unit": "kW-kvar",
-            "Downstream_Unit": "Consumo (kWh)",
-        },
+        "cymdist_settings": dict(_demand_template_defaults(s), LoadFlowParamConfigID="DEFAULT"),
         "applied": [],
         "scaled": [],
         "status": "ok",
@@ -1410,13 +1976,9 @@ def _run_allocation_full_body(s, api, sess, fixed, new_fixed, new_ids, Phead, Qh
             except Exception:
                 pass
 
-        meter = c.study.Meter()
-        meter.Connected = True
-        meter.IsTotalDemand = True
-        meter.LoadValueType = c.enums.LoadValueType.KW_KVAR
-        meter.DemandTotal = c.study.LoadValue(float(Phead), float(Qhead))
-
-        la.SetDemand(net, meter)
+        # Plantilla Demanda (Total + FdC/k) antes del Run
+        demand_info = set_network_demand(c, net, float(Phead), float(Qhead), settings=s)
+        result["demand_template"] = demand_info
         print("SetDemand OK", net, "Connected+Total P=", Phead, "Q=", round(Qhead, 3), "Method=KWHMethod")
         la.Run([net])
         allocated = True

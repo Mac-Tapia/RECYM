@@ -61,8 +61,58 @@ def job_cabecera(payload):
     }
 
 
+def job_loadallocation_com(payload):
+    """LoadAllocation vía COM Cyme.exe en proceso aislado (evita cuelgue UI)."""
+    from core.feeder_context import load_settings
+    from core.cymdist_com import run_loadallocation_com, _kill_cyme
+
+    feeder = (payload.get("feeder_id") or "").strip() or None
+    s = load_settings(feeder_id=feeder, synthesize=True)
+    for k in ("study_path", "database_mdb", "network_id", "database_connection_name"):
+        if payload.get(k):
+            s[k] = payload[k]
+    # Asegurar que no quede Cyme zombie bloqueando OpenStudy
+    try:
+        _kill_cyme()
+    except Exception:
+        pass
+    return run_loadallocation_com(
+        s,
+        network_id=payload.get("network_id") or s.get("network_id"),
+        p_kw=payload.get("P_kW"),
+        q_kvar=payload.get("Q_kvar"),
+        method=payload.get("method") or "KWH",
+        kill_existing=True,
+    )
+
+
+def job_loadflow_com(payload):
+    """LoadFlow vía COM Cyme.exe en proceso aislado (evita cuelgue UI §5)."""
+    from core.feeder_context import load_settings
+    from core.cymdist_com import run_loadflow_com, _kill_cyme
+
+    feeder = (payload.get("feeder_id") or "").strip() or None
+    s = load_settings(feeder_id=feeder, synthesize=True)
+    for k in ("study_path", "database_mdb", "network_id", "database_connection_name", "output_dir"):
+        if payload.get(k):
+            s[k] = payload[k]
+    leave_open = bool(payload.get("leave_open"))
+    try:
+        _kill_cyme()
+    except Exception:
+        pass
+    return run_loadflow_com(
+        s,
+        network_id=payload.get("network_id") or s.get("network_id"),
+        leave_open=leave_open,
+        kill_existing=True,
+    )
+
+
 JOBS = {
     "cabecera": job_cabecera,
+    "loadallocation_com": job_loadallocation_com,
+    "loadflow_com": job_loadflow_com,
 }
 
 

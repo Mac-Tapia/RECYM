@@ -2,6 +2,11 @@ from __future__ import print_function
 import os
 from core.common import backup_file
 
+# Estado de proceso CymPy (los adapters se recrean; el estudio permanece abierto).
+_PROCESS_STUDY_PATH = None
+_PROCESS_DB_NAME = None
+
+
 class CymPyAdapter(object):
     def __init__(self, cympy, api_map, settings=None):
         self.cympy = cympy
@@ -9,6 +14,7 @@ class CymPyAdapter(object):
         self.settings = settings or {}
         self._study_open = False
         self._db_connected = False
+        self._study_path_open = ""
 
     def _resolve_callable(self, dotted):
         obj = self.cympy
@@ -334,12 +340,105 @@ class CymPyAdapter(object):
         """Compat: mismo efecto que ensure_locks_for_allocation."""
         return self.ensure_locks_for_allocation(network_id, keep_locked_ids)
 
+    def _read_spot_load_pq_kwh(self, device):
+        """
+        Lee KWH/kW/kvar de una SpotLoad.
+
+        kW/kvar:
+          - 1 valor (SED tipico): total en [0]
+          - 3 valores distintos (~P/3): suma A+B+C = trifasico
+          - 3 valores iguales (total duplicado por fase): usar uno solo
+            (evita inflar ~2–3× el balance 3.3)
+        KWH: max entre fases (evita triplicar energia anual repetida).
+        """
+        cfg = self.obj_cfg("Load")
+        cl_base = "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues"
+        # Campos legacy (solo fase 0) por si el mapa usa otra ruta
+        legacy_base = (
+            cfg.get("value_base")
+            or (cl_base + "[0].LoadValue")
+        )
+        legacy_kwh = cfg.get("kwh_field") or (cl_base + "[0].KWH")
+
+        kws = []
+        kvars = []
+        kwh_max = None
+        for ph in range(0, 4):
+            try:
+                kw = self._parse_load_number(
+                    device.GetValue(cl_base + "[%d].LoadValue.KW" % ph)
+                )
+            except Exception:
+                kw = None
+            if kw is None and ph > 0:
+                break
+            if kw is None and ph == 0:
+                # Fallback campo configurado
+                try:
+                    kw = self._parse_load_number(device.GetValue(legacy_base + ".KW"))
+                except Exception:
+                    kw = None
+            try:
+                kvar = self._parse_load_number(
+                    device.GetValue(cl_base + "[%d].LoadValue.KVAR" % ph)
+                )
+            except Exception:
+                kvar = None
+                if ph == 0:
+                    try:
+                        kvar = self._parse_load_number(
+                            device.GetValue(legacy_base + ".KVAR")
+                        )
+                    except Exception:
+                        kvar = None
+            try:
+                kwh = self._parse_load_number(
+                    device.GetValue(cl_base + "[%d].KWH" % ph)
+                )
+            except Exception:
+                kwh = None
+                if ph == 0:
+                    try:
+                        kwh = self._parse_load_number(device.GetValue(legacy_kwh))
+                    except Exception:
+                        kwh = None
+            if kw is None and kvar is None and kwh is None and ph > 0:
+                break
+            if kw is not None:
+                kws.append(float(kw))
+            if kvar is not None:
+                kvars.append(float(kvar))
+            if kwh is not None:
+                kwh_max = float(kwh) if kwh_max is None else max(kwh_max, float(kwh))
+
+        n_ph = len(kws)
+        if n_ph == 0:
+            return {"KWH": kwh_max, "kW": None, "kvar": None, "n_phases": 0}
+
+        # Totales duplicados por fase (mismo kW en A/B/C) → no sumar
+        dup_phases = False
+        if n_ph >= 2:
+            ref = abs(kws[0])
+            tol = max(0.05, ref * 0.02)
+            dup_phases = all(abs(abs(x) - ref) <= tol for x in kws[1:])
+
+        if dup_phases:
+            sum_kw = kws[0]
+            sum_kvar = kvars[0] if kvars else 0.0
+        else:
+            sum_kw = sum(kws)
+            sum_kvar = sum(kvars) if kvars else 0.0
+
+        return {
+            "KWH": kwh_max,
+            "kW": sum_kw,
+            "kvar": sum_kvar,
+            "n_phases": n_ph or 1,
+            "dup_phases": dup_phases,
+        }
+
     def snapshot_spot_loads_indexed(self, network_id):
         """Una pasada API: índice hash LoadID → {KWH,kW,kvar} para validación rápida."""
-        cfg = self.obj_cfg("Load")
-        base = "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0]"
-        value_base = cfg.get("value_base") or (base + ".LoadValue")
-        kwh_field = cfg.get("kwh_field") or (base + ".KWH")
         index = {}
         devices = list(
             self.cympy.study.ListDevices(
@@ -350,28 +449,19 @@ class CymPyAdapter(object):
             lid = str(getattr(d, "DeviceNumber", "") or "")
             if not lid:
                 continue
-            try:
-                kwh = self._parse_load_number(d.GetValue(kwh_field))
-            except Exception:
-                kwh = None
-            kw = kvar = None
-            try:
-                kw = self._parse_load_number(d.GetValue(value_base + ".KW"))
-                kvar = self._parse_load_number(d.GetValue(value_base + ".KVAR"))
-            except Exception:
-                pass
-            index[lid] = {"LoadID": lid, "KWH": kwh, "kW": kw, "kvar": kvar}
+            pq = self._read_spot_load_pq_kwh(d)
+            index[lid] = {
+                "LoadID": lid,
+                "KWH": pq.get("KWH"),
+                "kW": pq.get("kW"),
+                "kvar": pq.get("kvar"),
+                "n_phases": pq.get("n_phases"),
+            }
         return index
 
     def snapshot_spot_loads_pq_kwh(self, network_id, exclude_ids=None):
         """Lee KWH/KW/KVAR de SpotLoads (para validar post-distribucion)."""
         exclude = set(str(x) for x in (exclude_ids or set()))
-        cfg = self.obj_cfg("Load")
-        base = (
-            "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0]"
-        )
-        value_base = cfg.get("value_base") or (base + ".LoadValue")
-        kwh_field = cfg.get("kwh_field") or (base + ".KWH")
         rows = []
         devices = list(
             self.cympy.study.ListDevices(
@@ -382,17 +472,14 @@ class CymPyAdapter(object):
             lid = str(getattr(d, "DeviceNumber", "") or "")
             if not lid or lid in exclude:
                 continue
-            try:
-                kwh = self._parse_load_number(d.GetValue(kwh_field))
-            except Exception:
-                kwh = None
-            kw = kvar = None
-            try:
-                kw = self._parse_load_number(d.GetValue(value_base + ".KW"))
-                kvar = self._parse_load_number(d.GetValue(value_base + ".KVAR"))
-            except Exception:
-                pass
-            rows.append({"LoadID": lid, "KWH": kwh, "kW": kw, "kvar": kvar})
+            pq = self._read_spot_load_pq_kwh(d)
+            rows.append({
+                "LoadID": lid,
+                "KWH": pq.get("KWH"),
+                "kW": pq.get("kW"),
+                "kvar": pq.get("kvar"),
+                "n_phases": pq.get("n_phases"),
+            })
         return rows
 
     def set_load_connected(self, obj_id, connected=True):
@@ -1387,15 +1474,31 @@ class CymPyAdapter(object):
 
     def connect_database(self, mdb_path=None, connection_name=None):
         """Conecta la BD Access compartida Electro Dunas (.mdb)."""
+        global _PROCESS_DB_NAME
         import cympy.db as db
         name = connection_name or self.settings.get("database_connection_name") or ""
+        if name and _PROCESS_DB_NAME and str(_PROCESS_DB_NAME) == str(name):
+            self._db_connected = True
+            print("BD ya conectada (reuse):", name)
+            return name
         if name:
             try:
                 db.ConnectDatabaseByName(str(name))
                 self._db_connected = True
+                _PROCESS_DB_NAME = str(name)
                 print("BD conectada por nombre:", name)
                 return name
             except Exception as ex:
+                # Si ya estaba conectada, reutilizar
+                if _PROCESS_DB_NAME == str(name) or "conect" in str(ex).lower():
+                    try:
+                        # Confirmar que el estudio/BD responden
+                        self._db_connected = True
+                        _PROCESS_DB_NAME = str(name)
+                        print("BD ya conectada (tras aviso):", name)
+                        return name
+                    except Exception:
+                        pass
                 print("AVISO ConnectDatabaseByName(%s): %s" % (name, ex))
 
         path = mdb_path or self.settings.get("database_mdb") or ""
@@ -1412,10 +1515,12 @@ class CymPyAdapter(object):
         ci.Project = mdb
         db.Connect(ci)
         self._db_connected = True
+        _PROCESS_DB_NAME = str(ci.Name)
         print("BD conectada:", path)
         return path
 
     def open_study(self, study_path=None, force_backup=None, connect_db=True):
+        global _PROCESS_STUDY_PATH
         path = study_path or self.settings.get("study_path") or ""
         if not path:
             raise RuntimeError(
@@ -1424,6 +1529,35 @@ class CymPyAdapter(object):
             )
         if not os.path.isfile(path):
             raise RuntimeError("No existe el estudio: " + path)
+        try:
+            sz = os.path.getsize(path)
+        except Exception:
+            sz = 0
+        if sz < 1024:
+            raise RuntimeError(
+                "Estudio vacío o corrupto (%d bytes): %s. "
+                "Para alimentadores sin .zxst propio use ELD.zxst + red de la BD (§1)."
+                % (sz, path)
+            )
+
+        path_abs = os.path.normcase(os.path.abspath(path))
+
+        # Reuso en el mismo proceso CymPy (3.3 / §5 consecutivos)
+        if _PROCESS_STUDY_PATH == path_abs:
+            try:
+                nets = list(self.cympy.study.ListNetworks())
+                if nets:
+                    self._study_open = True
+                    self._study_path_open = path_abs
+                    if connect_db and self.settings.get("database_mdb"):
+                        try:
+                            self.connect_database()
+                        except Exception:
+                            pass
+                    print("Estudio ya abierto (reuse):", path)
+                    return path
+            except Exception:
+                _PROCESS_STUDY_PATH = None
 
         if connect_db and self.settings.get("database_mdb"):
             try:
@@ -1439,6 +1573,8 @@ class CymPyAdapter(object):
 
         self.cympy.study.Open(path)
         self._study_open = True
+        self._study_path_open = path_abs
+        _PROCESS_STUDY_PATH = path_abs
         print("Estudio abierto:", path)
 
         net = self.settings.get("network_id")
@@ -1483,7 +1619,8 @@ class CymPyAdapter(object):
 
     def close_study(self, save=False):
         """Cierra el estudio si la API lo permite (evita crash al destruir CymPy)."""
-        if not self._study_open:
+        global _PROCESS_STUDY_PATH
+        if not self._study_open and not _PROCESS_STUDY_PATH:
             return
         try:
             if save and self.settings.get("save_after_fix", True):
@@ -1495,6 +1632,8 @@ class CymPyAdapter(object):
             if callable(close_fn):
                 close_fn()
             self._study_open = False
+            self._study_path_open = ""
+            _PROCESS_STUDY_PATH = None
         except Exception as ex:
             print("AVISO close_study:", ex)
 

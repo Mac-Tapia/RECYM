@@ -114,11 +114,14 @@ async def bridge_flask_api(path: str, request: Request):
     status = int(status_headers[0].split()[0]) if status_headers else 500
     headers = status_headers[1] if len(status_headers) > 1 else []
     media = "application/json"
+    out_headers = {}
     for hk, hv in headers:
-        if hk.lower() == "content-type":
+        low = hk.lower()
+        if low == "content-type":
             media = hv
-            break
-    return Response(content=raw, status_code=status, media_type=media)
+        elif low in ("content-disposition", "cache-control", "content-length"):
+            out_headers[hk] = hv
+    return Response(content=raw, status_code=status, media_type=media, headers=out_headers)
 
 
 _WEB_DIST = os.path.join(ROOT, "web", "dist")
