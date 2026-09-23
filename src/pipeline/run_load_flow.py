@@ -60,7 +60,7 @@ def _apply_scenario_new_loads(adapter, settings, scenario):
         return touched, []
     notes = []
     scen = (scenario or "").strip().lower()
-    print("[LF] Cargas §4 a conmutar (%s): %d → %s" % (
+    print("[LF] Cargas §4 a conmutar (%s): %d -> %s" % (
         scen or "general",
         len(loads),
         ", ".join("%s(%.0fkW)" % (r["LoadID"], r["P_kW"]) for r in loads)[:200],
@@ -251,7 +251,7 @@ def run_load_flow(settings=None, scenario=None):
             or s.get("cympy_job_timeout_sec")
             or 120
         )
-        _progress(s, "COM LoadFlow (subproceso ≤%ss)..." % int(timeout_com))
+        _progress(s, "COM LoadFlow (subproceso <=%ss)..." % int(timeout_com))
         # leave_open=False en worker: no dejar Cyme colgado; resume_gui aparte si keep
         com = run_cympy_job(
             "loadflow_com",

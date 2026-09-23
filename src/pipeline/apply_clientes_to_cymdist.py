@@ -143,10 +143,21 @@ def apply_rows(adapter, rows, fp=0.95, lock=True):
             })
             continue
         if not activo:
-            # Sale del alimentador / no actualizar → desconectar en modelo fisico
+            # Incluir off: primero poner 0 (aun Connected), luego desconectar.
+            # Escribir KWH/kW sobre CustomerLoad ya Disconnected provoca Access
+            # Violation 0xc0000005 en Cyme 9.2.
             try:
-                conn = adapter.set_load_connected(lid, False)
-                res = adapter.set_load_kwh_and_pot(lid, 0.0, 0.0, fp=fp, lock=True)
+                res = {"kwh_before": None, "kwh_after": None}
+                try:
+                    res = adapter.set_load_kwh_and_pot(lid, 0.0, 0.0, fp=fp, lock=True)
+                except Exception as ex_z:
+                    print("AVISO zero pre-desconexion", lid, ex_z)
+                conn = {"after": None}
+                try:
+                    conn = adapter.set_load_connected(lid, False)
+                except Exception as ex_d:
+                    print("AVISO desconexion", lid, ex_d)
+                    conn = {"after": "ERROR:%s" % ex_d}
                 report.append({
                     "Suministro": r.get("Suministro"),
                     "Cliente": r.get("Cliente"),
@@ -160,13 +171,13 @@ def apply_rows(adapter, rows, fp=0.95, lock=True):
                     "Activo": False,
                     "ConnectionStatus": conn.get("after"),
                     "Detalle": (
-                        "Desmarcada (Incluir): desconectada en modelo fisico "
-                        "(ConnectionStatus=Disconnected); P/Q/kWh=0"
+                        "Desmarcada (Incluir): P/Q/kWh=0 luego "
+                        "ConnectionStatus=Disconnected"
                     ),
                 })
                 print(
                     "EXCLUIDO", lid, "SED", r.get("SED"),
-                    "→ Disconnected + 0 kW (Activo=False)",
+                    "→ 0 kW + Disconnected (Activo=False)",
                 )
             except Exception as ex:
                 report.append({
@@ -263,10 +274,16 @@ def main():
         a0.open_study()
         loads = collect_loads(c, s.get("network_id"))
     rows = attach_cymdist_loads(rows, loads, primary_only=True)
-    from core.clientes_suministro import save_table_json, save_table_csv, ensure_activo, merge_activo, load_saved_clientes_rows
+    from core.clientes_suministro import (
+        save_table_json, save_table_csv, ensure_activo, merge_activo,
+        ensure_restar_cabecera, merge_restar_cabecera, load_saved_clientes_rows,
+    )
     json_path = output_path(s, "clientes", "clientes_alimentador.json")
-    rows = merge_activo(rows, previous_rows=load_saved_clientes_rows(json_path))
+    prev = load_saved_clientes_rows(json_path)
+    rows = merge_activo(rows, previous_rows=prev)
     rows = ensure_activo(rows, default=True)
+    rows = merge_restar_cabecera(rows, previous_rows=prev)
+    rows = ensure_restar_cabecera(rows, default=False)
     save_table_json(json_path, rows, meta)
     save_table_csv(output_path(s, "clientes", "clientes_alimentador.csv"), rows)
     print("Cruce con archivo:", ci_file, "| filas", len(rows), "| EA/Pot", meta.get("n_con_ea_pot"),
@@ -287,6 +304,14 @@ def main():
     report, released, _keep = refresh_clientes_in_cymdist(
         a, rows, fp=fp, previous_ids=prev_ids
     )
+    try:
+        from pipeline.run_demand_allocation import adjust_cabecera_for_excluidas
+        cab_adj = adjust_cabecera_for_excluidas(
+            s, rows, cympy=c, write_cymdist=True
+        )
+        print("[3.2 CLI] cabecera vs excluidas:", cab_adj.get("msg") or cab_adj)
+    except Exception as ex_cab:
+        print("AVISO ajuste cabecera excluidas:", ex_cab)
     if s.get("save_after_write", True) or s.get("save_after_fix", True):
         a.save_study()
         print("Estudio guardado.")

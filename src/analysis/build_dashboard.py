@@ -224,6 +224,7 @@ def main(settings=None, soft_clientes=False):
     cli_rows_board = clientes.get("rows") or []
     n_cli_tot = len(cli_rows_board)
     n_cli_on = sum(1 for r in cli_rows_board if _truthy_cli(r.get("Activo", True)))
+    voltage_opt = before.get("voltage_opt") or after.get("voltage_opt")
     board = {
         "utility": s.get("utility_name"),
         "feeder_id": s.get("feeder_id"),
@@ -234,6 +235,7 @@ def main(settings=None, soft_clientes=False):
         "has_diagnostic": has_diag,
         "before": before,
         "after": after,
+        "voltage_opt": voltage_opt,
         "preview_csv": preview if os.path.isfile(preview) else None,
         "clientes": {
             "meta": clientes.get("meta") or {},

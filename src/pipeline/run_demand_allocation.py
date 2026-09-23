@@ -13,6 +13,9 @@ Fundamento CYME (tutorial Distribución de carga):
 Flujo RECYM:
 1) Cabecera P/Q (sesion UI o Control_Proyecto)
 2) Fijos = clientes importantes (Pot->SED bloqueadas) si hay tabla; si no, sesion
+   En 3.2, cargas desmarcadas (salen del alimentador): se desconectan y su Pot
+   se resta de P(kW) máx §1; la cabecera CYMDIST se actualiza con la diferencia
+   antes de la distribución.
 3) LoadAllocation nativo: Modelo DEFAULT, Metodo KWHMethod, demanda
    Conectado+Total en kW-kvar, pesos = KWH de cada carga
 4) Si Run falla (p.ej. 130013): fallback prorrateo por KWH (misma logica;
@@ -414,9 +417,12 @@ def seed_session_from_excel(settings, force=False):
     if ctrl.get("Demanda_Max_Cabecera_kW") in (None, ""):
         return sess
     sess["P_kW"] = float(ctrl["Demanda_Max_Cabecera_kW"])
+    # Base de medición (§1): no se altera al restar Pot de excluidas en 3.2
+    sess["P_kW_medicion"] = float(sess["P_kW"])
     if ctrl.get("Q_Cabecera_kvar") not in (None, ""):
         sess["mode"] = "KW_KVAR"
         sess["Q_kvar"] = float(ctrl["Q_Cabecera_kvar"])
+        sess["Q_kvar_medicion"] = float(sess["Q_kvar"])
     if ctrl.get("FP_Cabecera") not in (None, ""):
         sess["cosfi"] = float(ctrl["FP_Cabecera"])
         if sess.get("mode") != "KW_KVAR":
@@ -432,6 +438,218 @@ def seed_session_from_excel(settings, force=False):
     sess["status"] = "seeded_excel"
     save_session(settings, sess)
     return sess
+
+
+def sum_pot_excluidas(rows):
+    """Suma Pot (kW) de filas desmarcadas que deben restar cabecera.
+
+    Condiciones: Activo=False y RestarCabecera=True (default False si falta).
+    Activo=False + RestarCabecera=False → solo desconectar, no tocar P max §1.
+    """
+    total = 0.0
+    details = []
+    for r in rows or []:
+        if truthy(r.get("Activo", True)):
+            continue
+        # Por defecto False: hay que marcar Restar cab. a mano
+        if not truthy(r.get("RestarCabecera", False)):
+            continue
+        pot = r.get("Pot")
+        if pot in (None, ""):
+            continue
+        try:
+            p = float(pot)
+        except Exception:
+            continue
+        if p <= 0:
+            continue
+        total += p
+        details.append({
+            "Suministro": r.get("Suministro"),
+            "Cliente": r.get("Cliente"),
+            "SED": r.get("SED"),
+            "LoadID": r.get("LoadID_CYMDIST") or r.get("LoadID"),
+            "Pot": p,
+            "RestarCabecera": True,
+        })
+    return total, details
+
+
+def ensure_cabecera_medicion_baseline(sess):
+    """Garantiza P_kW_medicion / Q_kvar_medicion = medición original §1.
+
+    Si la sesión solo tiene P_kW (mediciones previas a este ajuste), usa ese
+    valor como base la primera vez.
+    """
+    if sess.get("P_kW_medicion") in (None, ""):
+        if sess.get("P_kW") not in (None, ""):
+            try:
+                sess["P_kW_medicion"] = float(sess["P_kW"])
+            except Exception:
+                pass
+    if sess.get("Q_kvar_medicion") in (None, ""):
+        if sess.get("Q_kvar") not in (None, ""):
+            try:
+                sess["Q_kvar_medicion"] = float(sess["Q_kvar"])
+            except Exception:
+                pass
+    return sess
+
+
+def adjust_cabecera_for_excluidas(settings, rows, cympy=None, write_cymdist=True):
+    """P_cabecera = P_medicion - sum(Pot) de filas Activo=False y RestarCabecera=True.
+
+    Se ejecuta en 3.2 y se reafirma al inicio de 3.3 (antes de LoadAllocation).
+    Siempre parte de P_kW_medicion (no resta en cascada).
+    """
+    sess = ensure_cabecera_medicion_baseline(load_session(settings))
+    if sess.get("P_kW_medicion") in (None, ""):
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "sin_cabecera_medicion",
+            "msg": "Sin P(kW) max §1: guarde la medicion de cabecera antes de 3.2/3.3.",
+        }
+
+    p_base = float(sess["P_kW_medicion"])
+    q_base = None
+    if sess.get("Q_kvar_medicion") not in (None, ""):
+        try:
+            q_base = float(sess["Q_kvar_medicion"])
+        except Exception:
+            q_base = None
+    elif sess.get("Q_kvar") not in (None, ""):
+        try:
+            q_base = float(sess["Q_kvar"])
+        except Exception:
+            q_base = None
+
+    pot_off, details = sum_pot_excluidas(rows)
+    p_new = max(0.0, p_base - pot_off)
+    if q_base is not None and p_base > 0:
+        # Conserva FP de la medicion al reducir P por cargas que salen
+        q_new = q_base * (p_new / p_base)
+    else:
+        q_new = q_base
+
+    sess["P_kW"] = round(p_new, 4)
+    if q_new is not None:
+        sess["Q_kvar"] = round(float(q_new), 4)
+    sess["P_kW_excluidas_restadas"] = round(pot_off, 4)
+    sess["n_excluidas_cabecera"] = len(details)
+    sess["cabecera_ajustada_por_excluidas"] = bool(pot_off > 0)
+    sess["status"] = "cabecera_ok" if pot_off <= 0 else "cabecera_ajustada_excluidas"
+    save_session(settings, sess)
+
+    excel_path = None
+    try:
+        excel_path = sync_control_excel_cabecera(
+            settings,
+            sess["P_kW"],
+            sess.get("Q_kvar") if sess.get("Q_kvar") not in (None, "") else 0.0,
+            cosfi=sess.get("cosfi"),
+            fecha=sess.get("fecha_medicion"),
+        )
+    except Exception as ex:
+        print("AVISO sync Excel cabecera (excluidas):", ex)
+
+    cym_info = None
+    if write_cymdist and cympy is not None and sess.get("Q_kvar") not in (None, ""):
+        try:
+            cym_info = set_network_demand(
+                cympy,
+                settings.get("network_id"),
+                float(sess["P_kW"]),
+                float(sess["Q_kvar"]),
+                settings=settings,
+            )
+        except Exception as ex:
+            print("AVISO SetDemand cabecera tras excluidas:", ex)
+            cym_info = {"ok": False, "error": str(ex)}
+
+    msg = (
+        "Cabecera §1: P_medicion=%.2f - sum(Pot_excluidas)=%.2f (%d) -> P=%.2f kW"
+        % (p_base, pot_off, len(details), float(sess["P_kW"]))
+    )
+    if q_new is not None:
+        msg += " · Q=%.2f kvar" % float(sess["Q_kvar"])
+
+    return {
+        "ok": True,
+        "skipped": False,
+        "P_kW_medicion": p_base,
+        "Q_kvar_medicion": q_base,
+        "P_kW_excluidas_restadas": pot_off,
+        "n_excluidas": len(details),
+        "excluidas": details,
+        "P_kW": float(sess["P_kW"]),
+        "Q_kvar": float(sess["Q_kvar"]) if sess.get("Q_kvar") not in (None, "") else None,
+        "excel_path": excel_path,
+        "cymdist": cym_info,
+        "msg": msg,
+    }
+
+
+def prepare_cabecera_before_allocation(settings, activo_map=None, restar_map=None):
+    """Persiste selección Incluir/Restar cab. y ajusta P máx §1 antes de 3.3.
+
+    Condición de resta: Activo=False y RestarCabecera=True.
+    Actualiza session.json (P_kW / Q_kvar); SetDemand lo hace luego LoadAllocation.
+    """
+    from core.clientes_suministro import (
+        load_saved_clientes_rows, save_table_json, save_table_csv,
+        merge_activo, ensure_activo, merge_restar_cabecera, ensure_restar_cabecera,
+        clientes_importantes_rows,
+    )
+
+    json_path = output_path(settings, "clientes", "clientes_alimentador.json")
+    rows = load_saved_clientes_rows(json_path)
+    if not rows:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "sin_tabla_clientes",
+            "msg": "Sin tabla §3: cabecera §1 sin ajuste por Restar cab.",
+        }, load_session(settings)
+
+    meta = {}
+    if os.path.isfile(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                meta = (json.load(f).get("meta") or {})
+        except Exception:
+            meta = {}
+
+    prev = list(rows)
+    if activo_map is not None:
+        rows = merge_activo(rows, activo_map=activo_map, previous_rows=prev)
+    rows = ensure_activo(rows, default=True)
+    if restar_map is not None:
+        rows = merge_restar_cabecera(rows, restar_map=restar_map, previous_rows=prev)
+    rows = ensure_restar_cabecera(rows, default=False)
+
+    ci = clientes_importantes_rows(rows)
+    rows_adj = ci if ci else rows
+
+    meta = dict(meta or {})
+    meta["n_activos"] = sum(1 for r in rows if r.get("Activo"))
+    meta["n_excluidos"] = sum(1 for r in rows if not r.get("Activo"))
+    meta["n_restar_cabecera"] = sum(
+        1 for r in rows if (not r.get("Activo")) and r.get("RestarCabecera")
+    )
+    try:
+        save_table_json(json_path, rows, meta)
+        save_table_csv(output_path(settings, "clientes", "clientes_alimentador.csv"), rows)
+    except Exception as ex:
+        print("AVISO guardar tabla pre-3.3:", ex)
+
+    cab = adjust_cabecera_for_excluidas(
+        settings, rows_adj, cympy=None, write_cymdist=False
+    )
+    sess = load_session(settings)
+    print("[3.3] cabecera pre-distribucion:", cab.get("msg") or cab)
+    return cab, sess
+
 
 def apply_fixed_loads(adapter, fixed_loads):
     applied = []
@@ -1037,12 +1255,16 @@ def validate_allocation_sed_loads(adapter, network_id, fixed_rows, p_cabecera_kw
     }
 
 
-def run_load_allocation_module(settings, session=None):
+def run_load_allocation_module(settings, session=None, activo_map=None, restar_map=None):
     """3.3 · Ejecuta LoadAllocation.Run y valida SED/cargas (sin reescribir).
 
     Precondiciones (NO las escribe aquí):
-      - §1: cabecera P/Q ya en sesion.
+      - §1: cabecera P/Q ya en sesion (medicion).
       - §3.2: EA→Consumo(KWH) y Pot→kW Locked ya cargados.
+
+    Antes de Run:
+      - Aplica Restar cab. (§3): P_cabecera = P_medicion - sum(Pot) de filas
+        Incluir=off y Restar cab.=on; SetDemand usa ese P en la distribución.
 
     Tras Run: revision de valores (no ceros indebidos, balance vs cabecera).
 
@@ -1054,6 +1276,20 @@ def run_load_allocation_module(settings, session=None):
     s = settings
     api = load_json("config/cympy_api_map.json")
     sess = session or load_session(s)
+
+    # 1) Restar Pot de cargas con Restar cab. a P max §1 (antes de distribuir)
+    cab_adj = {"skipped": True}
+    try:
+        cab_adj, sess = prepare_cabecera_before_allocation(
+            s,
+            activo_map=activo_map if activo_map is not None else s.get("_activo_map"),
+            restar_map=restar_map if restar_map is not None else s.get("_restar_map"),
+        )
+    except Exception as ex_cab:
+        print("AVISO prepare_cabecera_before_allocation:", ex_cab)
+        cab_adj = {"ok": False, "skipped": True, "error": str(ex_cab)}
+        sess = load_session(s)
+
     if sess.get("P_kW") in (None, ""):
         raise RuntimeError(
             "Falta cabecera §1. Guarde medicion (1.2 · Cargar en la fuente) antes de 3.3."
@@ -1077,13 +1313,17 @@ def run_load_allocation_module(settings, session=None):
         "network_id": nid,
         "P_cabecera_kW": Phead,
         "Q_cabecera_kvar": Qhead,
+        "P_kW_medicion": sess.get("P_kW_medicion"),
+        "P_kW_excluidas_restadas": sess.get("P_kW_excluidas_restadas"),
+        "n_excluidas_cabecera": sess.get("n_excluidas_cabecera"),
+        "cabecera_ajustada": cab_adj,
         "P_fijos_kW": Pfixed,
         "n_fijos": len(fixed),
         "P_residual_kW": Pres,
         "fijos_fuente": "clientesimportantes" if fixed else "ninguno",
         "aviso": (
             "3.3 · %s (%s): LoadAllocation + validacion. "
-            "Cabecera=§1 · fijos Locked=§3.2. Anti-130013 se guarda en el estudio activo."
+            "Cabecera=§1 (ajustada por Restar cab.) · fijos Locked=§3.2."
             % (fid or "alimentador", nid or "red")
         ),
         "cymdist_settings": dict(_demand_template_defaults(s), LoadFlowParamConfigID="DEFAULT"),
@@ -1105,7 +1345,9 @@ def run_load_allocation_module(settings, session=None):
         )
 
     print("[%s] 3.3 LoadAllocation API (rapido)" % s.get("feeder_id"))
-    print("  Cabecera §1 P/Q:", Phead, "/", round(Qhead, 3))
+    if cab_adj and not cab_adj.get("skipped"):
+        print("  Cabecera ajustada Restar cab.:", cab_adj.get("msg"))
+    print("  Cabecera §1 P/Q (para distribuir):", Phead, "/", round(Qhead, 3))
     print("  Fijos 3.2:", len(fixed), "->", round(Pfixed, 3), "kW")
     print(
         "  Plantilla Demanda: Total+kW-kvar · aguas abajo Consumo kW-h · FdC=%.1f%% · k=%.2f"
@@ -1264,54 +1506,72 @@ def run_load_allocation_module(settings, session=None):
 
     fixed_ids = set(str(r.get("LoadID")) for r in fixed)
     fixed_key = ",".join(sorted(fixed_ids))
+    # Decidir motor YA: CymPy LA omitido → no ensuciar el estudio in-process.
+    # save_study() tras clear de ~1000 SpotLoad cuelga Cyme/CymPy y bloquea la UI
+    # (mensaje «guardando locks pre-COM…» sin avance).
+    skip_cympy = bool((native_broken and not native_ok) or prefer_com)
     t_lock = _time.time()
-    # SIEMPRE reafirmar locks: residual Unlocked + fijos Locked.
-    # El skip por sess.alloc_locks_ready dejaba 250+ residuales Locked
-    # (p.ej. tras LF o si el Save pre-COM no persistió) y COM solo
-    # podía escalar ~4 cargas → suma kW >> cabecera.
-    try:
-        unlock_info = a.ensure_locks_for_allocation(net, fixed_ids)
-        result["unlock"] = unlock_info
-        n_write_locks = int(unlock_info.get("n_write") or 0)
-        n_res = int(unlock_info.get("n_residual") or 0)
-        n_unlocked = len(unlock_info.get("unlocked") or [])
-        if n_write_locks > 0:
-            study_dirty = True
-        # Si casi no hay residual Unlocked, forzar dirty para Save pre-COM
-        if n_res > 0 and n_unlocked < max(1, int(n_res * 0.5)):
-            result["unlock"]["warn_few_unlocked"] = True
-            study_dirty = True
+    if skip_cympy:
+        _progress("COM: locks/clear diferidos (evita Save CymPy)...")
+        result["unlock"] = {
+            "deferred_to_com": True,
+            "n_fixed": len(fixed_ids),
+            "reason": "prefer_COM_avoid_save_hang",
+        }
+        result["residual_cleared"] = {
+            "skipped": True,
+            "reason": "prefer_COM_avoid_save_hang",
+        }
+        result["timing"]["locks_sec"] = 0.0
+        result["timing"]["clear_residual_sec"] = 0.0
+    else:
+        # SIEMPRE reafirmar locks: residual Unlocked + fijos Locked.
+        # El skip por sess.alloc_locks_ready dejaba 250+ residuales Locked
+        # (p.ej. tras LF o si el Save pre-COM no persistió) y COM solo
+        # podía escalar ~4 cargas → suma kW >> cabecera.
         try:
-            sess["alloc_locks_ready"] = True
-            sess["alloc_locks_fixed_key"] = fixed_key
-            sess["alloc_locks_n_residual"] = n_res
-            sess["alloc_locks_n_unlocked"] = n_unlocked
-            save_session(s, sess)
-        except Exception:
-            pass
-    except Exception as ex:
-        print("AVISO unlock residual:", ex)
-        result["unlock_error"] = str(ex)
-    result["timing"]["locks_sec"] = round(_time.time() - t_lock, 2)
+            unlock_info = a.ensure_locks_for_allocation(net, fixed_ids)
+            result["unlock"] = unlock_info
+            n_write_locks = int(unlock_info.get("n_write") or 0)
+            n_res = int(unlock_info.get("n_residual") or 0)
+            n_unlocked = len(unlock_info.get("unlocked") or [])
+            if n_write_locks > 0:
+                study_dirty = True
+            # Si casi no hay residual Unlocked, forzar dirty para Save pre-COM
+            if n_res > 0 and n_unlocked < max(1, int(n_res * 0.5)):
+                result["unlock"]["warn_few_unlocked"] = True
+                study_dirty = True
+            try:
+                sess["alloc_locks_ready"] = True
+                sess["alloc_locks_fixed_key"] = fixed_key
+                sess["alloc_locks_n_residual"] = n_res
+                sess["alloc_locks_n_unlocked"] = n_unlocked
+                save_session(s, sess)
+            except Exception:
+                pass
+        except Exception as ex:
+            print("AVISO unlock residual:", ex)
+            result["unlock_error"] = str(ex)
+        result["timing"]["locks_sec"] = round(_time.time() - t_lock, 2)
 
-    # Reentrada 3.3: limpiar kW residual previos (campos) para no acumular
-    t_clr = _time.time()
-    try:
-        _progress("limpiando residual previo...")
-        clr = clear_residual_loads_kw(a, net, fixed_ids)
-        result["residual_cleared"] = clr
-        if int(clr.get("n_clear") or 0) > 0:
-            study_dirty = True
-            print(
-                "[3.3] residual limpio: %d cargas → 0 kW (fijos intactos=%d)"
-                % (clr.get("n_clear"), clr.get("n_fixed_kept"))
-            )
-        else:
-            print("[3.3] residual ya en 0 · nada que limpiar")
-    except Exception as ex_clr:
-        print("AVISO clear residual:", ex_clr)
-        result["residual_clear_error"] = str(ex_clr)
-    result["timing"]["clear_residual_sec"] = round(_time.time() - t_clr, 2)
+        # Reentrada 3.3: limpiar kW residual previos (campos) para no acumular
+        t_clr = _time.time()
+        try:
+            _progress("limpiando residual previo...")
+            clr = clear_residual_loads_kw(a, net, fixed_ids)
+            result["residual_cleared"] = clr
+            if int(clr.get("n_clear") or 0) > 0:
+                study_dirty = True
+                print(
+                    "[3.3] residual limpio: %d cargas → 0 kW (fijos intactos=%d)"
+                    % (clr.get("n_clear"), clr.get("n_fixed_kept"))
+                )
+            else:
+                print("[3.3] residual ya en 0 · nada que limpiar")
+        except Exception as ex_clr:
+            print("AVISO clear residual:", ex_clr)
+            result["residual_clear_error"] = str(ex_clr)
+        result["timing"]["clear_residual_sec"] = round(_time.time() - t_clr, 2)
 
     def _configure_and_run_allocation(cfg_id):
         from cympy.properties import properties as props
@@ -1352,7 +1612,6 @@ def run_load_allocation_module(settings, session=None):
     t_run = _time.time()
     allocated = False
     alloc_error = None
-    skip_cympy = bool((native_broken and not native_ok) or prefer_com)
 
     def _run_com_allocation():
         """COM LoadAllocation en SUBPROCESO con timeout (no cuelga la UI).
@@ -1360,13 +1619,17 @@ def run_load_allocation_module(settings, session=None):
         Antes: SetDemand+Save+COM en el mismo proceso CymPy → deadlock frecuente
         tras «estudio…» / Cyme.exe. Ahora: cerrar estudio ya, COM aislado, y si
         timeout/falla → el caller hace fallback KWH.
+
+        En ruta prefer_COM no se hace clear/Save in-process (cuelga). El motor
+        COM desbloquea residuales (UnlockLoads) y mantiene fijos 3.2 Locked.
         """
         nonlocal study_dirty
         from core.cympy_job import run_cympy_job
         from core import cympy_adapter as _cym_ad
 
-        # Persistir locks residual=Unlocked ANTES de COM. Sin Save,
-        # close(save=False) descartaba el unlock y COM veía todo Locked.
+        # Persistir locks residual=Unlocked ANTES de COM solo si hubo writes
+        # in-process (ruta nativa fallida → fallback COM). En prefer_COM
+        # study_dirty suele ser False (locks/clear diferidos).
         if study_dirty and s.get("save_after_write", True):
             _progress("guardando locks pre-COM...")
             t_pre = _time.time()
@@ -1379,6 +1642,9 @@ def run_load_allocation_module(settings, session=None):
                 result["locks_saved_pre_com"] = False
                 result["save_pre_com_error"] = str(ex_sv)
             result["timing"]["save_pre_com_sec"] = round(_time.time() - t_pre, 2)
+        else:
+            result["locks_saved_pre_com"] = False
+            result["locks_save_skipped"] = "prefer_COM_or_clean"
 
         # La demanda P/Q la escribe el worker COM; FdC/k ya están de §1.
         _progress("COM: liberando estudio CymPy...")

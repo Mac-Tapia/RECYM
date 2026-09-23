@@ -71,9 +71,10 @@ def _parse_com_number(raw):
         return None
 
 
-def normalize_lf_topo_powers(topo, settings=None, p_cabecera_kw=None):
+def normalize_lf_topo_powers(topo, settings=None, p_cabecera_kw=None, scenario=None):
     """
-    Corrige KWTOT/KVARTOT de QueryResultNode en fuente cuando salen ~3×.
+    Corrige KWTOT/KVARTOT de QueryResultNode en fuente cuando salen ~3×
+    o con sobrelectura leve (~1.05–2.2×) típica de esta instalación COM.
 
     En esta instalación CYME, QueryResultNode('KWTOT', source) a menudo
     reporta ≈3× la potencia trifásica real del alimentador (suma de fases
@@ -81,9 +82,12 @@ def normalize_lf_topo_powers(topo, settings=None, p_cabecera_kw=None):
     cuadra / no convergería.
 
     Si KWTOT > 2.2 × P_cabecera → dividir KWTOT y KVARTOT entre 3.
+    Si 1.05 ≤ ratio < 2.2 y escenario situacional (o sin escenario) →
+    escalar a la cabecera §1 (mismo factor para Q).
     """
     topo = dict(topo or {})
     settings = settings or {}
+    scen = str(scenario or topo.get("scenario") or "").strip().lower()
     p_ref = p_cabecera_kw
     if p_ref is None:
         try:
@@ -98,6 +102,15 @@ def normalize_lf_topo_powers(topo, settings=None, p_cabecera_kw=None):
 
     kw = _parse_com_number(topo.get("KWTOT"))
     kvar = _parse_com_number(topo.get("KVARTOT"))
+    # Placeholders COM ($KWLOSS$) → None
+    for loss_key in ("KWLOSS", "KVARLOSS", "I", "Ia", "Ib", "Ic"):
+        raw = topo.get(loss_key)
+        if raw is None:
+            continue
+        sraw = str(raw).strip()
+        if sraw.startswith("$") or sraw.startswith("ERR:"):
+            topo[loss_key] = None
+
     if kw is None or not p_ref or p_ref <= 0:
         return topo
 
@@ -117,6 +130,62 @@ def normalize_lf_topo_powers(topo, settings=None, p_cabecera_kw=None):
         print("[LF]", topo["power_scale_reason"], flush=True)
         kw = float(topo["KWTOT"])
         kvar = _parse_com_number(topo.get("KVARTOT"))
+    elif scen in ("", "situacional", "general") and ratio >= 1.05:
+        # Sobrelectura leve COM (~+5–120%): alinear situacional a cabecera §1
+        factor = p_ref / kw
+        topo["KWTOT_raw"] = kw
+        topo["KVARTOT_raw"] = kvar
+        topo["KWTOT"] = round(p_ref, 3)
+        # Preferir Q de cabecera §1 si existe; si no, escalar COM
+        q_cab = None
+        try:
+            from pipeline.run_demand_allocation import load_session
+            q_cab = (load_session(settings) or {}).get("Q_kvar")
+        except Exception:
+            q_cab = settings.get("Q_kvar")
+        try:
+            q_cab = float(q_cab) if q_cab not in (None, "") else None
+        except Exception:
+            q_cab = None
+        if q_cab is not None:
+            topo["KVARTOT"] = round(q_cab, 3)
+        elif kvar is not None:
+            topo["KVARTOT"] = round(kvar * factor, 3)
+        topo["power_scale_applied"] = factor
+        topo["power_scale_reason"] = (
+            "QueryResultNode KWTOT=%.1f (%.2f×cabecera %.1f); escalado situacional → cabecera"
+            % (kw, ratio, p_ref)
+        )
+        print("[LF]", topo["power_scale_reason"], flush=True)
+        kw = float(topo["KWTOT"])
+        kvar = _parse_com_number(topo.get("KVARTOT"))
+    elif scen == "proyectado" and ratio >= 1.05:
+        # Mismo factor que habría aplicado el situacional (kw_sit_raw / cab)
+        # para no inflar el proyectado; delta SpotLoad se conserva en proporción.
+        sit_raw = None
+        try:
+            sit_raw = float(settings.get("_situacional_kw_raw") or 0) or None
+        except Exception:
+            sit_raw = None
+        if sit_raw and sit_raw > p_ref * 1.05:
+            factor = p_ref / sit_raw
+            topo["KWTOT_raw"] = kw
+            topo["KVARTOT_raw"] = kvar
+            topo["KWTOT"] = round(kw * factor, 3)
+            if kvar is not None:
+                topo["KVARTOT"] = round(kvar * factor, 3)
+            topo["power_scale_applied"] = factor
+            topo["power_scale_reason"] = (
+                "proyectado escalado ×%.4f (sit_raw=%.1f → cab=%.1f); KWTOT %.1f→%.1f"
+                % (factor, sit_raw, p_ref, kw, kw * factor)
+            )
+            print("[LF]", topo["power_scale_reason"], flush=True)
+            kw = float(topo["KWTOT"])
+            kvar = _parse_com_number(topo.get("KVARTOT"))
+        else:
+            topo["KWTOT"] = kw
+            if kvar is not None:
+                topo["KVARTOT"] = kvar
     else:
         # Normalizar formato numérico aunque no haya escala
         topo["KWTOT"] = kw
@@ -249,14 +318,8 @@ def open_cymdist_gui(settings, kill_existing=True, reason="session"):
             pass
         app.SelectUniqueDatabaseAccess(mdb, 0, _access_version())
         study_obj = app.OpenStudy(study)
-        try:
-            if study_obj is not None:
-                study_obj.Save()
-        except Exception:
-            try:
-                comtypes.client.CreateObject("Cymdist.Study").Save()
-            except Exception:
-                pass
+        # No forzar Save inmediato tras OpenStudy: tras escrituras CymPy puede
+        # disparar Access Violation 0xc0000005 en Cyme 9.2.
         set_keep_open(settings, True, reason=reason)
         return {
             "ok": True,
@@ -727,8 +790,10 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
         except Exception:
             pass
         try:
-            # No desbloquear fijos Locked por 3.2 / residuales Unlocked
-            la.UnlockLoads = 0
+            # Unlock residuales Locked de corridas previas para que KWH pueda
+            # prorratear. Los fijos 3.2 se preservan con UnlockAllInitiallyFixedLoads=0.
+            # (Antes UnlockLoads=0 + Save CymPy de ~1000 clear → UI colgada.)
+            la.UnlockLoads = 1
         except Exception:
             pass
         try:

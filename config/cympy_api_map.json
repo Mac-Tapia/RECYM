@@ -98,14 +98,16 @@
       "note": "No hay clase Simulation RecloserPlacement en CymPy 9.2 r1 de esta instalacion"
     },
     "optimal_regulator": {
-      "callable": "",
+      "callable": "sim.RegulatorPlacement",
+      "method": "Run",
       "confirmed": false,
-      "note": "No hay clase Simulation RegulatorPlacement en CymPy 9.2 r1 de esta instalacion"
+      "note": "Si RegulatorPlacement no existe en CymPy, common_opt prueba alias; requiere equipo REG* en biblioteca."
     },
     "optimal_capacitor": {
       "callable": "sim.CapacitorPlacement",
       "method": "Run",
-      "confirmed": true
+      "confirmed": true,
+      "note": "Usa equipo ShuntCapacitor de biblioteca (p.ej. BC22.9KV) vía opt_capacitor_equipment."
     }
   },
   "result_keywords": {

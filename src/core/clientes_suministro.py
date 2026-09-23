@@ -426,6 +426,8 @@ def attach_cymdist_loads(rows, loads_inventory, primary_only=True):
         row["Match_SED"] = bool(lids)
         if "Activo" not in row:
             row["Activo"] = True
+        if "RestarCabecera" not in row:
+            row["RestarCabecera"] = False
         out.append(row)
     return out
 
@@ -445,6 +447,24 @@ def ensure_activo(rows, default=True):
             row["Activo"] = truthy(row.get("Activo"))
         out.append(row)
     return out
+
+
+def ensure_restar_cabecera(rows, default=False):
+    """Garantiza RestarCabecera: por defecto off (solo se marca a mano).
+
+    Si Incluir off y RestarCabecera on → restar Pot de P máx §1.
+    """
+    from core.common import truthy
+    out = []
+    for r in rows:
+        row = dict(r)
+        if "RestarCabecera" not in row or row.get("RestarCabecera") in (None, ""):
+            row["RestarCabecera"] = bool(default)
+        else:
+            row["RestarCabecera"] = truthy(row.get("RestarCabecera"))
+        out.append(row)
+    return out
+
 
 def merge_activo(rows, activo_map=None, previous_rows=None):
     """
@@ -483,6 +503,45 @@ def merge_activo(rows, activo_map=None, previous_rows=None):
         out.append(row)
     return out
 
+
+def merge_restar_cabecera(rows, restar_map=None, previous_rows=None):
+    """Aplica RestarCabecera desde mapa {key: bool} y/o filas previas.
+
+    Por defecto False (sin marcar). True + Activo=False → restar Pot de cabecera §1.
+    """
+    from core.common import truthy
+    prev = {}
+    if previous_rows:
+        for r in previous_rows:
+            prev[row_key(r)] = truthy(r.get("RestarCabecera", False))
+            sumi = str(r.get("Suministro") or "").strip()
+            if sumi:
+                prev.setdefault(sumi, truthy(r.get("RestarCabecera", False)))
+    rmap = {}
+    if restar_map:
+        for k, v in restar_map.items():
+            rmap[str(k).strip()] = truthy(v)
+    out = []
+    for r in rows:
+        row = dict(r)
+        key = row_key(row)
+        sumi = str(row.get("Suministro") or "").strip()
+        if key in rmap:
+            row["RestarCabecera"] = rmap[key]
+        elif sumi in rmap:
+            row["RestarCabecera"] = rmap[sumi]
+        elif key in prev:
+            row["RestarCabecera"] = prev[key]
+        elif sumi in prev:
+            row["RestarCabecera"] = prev[sumi]
+        elif "RestarCabecera" not in row or row.get("RestarCabecera") in (None, ""):
+            row["RestarCabecera"] = False
+        else:
+            row["RestarCabecera"] = truthy(row.get("RestarCabecera"))
+        out.append(row)
+    return out
+
+
 def load_saved_clientes_rows(path):
     """Lee filas de clientes_alimentador.json si existe."""
     if not path or not os.path.isfile(path):
@@ -500,7 +559,7 @@ def save_table_csv(path, rows, headers=None):
     if headers is None:
         headers = [
             "RADIAL", "Suministro", "Cliente", "SED", "EA", "Pot",
-            "Match_CI", "LoadID_CYMDIST", "Match_SED", "Activo",
+            "Match_CI", "LoadID_CYMDIST", "Match_SED", "Activo", "RestarCabecera",
             "Generador", "Concesion", "Cliente_CI", "Codigo_CL",
         ]
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
@@ -603,12 +662,15 @@ def seed_clientes_from_inventory(settings, previous_rows=None, open_cymdist=Fals
             "LoadID_CYMDIST": lid,
             "Match_SED": True,
             "Activo": True,
+            "RestarCabecera": False,
             "Origen": "inventario_spotload",
             "SectionID": L.get("SectionID") or "",
         })
 
     rows = merge_activo(rows, previous_rows=previous_rows)
     rows = ensure_activo(rows, default=True)
+    rows = merge_restar_cabecera(rows, previous_rows=previous_rows)
+    rows = ensure_restar_cabecera(rows, default=False)
     meta = {
         "source": "inventory_loads",
         "feeder_id": feeder,

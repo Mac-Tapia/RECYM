@@ -2,6 +2,7 @@
 
 Interfaz SPA: `scripts\20_demand_ui.bat` → **http://127.0.0.1:5055** (React + FastAPI §§1–7)  
 Legacy Flask: `scripts\20_demand_ui_legacy.bat`  
+Arquitectura: [`ARQUITECTURA.md`](ARQUITECTURA.md) · Flujo de campaña: [`FLUJO_TRABAJO.md`](FLUJO_TRABAJO.md)  
 Contrato API: [`API_CONTRATO_UI.md`](API_CONTRATO_UI.md)  
 Motor: CymPy + API COM CYMDIST 9.2 · estudio `.zxst` + BD `.mdb` Electro Dunas.
 

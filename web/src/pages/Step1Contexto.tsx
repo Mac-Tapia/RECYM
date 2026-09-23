@@ -31,6 +31,11 @@ type CabeceraSess = {
   network_id?: string;
   P_kW?: number | null;
   Q_kvar?: number | null;
+  P_kW_medicion?: number | null;
+  Q_kvar_medicion?: number | null;
+  P_kW_excluidas_restadas?: number | null;
+  n_excluidas_cabecera?: number | null;
+  cabecera_ajustada_por_excluidas?: boolean;
   S_kVA?: number | null;
   P_avg_kW?: number | null;
   factor_carga_pct?: number | null;
@@ -147,6 +152,7 @@ export function Step1Contexto() {
   const [fecha, setFecha] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const [cabAdjNote, setCabAdjNote] = useState("");
   const extractSeq = useRef(0);
   const skipCabeceraReload = useRef(false);
 
@@ -166,6 +172,16 @@ export function Step1Contexto() {
     setVaKv(fmtNum(sess.Va_kV) || vlnDefault);
     setVbKv(fmtNum(sess.Vb_kV) || vlnDefault);
     setVcKv(fmtNum(sess.Vc_kV) || vlnDefault);
+    if (
+      sess.cabecera_ajustada_por_excluidas &&
+      Number(sess.P_kW_excluidas_restadas || 0) > 0
+    ) {
+      setCabAdjNote(
+        `Ajustada en 3.2: P_medicion=${fmtNum(sess.P_kW_medicion)} - sum(Pot_excluidas)=${fmtNum(sess.P_kW_excluidas_restadas)} (${sess.n_excluidas_cabecera ?? "?"} cargas) -> P=${fmtNum(sess.P_kW)}`
+      );
+    } else {
+      setCabAdjNote("");
+    }
   }
 
   async function loadCabecera(fid?: string) {
@@ -221,6 +237,7 @@ export function Step1Contexto() {
     setVbKv("");
     setVcKv("");
     setFecha("");
+    setCabAdjNote("");
   }
 
   async function extraerMedicion(opts?: {
@@ -696,6 +713,7 @@ export function Step1Contexto() {
           />
         </div>
       </div>
+      {cabAdjNote ? <p className="muted" style={{ marginTop: 8 }}>{cabAdjNote}</p> : null}
 
       {showPhases && (
         <>

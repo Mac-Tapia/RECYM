@@ -49,7 +49,8 @@ from core.clientes_suministro import (
     list_suministro_files, list_clientes_importantes_files,
     build_feeder_clientes_table, attach_cymdist_loads,
     save_table_csv, save_table_json,
-    merge_activo, load_saved_clientes_rows, ensure_activo,
+    merge_activo, merge_restar_cabecera, load_saved_clientes_rows,
+    ensure_activo, ensure_restar_cabecera,
     list_radiales_from_suministro,
 )
 from core.spot_load_new import compute_pq
@@ -308,9 +309,12 @@ tr.off-row{opacity:.55;background:#fafaf9}
     Complete primero el panel <b>Calidad del modelo</b> (0 Error/Warning/Hint + converge).
     La <b>distribución (Consumo kWh)</b> deja Locked la Pot de clientes importantes y <b>actualiza kW/kvar</b>
     del resto de SED según su energía en Consumo.
-    La columna <b>Incluir</b> viene marcada: desmarque cargas que <b>salen del alimentador</b>
-    o no deben actualizarse (p.ej. pasan a otro radial). Al cargar EA/Pot esas SED quedan
-    <b>desconectadas en el modelo físico</b> de CYMDIST (no entran en distribución ni en flujos).</p>
+    La columna <b>Incluir</b> viene marcada: desmarque cargas que no desea actualizar
+    (se desconectan en CYMDIST). La columna <b>Restar cab.</b> controla si, al desmarcar
+    Incluir, también se resta el Pot de esa carga a P(kW) máx §1 (p.ej. carga que ya no
+    pertenece al alimentador). Si solo olvidaron actualizar EA/Pot, desmarque Incluir y
+    deje Restar cab. apagado. Las excluidas quedan <b>desconectadas en el modelo físico</b>
+    de CYMDIST (no entran en distribución ni en flujos).</p>
     <div class="row">
       <div>
         <label>Archivo suministrocliente</label>
@@ -526,6 +530,7 @@ tr.off-row{opacity:.55;background:#fafaf9}
     <h3 style="margin:16px 0 6px;font-size:14px">5.2 Rellenar Word/Excel</h3>
     <div class="actions">
       <button type="button" class="ghost" onclick="refreshInformePaths()">Ver rutas de guardado</button>
+      <button type="button" class="secondary" onclick="capturarCymdistInforme()">Capturar CYMDIST (API)</button>
       <button type="button" id="btnInforme" onclick="armarInformes()">Rellenar informes → doc</button>
       <span class="muted" id="informeMsg"></span>
     </div>
@@ -539,6 +544,9 @@ tr.off-row{opacity:.55;background:#fafaf9}
       <code id="pathDocJus">…</code><br/><br/>
       <b>Gráficas LF / capturas (PNG)</b><br/>
       <code id="pathImgDir">…</code>
+      <div class="muted" style="margin-top:6px;font-size:12px">
+        Al rellenar: LoadFlow situacional + proyectado → activa coloreo VoltageLevel/LoadingLevel en CYMDIST → ExportActiveView → Word.
+      </div>
     </div>
     <pre id="informeOut" class="muted" style="white-space:pre-wrap;margin-top:12px;font-size:12px;max-height:180px;overflow:auto"></pre>
   </section>
@@ -1589,18 +1597,29 @@ function collectActivoMap(){
   return map;
 }
 
+function collectRestarCabeceraMap(){
+  const map = {};
+  document.querySelectorAll('#cliTable input.cli-restar').forEach(cb=>{
+    map[cb.dataset.key] = cb.checked;
+  });
+  return map;
+}
+
 function syncActivoFromDom(){
   const map = collectActivoMap();
+  const rmap = collectRestarCabeceraMap();
   cliRowsCache.forEach(r=>{
     const k = cliRowKey(r);
     if (k in map) r.Activo = map[k];
+    if (k in rmap) r.RestarCabecera = rmap[k];
   });
   const nOff = cliRowsCache.filter(r=>r.Activo===false).length;
+  const nRest = cliRowsCache.filter(r=>r.Activo===false && r.RestarCabecera===true).length;
   const tip = document.getElementById('cliActivoTip');
   if (tip) {
     tip.textContent = nOff
-      ? (nOff+' carga(s) desmarcada(s): se desconectarán en CYMDIST (modelo físico) y no entrarán en distribución/flujo.')
-      : 'Todas incluidas. Desmarque las que salen del alimentador o no desea actualizar.';
+      ? (nOff+' desmarcada(s): se desconectan · '+nRest+' restan Pot de cabecera §1')
+      : 'Todas incluidas. Desmarque Incluir para desconectar; use Restar cab. si además sale del alimentador.';
   }
 }
 
@@ -1610,13 +1629,22 @@ async function persistActivo(){
     await fetch('/api/clientes/activo',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({activo: collectActivoMap()}),
+      body:JSON.stringify({
+        activo: collectActivoMap(),
+        restar_cabecera: collectRestarCabeceraMap(),
+      }),
     });
   }catch(_e){ /* la selección sigue en memoria / se reenvía al aplicar */ }
 }
 
 function toggleAllActivo(on){
   document.querySelectorAll('#cliTable input.cli-activo').forEach(cb=>{ cb.checked = !!on; });
+  syncActivoFromDom();
+  persistActivo();
+}
+
+function toggleAllRestarCabecera(on){
+  document.querySelectorAll('#cliTable input.cli-restar').forEach(cb=>{ cb.checked = !!on; });
   syncActivoFromDom();
   persistActivo();
 }
@@ -1673,22 +1701,33 @@ async function downloadCliExcel(){
 function renderCliTable(rows){
   const box=document.getElementById('cliTable');
   if(!rows || !rows.length){box.innerHTML='<p class="muted">Sin filas</p>';cliRowsCache=[];return;}
-  cliRowsCache = rows.map(r=>({...r, Activo: r.Activo!==false && r.Activo!=='false' && r.Activo!==0 && r.Activo!=='0'}));
+  cliRowsCache = rows.map(r=>({
+    ...r,
+    Activo: r.Activo!==false && r.Activo!=='false' && r.Activo!==0 && r.Activo!=='0',
+    RestarCabecera: r.RestarCabecera===true || r.RestarCabecera==='true' || r.RestarCabecera===1 || r.RestarCabecera==='1',
+  }));
   const nOff = cliRowsCache.filter(r=>!r.Activo).length;
+  const nRestOn = cliRowsCache.filter(r=>r.RestarCabecera).length;
   let html='<div class="actions" style="margin:0 0 8px 0">'
     +'<button type="button" class="ghost" onclick="toggleAllActivo(true)">Marcar todas</button>'
     +'<button type="button" class="ghost" onclick="toggleAllActivo(false)">Desmarcar todas</button>'
+    +'<button type="button" class="ghost" onclick="toggleAllRestarCabecera(true)">Restar cab. todas</button>'
+    +'<button type="button" class="ghost" onclick="toggleAllRestarCabecera(false)">Restar cab. ninguna</button>'
     +'<button type="button" class="secondary" onclick="downloadCliExcel()" id="btnCliExcel">Descargar Excel</button>'
     +'<span class="muted" id="cliActivoTip">'
     +(nOff
-      ? (nOff+' carga(s) desmarcada(s): se desconectarán en CYMDIST (modelo físico) y no entrarán en distribución/flujo.')
-      : 'Todas incluidas por defecto. Desmarque manualmente las que salen del alimentador (ej. Caliza cementos inca).')
+      ? (nOff+' desmarcada(s): se desconectan · use Restar cab. para restar Pot de §1')
+      : 'Incluir = EA/Pot. Restar cab. = si desmarca Incluir, restar Pot de P máx §1 (carga que salió del alimentador).')
     +'</span></div>';
   html+='<table><thead><tr>'
     +'<th class="col-incluir" title="Incluir: conectada. Desmarcar = desconectar en modelo físico CYMDIST">'
     +'<input type="checkbox" id="cliActivoAll" '
     +(nOff===0?'checked':'')
     +' onchange="toggleAllActivo(this.checked)" title="Marcar/desmarcar todas"/> Incluir</th>'
+    +'<th class="col-restar" title="Si Incluir off: restar Pot de P(kW) máx §1. Off = solo desconectar, sin tocar cabecera">'
+    +'<input type="checkbox" id="cliRestarAll" '
+    +(nRestOn===cliRowsCache.length && cliRowsCache.length>0?'checked':'')
+    +' onchange="toggleAllRestarCabecera(this.checked)" title="Marcar/desmarcar Restar cabecera"/> Restar cab.</th>'
     +'<th>RADIAL</th><th>Suministro</th><th>Cliente</th><th>SED</th><th>EA</th><th>Pot</th><th>LoadID</th><th>CI</th><th>SED↔</th>'
     +'</tr></thead><tbody>';
   cliRowsCache.forEach(r=>{
@@ -1696,9 +1735,11 @@ function renderCliTable(rows){
     const pot = r.Pot==null?'':Number(r.Pot).toFixed(2);
     const key = cliRowKey(r);
     const checked = r.Activo ? 'checked' : '';
+    const restarChecked = r.RestarCabecera ? 'checked' : '';
     const dim = r.Activo ? '' : ' class="off-row"';
     html+=`<tr${dim}>
       <td class="col-incluir"><input type="checkbox" class="cli-activo" data-key="${key}" ${checked} onchange="syncActivoFromDom();persistActivo()"/></td>
+      <td class="col-restar"><input type="checkbox" class="cli-restar" data-key="${key}" ${restarChecked} title="Restar Pot de cabecera si Incluir off" onchange="syncActivoFromDom();persistActivo()"/></td>
       <td>${r.RADIAL||''}</td><td>${r.Suministro||''}</td><td>${r.Cliente||''}</td><td>${r.SED||''}</td>
       <td>${ea}</td><td>${pot}</td><td>${r.LoadID_CYMDIST||''}</td>
       <td>${r.Match_CI?'✓':'✗'}</td><td>${r.Match_SED?'✓':'✗'}</td></tr>`;
@@ -2579,6 +2620,7 @@ async function applyClientes(){
     all_feeders: false,
     fp: clientesFp(),
     activo: activo,
+    restar_cabecera: collectRestarCabeceraMap(),
   };
   const headers = {'Content-Type':'application/json'};
   if (ff.feeders.length === 1) headers['X-Feeder'] = ff.feeders[0];
@@ -2594,10 +2636,16 @@ async function applyClientes(){
   }
   if(!j.ok){document.getElementById('cliMsg').innerHTML='<span class="err">'+(j.error||'Error')+'</span>';return;}
   const excl = (j.excluido_count!=null)?j.excluido_count:nOff;
+  const cabAdj = j.cabecera_ajustada || {};
+  const cabTxt = (j.P_kW!=null && Number(j.P_kW_excluidas_restadas||0)>0)
+    ? ` · <b>Cabecera §1</b>: P_med=${j.P_kW_medicion??'?'} - sum(Pot_excl)=${j.P_kW_excluidas_restadas} → <b>P=${j.P_kW} kW</b>`
+      +(j.Q_kvar!=null?` Q=${j.Q_kvar}`:'')
+    : (cabAdj.msg ? ` · ${cabAdj.msg}` : '');
   document.getElementById('cliMsg').innerHTML=`<span class="ok">CYMDIST OK · ${j.ok_count}/${j.total} · archivo ${ci} · <b>${ff.feeders.join(', ')}</b>`
     +(j.kwh_verified!=null?` · Consumo(KWH) verificado ${j.kwh_verified}`:'')
     +(j.warn_kwh_count?` · <span class="err">WARN KWH ${j.warn_kwh_count}</span>`:'')
     +(excl?` · ${excl} excluida(s) desconectadas`:'')
+    +cabTxt
     +`</span>`
     +(j.cymdist_open
       ? ` · <b>CYMDIST abierto</b> — sesión API activa`
@@ -2620,13 +2668,20 @@ async function runDistribucion(){
   try{
     // Guardar cabecera actual antes de distribuir (sin restablecer §§2–4)
     await saveHead({resetDownstream: false});
-    const j = await spotFetch('/api/distribucion', {});
+    syncActivoFromDom();
+    const j = await spotFetch('/api/distribucion', {
+      activo: collectActivoMap(),
+      restar_cabecera: collectRestarCabeceraMap(),
+    });
     if(!j.ok){msg.innerHTML='<span class="err">'+(j.error||'Error')+'</span>';if(out) out.textContent=JSON.stringify(j,null,2);return;}
     const d=j.result||{};
     const fallback = String(d.method||'').indexOf('fallback')>=0;
+    const cabTxt = (Number(d.P_kW_excluidas_restadas||0)>0)
+      ? ` · cabecera P=${Number(d.P_cabecera_kW||0).toFixed(1)} (med ${d.P_kW_medicion??'?'} - Restar cab. ${d.P_kW_excluidas_restadas})`
+      : '';
     msg.innerHTML = fallback
-      ? `<span class="ok">Distribución OK (fallback kWh) · residual ${Number(d.P_residual_kW||0).toFixed(1)} kW</span>`
-      : `<span class="ok">Distribución OK · ${d.method||'?'} · residual ${Number(d.P_residual_kW||0).toFixed(1)} kW</span>`;
+      ? `<span class="ok">Distribución OK (fallback kWh) · residual ${Number(d.P_residual_kW||0).toFixed(1)} kW${cabTxt}</span>`
+      : `<span class="ok">Distribución OK · ${d.method||'?'} · residual ${Number(d.P_residual_kW||0).toFixed(1)} kW${cabTxt}</span>`;
     if (d.n_residual_kw_updated!=null) {
       msg.innerHTML += ` · kW actualizados en residual: <b>${d.n_residual_kw_updated}</b>`;
     }
@@ -2783,16 +2838,17 @@ async function armarInformes(){
   const btn=document.getElementById('btnInforme');
   btn.disabled=true;
   msg.dataset.locked='1';
-  msg.textContent='Validando LF + OCR + gráficas y rellenando informes…';
+  msg.textContent='Capturando CYMDIST (situacional+proyectado) y rellenando informes…';
   out.textContent='';
   try{
-    const j = await spotFetch('/api/informe/armar', {fill:true});
+    const j = await spotFetch('/api/informe/armar', {fill:true, force_captures:true});
     if(!j.ok){
       msg.innerHTML='<span class="err">'+(j.error||'Informe incompleto')+'</span>';
       out.textContent=JSON.stringify({
         delivery_ready: j.delivery_ready,
         missing: j.missing,
         charts: j.charts_generated,
+        capturas: j.cymdist_captures,
         escenarios: j.scenarios_used,
         meta: j.meta,
         error: j.error,
@@ -2801,25 +2857,48 @@ async function armarInformes(){
       return;
     }
     applyPathsUI(Object.assign({}, j.paths||{}, {images_dir:j.images_dir}));
-    msg.innerHTML='<span class="ok">Entrega lista · informes en doc · gráficas LF reemplazadas</span>';
+    msg.innerHTML='<span class="ok">Entrega lista · capturas CYMDIST + informes en doc</span>';
     out.textContent=JSON.stringify({
       delivery_ready: j.delivery_ready,
       destino: j.paths && j.paths.doc_dir,
       meta: j.meta,
       meta_source: j.meta_source,
       escenarios: j.scenarios_used,
+      capturas: j.cymdist_captures,
       excel: j.excel_notes,
       word_reemplazos: (j.word&&j.word.replacements)||[],
       imagenes: (j.word&&j.word.images_replaced)||[],
       charts_generated: j.charts_generated,
-      aviso_imagenes: j.aviso_imagenes,
       manifesto: j.fill_manifest,
+      notes: j.notes,
     },null,2);
     await refreshDeliveryStatus();
   }catch(e){
     msg.innerHTML='<span class="err">'+e+'</span>';
   }finally{
     btn.disabled=false;
+    delete msg.dataset.locked;
+  }
+}
+
+async function capturarCymdistInforme(){
+  const msg=document.getElementById('informeMsg');
+  const out=document.getElementById('informeOut');
+  msg.dataset.locked='1';
+  msg.textContent='CYMDIST API: LF situacional/proyectado + coloreo + ExportActiveView…';
+  out.textContent='';
+  try{
+    const j = await spotFetch('/api/informe/capturas', {force:true, open_gui:true});
+    if(!j.ok){
+      msg.innerHTML='<span class="err">Captura incompleta: '+(j.error|| ((j.errors||[]).join('; ')) || '?')+'</span>';
+    }else{
+      msg.innerHTML='<span class="ok">Capturas OK · '+(j.generated||[]).length+' PNG</span>';
+    }
+    out.textContent=JSON.stringify(j,null,2);
+    await refreshDeliveryStatus();
+  }catch(e){
+    msg.innerHTML='<span class="err">'+e+'</span>';
+  }finally{
     delete msg.dataset.locked;
   }
 }
@@ -3572,6 +3651,34 @@ def _cympy_run(who, fn, timeout_sec=0.35):
 
     return _jsonify_safe(with_cympy_lock(who, _wrap, timeout_sec=timeout_sec))
 
+
+def _cympy_isolated_or_run(action, fn, payload=None, timeout_sec=600.0):
+    """Preferir worker aislado para acciones CymPy; fallback in-process.
+
+    Las rutas Flask legacy (HTML) y el puente FastAPI usan el mismo camino
+    que /api/jobs, así un Access Violation no tumba el servidor.
+    """
+    try:
+        from core.cympy_isolation import should_isolate_action, run_job_action_isolated
+
+        if should_isolate_action(action):
+            feeder = (request.headers.get("X-Feeder") or "").strip() or None
+            body = payload
+            if body is None:
+                body = request.get_json(silent=True) or {}
+            result = run_job_action_isolated(
+                action,
+                payload=body if isinstance(body, dict) else {},
+                feeder=feeder,
+                timeout=float(timeout_sec),
+            )
+            return _jsonify_safe(result)
+    except Exception as ex:
+        print("AVISO isolation Flask (%s):" % action, ex)
+
+    # Fallback: lock in-process (timeout largo para writes)
+    return _cympy_run(action, fn, timeout_sec=min(float(timeout_sec), 300.0))
+
 def _invalidate_caches():
     _LOAD_CACHE["feeder"] = None
     _LOAD_CACHE["loads"] = []
@@ -3965,7 +4072,7 @@ def api_calidad_ejecutar_seleccionados():
         result["ok_http"] = True
         return result
 
-    return _cympy_run("calidad_seleccionados", _run)
+    return _cympy_isolated_or_run("calidad_seleccionados", _run, payload=body, timeout_sec=900.0)
 
 
 @app.route("/api/calidad/diagnosticar", methods=["POST"])
@@ -4017,7 +4124,7 @@ def api_calidad_diagnosticar():
                 result["tablero_error"] = str(ex)
         return result
 
-    return _cympy_run("calidad_diagnosticar", _run)
+    return _cympy_isolated_or_run("calidad_diagnosticar", _run, timeout_sec=600.0)
 
 
 @app.route("/api/calidad/diagnosticar_sistema", methods=["POST"])
@@ -4025,41 +4132,62 @@ def api_calidad_diagnosticar_sistema():
     """Diagnóstico de todas las redes de la BD. Independiente de §§1–4 / SpotLoad."""
     from pipeline.model_quality_gate import run_system_network_diagnostic
     body = request.get_json(silent=True) or {}
-    return _cympy_run("calidad_sistema", lambda: run_system_network_diagnostic(
-        _settings(),
-        limit=int(body.get("limit") or 0),
-        network_ids=body.get("networks") or None,
-    ))
-
+    return _cympy_isolated_or_run(
+        "calidad_sistema",
+        lambda: run_system_network_diagnostic(
+            _settings(),
+            limit=int(body.get("limit") or 0),
+            network_ids=body.get("networks") or None,
+        ),
+        payload=body,
+        timeout_sec=900.0,
+    )
 
 @app.route("/api/calidad/diagnosticar_eld", methods=["POST"])
 def api_calidad_diagnosticar_eld():
     """Herramienta diagnóstica API sobre ELD.zxst (Topología + Equipos)."""
     from pipeline.model_quality_gate import run_eld_network_diagnostic
     body = request.get_json(silent=True) or {}
-    return _cympy_run("calidad_eld", lambda: run_eld_network_diagnostic(
-        _settings(),
-        limit=int(body.get("limit") or 0),
-        network_ids=body.get("networks") or None,
-    ))
+    return _cympy_isolated_or_run(
+        "calidad_eld",
+        lambda: run_eld_network_diagnostic(
+            _settings(),
+            limit=int(body.get("limit") or 0),
+            network_ids=body.get("networks") or None,
+        ),
+        payload=body,
+        timeout_sec=900.0,
+    )
 
 
 @app.route("/api/calidad/proponer", methods=["POST"])
 def api_calidad_proponer():
     from pipeline.model_quality_gate import propose_corrections
-    return _cympy_run("calidad_proponer", lambda: propose_corrections(_settings()))
+    return _cympy_isolated_or_run(
+        "calidad_proponer",
+        lambda: propose_corrections(_settings()),
+        timeout_sec=600.0,
+    )
 
 
 @app.route("/api/calidad/aplicar", methods=["POST"])
 def api_calidad_aplicar():
     from pipeline.model_quality_gate import apply_corrections
-    return _cympy_run("calidad_aplicar", lambda: apply_corrections(_settings(), fix_voltages=True))
+    return _cympy_isolated_or_run(
+        "calidad_aplicar",
+        lambda: apply_corrections(_settings(), fix_voltages=True),
+        timeout_sec=600.0,
+    )
 
 
 @app.route("/api/calidad/convergencia", methods=["POST"])
 def api_calidad_convergencia():
     from pipeline.model_quality_gate import check_convergence
-    return _cympy_run("calidad_convergencia", lambda: check_convergence(_settings(), run_lf=True))
+    return _cympy_isolated_or_run(
+        "calidad_convergencia",
+        lambda: check_convergence(_settings(), run_lf=True),
+        timeout_sec=600.0,
+    )
 
 
 @app.route("/api/calidad/hasta_limpio", methods=["POST"])
@@ -4076,8 +4204,9 @@ def api_calidad_hasta_limpio():
         result["ok_http"] = True
         return result
 
-    return _cympy_run("calidad_hasta_limpio", _run)
-
+    return _cympy_isolated_or_run(
+        "calidad_hasta_limpio", _run, payload=body, timeout_sec=900.0
+    )
 
 def _cabecera_payload_from_session(s, sess):
     """Serializa la última medición guardada (session.json) para la SPA §1."""
@@ -4104,6 +4233,13 @@ def _cabecera_payload_from_session(s, sess):
         "mode": sess.get("mode") or "KW_KVAR",
         "P_kW": sess.get("P_kW"),
         "Q_kvar": sess.get("Q_kvar"),
+        "P_kW_medicion": sess.get("P_kW_medicion"),
+        "Q_kvar_medicion": sess.get("Q_kvar_medicion"),
+        "P_kW_excluidas_restadas": sess.get("P_kW_excluidas_restadas"),
+        "n_excluidas_cabecera": sess.get("n_excluidas_cabecera"),
+        "cabecera_ajustada_por_excluidas": bool(
+            sess.get("cabecera_ajustada_por_excluidas")
+        ),
         "S_kVA": sess.get("S_kVA"),
         "P_avg_kW": sess.get("P_avg_kW"),
         "factor_carga_pct": sess.get("factor_carga_pct"),
@@ -4316,6 +4452,12 @@ def api_cabecera():
     sess["mode"] = body.get("mode")
     sess["P_kW"] = p
     sess["Q_kvar"] = q
+    # Base de medición §1: 3.2 resta Pot de desmarcadas desde aquí (no en cascada)
+    sess["P_kW_medicion"] = float(p)
+    sess["Q_kvar_medicion"] = float(q)
+    sess["P_kW_excluidas_restadas"] = 0.0
+    sess["n_excluidas_cabecera"] = 0
+    sess["cabecera_ajustada_por_excluidas"] = False
     sess["cosfi"] = body.get("cosfi")
     if body.get("I_A") not in (None, ""):
         sess["I_A"] = float(body.get("I_A"))
@@ -4587,10 +4729,24 @@ def api_clientes_tabla():
             previous_rows=prev_rows,
         )
         rows = ensure_activo(rows, default=True)
+        # 3.1: Restar cab. siempre arranca sin marcar (el usuario elige a mano)
+        rows = merge_restar_cabecera(
+            rows,
+            restar_map=body.get("restar_cabecera"),
+            previous_rows=None,
+        )
+        rows = ensure_restar_cabecera(rows, default=False)
+        for r in rows:
+            if body.get("restar_cabecera") is None:
+                r["RestarCabecera"] = False
+        rows = ensure_restar_cabecera(rows, default=False)
         meta["n_match_sed"] = sum(1 for r in rows if r.get("Match_SED"))
         meta["n_sin_sed"] = sum(1 for r in rows if not r.get("Match_SED"))
         meta["n_activos"] = sum(1 for r in rows if r.get("Activo"))
         meta["n_excluidos"] = sum(1 for r in rows if not r.get("Activo"))
+        meta["n_restar_cabecera"] = sum(
+            1 for r in rows if (not r.get("Activo")) and r.get("RestarCabecera")
+        )
         meta["loads_feeder_id"] = s.get("feeder_id")
         meta["n_rows"] = len(rows or [])
         if attach_note:
@@ -4694,7 +4850,7 @@ def api_clientes_activo():
     body = request.get_json(force=True) or {}
     s, _feeder, _feeders, _all = _settings_for_clientes(body)
     from core.clientes_suministro import (
-        merge_activo, ensure_activo,
+        merge_activo, ensure_activo, merge_restar_cabecera, ensure_restar_cabecera,
         save_table_json, save_table_csv, ensure_clientes_table,
         clientes_importantes_rows,
     )
@@ -4713,9 +4869,14 @@ def api_clientes_activo():
                 rows = ci
         rows = merge_activo(rows, activo_map=body.get("activo"))
         rows = ensure_activo(rows, default=True)
+        rows = merge_restar_cabecera(rows, restar_map=body.get("restar_cabecera"))
+        rows = ensure_restar_cabecera(rows, default=False)
         meta = dict(meta or {})
         meta["n_activos"] = sum(1 for r in rows if r.get("Activo"))
         meta["n_excluidos"] = sum(1 for r in rows if not r.get("Activo"))
+        meta["n_restar_cabecera"] = sum(
+            1 for r in rows if (not r.get("Activo")) and r.get("RestarCabecera")
+        )
         meta["capacity_not_blocking"] = True
         meta["merge_inventory"] = bool(merge_inv)
         save_table_json(json_path, rows, meta)
@@ -4738,12 +4899,13 @@ def api_clientes_activo():
             "rows": rows,
             "n_activos": meta["n_activos"],
             "n_excluidos": meta["n_excluidos"],
+            "n_restar_cabecera": meta.get("n_restar_cabecera", 0),
             "n": len(rows),
             "meta": meta,
             "apply_cymdist": apply_info,
             "msg": (
-                "Incluir guardado · %s activas · %s excluidas"
-                % (meta["n_activos"], meta["n_excluidos"])
+                "Incluir guardado · %s activas · %s excluidas · %s restan cabecera"
+                % (meta["n_activos"], meta["n_excluidos"], meta.get("n_restar_cabecera", 0))
                 + (" · modelo actualizado" if apply_info else "")
             ),
         })
@@ -4827,7 +4989,7 @@ def api_clientes_export_xlsx():
         from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
         headers = [
-            "Incluir", "RADIAL", "Suministro", "Cliente", "SED", "EA", "Pot",
+            "Incluir", "RestarCabecera", "RADIAL", "Suministro", "Cliente", "SED", "EA", "Pot",
             "LoadID", "CI", "SED_match", "Generador", "Concesion", "Cliente_CI", "Codigo_CL",
         ]
         wb = Workbook()
@@ -4850,8 +5012,11 @@ def api_clientes_export_xlsx():
         for i, r in enumerate(rows, 2):
             activo = r.get("Activo")
             incluir = "SI" if (activo is not False and activo not in ("false", "0", 0)) else "NO"
+            restar = r.get("RestarCabecera")
+            restar_txt = "SI" if (restar is not False and restar not in ("false", "0", 0)) else "NO"
             vals = [
                 incluir,
+                restar_txt,
                 r.get("RADIAL") or "",
                 r.get("Suministro") or "",
                 r.get("Cliente") or "",
@@ -4872,7 +5037,7 @@ def api_clientes_export_xlsx():
                 if incluir == "NO":
                     cell.fill = PatternFill("solid", fgColor="F3F4F6")
         from openpyxl.utils import get_column_letter
-        widths = [10, 10, 14, 28, 12, 12, 12, 28, 6, 10, 12, 12, 20, 12]
+        widths = [10, 14, 10, 14, 28, 12, 12, 12, 28, 6, 10, 12, 12, 20, 12]
         for i, w in enumerate(widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
         ws.auto_filter.ref = ws.dimensions
@@ -4988,9 +5153,18 @@ def api_clientes_aplicar():
             previous_rows=load_saved_clientes_rows(json_path) if rebuild else rows,
         )
         rows = ensure_activo(rows, default=True)
+        rows = merge_restar_cabecera(
+            rows,
+            restar_map=body.get("restar_cabecera"),
+            previous_rows=load_saved_clientes_rows(json_path) if rebuild else rows,
+        )
+        rows = ensure_restar_cabecera(rows, default=False)
         meta["n_match_sed"] = sum(1 for r in rows if r.get("Match_SED"))
         meta["n_activos"] = sum(1 for r in rows if r.get("Activo"))
         meta["n_excluidos"] = sum(1 for r in rows if not r.get("Activo"))
+        meta["n_restar_cabecera"] = sum(
+            1 for r in rows if (not r.get("Activo")) and r.get("RestarCabecera")
+        )
         meta["feeder_id"] = s.get("feeder_id")
         meta["n_rows"] = len(rows)
         meta["n_con_ea_pot"] = sum(
@@ -5034,6 +5208,21 @@ def api_clientes_aplicar():
                 a.save_study()
             except Exception as ex_save:
                 print("AVISO save post EA/Pot:", ex_save)
+        # Ajuste cabecera en SESION (sin SetDemand aqui: evita crash Cyme tras
+        # muchas escrituras). SetDemand con P ajustado lo hace 3.3.
+        cab_adj = {"skipped": True, "reason": "pending"}
+        try:
+            from pipeline.run_demand_allocation import (
+                load_session, save_session, adjust_cabecera_for_excluidas,
+            )
+            cab_adj = adjust_cabecera_for_excluidas(
+                s, rows, cympy=None, write_cymdist=False
+            )
+            print("[3.2] cabecera vs excluidas (sesion):", cab_adj.get("msg") or cab_adj)
+        except Exception as ex_cab:
+            print("AVISO ajuste cabecera excluidas 3.2:", ex_cab)
+            cab_adj = {"ok": False, "skipped": True, "error": str(ex_cab)}
+
         # Invalidar sello de locks 3.3: al recargar EA/Pot hay que
         # reafirmar Locked/Unlocked en la proxima distribucion.
         try:
@@ -5049,6 +5238,19 @@ def api_clientes_aplicar():
             print("AVISO session post 3.2:", ex_sess)
         try:
             a.close_study(save=False)
+        except Exception:
+            pass
+        # Liberar COM antes de reabrir GUI (Access Violation si se solapan)
+        try:
+            import time as _t
+            _t.sleep(1.2)
+        except Exception:
+            pass
+        try:
+            import gc
+            del a
+            del c
+            gc.collect()
         except Exception:
             pass
 
@@ -5070,16 +5272,20 @@ def api_clientes_aplicar():
             print("AVISO report EA/Pot:", ex_rep)
             report_path = None
 
-        # GUI Cyme en segundo plano: no bloquear HTTP
+        # Reabrir GUI con calma (sin kill agresivo: pause ya cerró Cyme)
         open_gui = True if body.get("open_gui") is None else bool(body.get("open_gui"))
         com = {"ok": True, "cymdist_open": False, "deferred": True}
         if open_gui:
             set_keep_open(s, True, reason="cargar_ea_pot")
             try:
                 import threading
+                import time as _time
+
                 def _open_gui():
                     try:
-                        open_cymdist_gui(s, kill_existing=True, reason="cargar_ea_pot")
+                        _time.sleep(1.5)
+                        # kill_existing=False: Cyme ya no debe estar; evita doble kill+OpenStudy
+                        open_cymdist_gui(s, kill_existing=False, reason="cargar_ea_pot")
                     except Exception as ex_gui:
                         print("AVISO open_cymdist_gui diferido:", ex_gui)
                 threading.Thread(target=_open_gui, name="open_cyme_ea_pot", daemon=True).start()
@@ -5102,6 +5308,10 @@ def api_clientes_aplicar():
             msg32 += " · liberados previos %d (anti-saturación)" % n_liberados
         if warn_kwh:
             msg32 += " · WARN KWH %d" % warn_kwh
+        if cab_adj and not cab_adj.get("skipped"):
+            msg32 += " · " + str(cab_adj.get("msg") or "")
+        elif cab_adj and cab_adj.get("reason") == "sin_cabecera_medicion":
+            msg32 += " · AVISO: sin cabecera §1, no se restó Pot de excluidas"
 
         return jsonify({
             "ok": True,
@@ -5118,6 +5328,11 @@ def api_clientes_aplicar():
             "report_path": report_path,
             "from_saved_table": bool(meta.get("from_saved_table")),
             "cymdist_open": bool(com.get("cymdist_open")),
+            "cabecera_ajustada": cab_adj,
+            "P_kW": (cab_adj or {}).get("P_kW"),
+            "Q_kvar": (cab_adj or {}).get("Q_kvar"),
+            "P_kW_medicion": (cab_adj or {}).get("P_kW_medicion"),
+            "P_kW_excluidas_restadas": (cab_adj or {}).get("P_kW_excluidas_restadas"),
             "msg": msg32,
             "cymdist": com,
         })
@@ -5130,6 +5345,7 @@ def api_clientes_aplicar():
 def api_distribucion():
     """3.3 · Solo LoadAllocation.Run (API CYMDIST). Cabecera §1 + fijos de 3.2."""
     s = _settings()
+    body = request.get_json(silent=True) or {}
 
     def _run():
         if s.get("dry_run"):
@@ -5138,7 +5354,12 @@ def api_distribucion():
         sess = seed_session_from_excel(s)
         if sess.get("P_kW") in (None, ""):
             return {"ok": False, "error": "Defina y guarde la demanda de cabecera (seccion 1)."}
-        result = run_load_allocation_module(s, sess)
+        result = run_load_allocation_module(
+            s,
+            sess,
+            activo_map=body.get("activo"),
+            restar_map=body.get("restar_cabecera"),
+        )
         summary = {k: result[k] for k in result if k not in ("scaled", "applied")}
         summary["n_scaled"] = len(result.get("scaled") or [])
         summary["n_applied"] = len(result.get("applied") or [])
@@ -5232,13 +5453,46 @@ def api_informe_status():
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 
+@app.route("/api/informe/capturas", methods=["POST"])
+def api_informe_capturas():
+    """
+    Captura viva CYMDIST (API): LoadFlow situacional/proyectado + coloreo
+    VoltageLevel/LoadingLevel + ExportActiveView/GUI → 4 PNG del informe.
+    Body: {force: bool, open_gui: bool, scenarios: null|'situacional'|'proyectado'}
+    """
+    s = _settings()
+    body = request.get_json(silent=True) or {}
+    try:
+        from pipeline.capture_informe_color_views import capture_informe_color_views
+        force = bool(body.get("force", True))
+        open_gui = body.get("open_gui")
+        if open_gui is None:
+            open_gui = True
+        scenarios = body.get("scenarios")
+        res = capture_informe_color_views(
+            settings=s,
+            scenarios=scenarios,
+            open_gui=bool(open_gui),
+            force=force,
+        )
+        return jsonify(res)
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
 @app.route("/api/informe/armar", methods=["POST"])
 def api_informe_armar():
     """Copia plantillas a doc/ y rellena valores desde LoadFlow (fill=true por defecto).
-    Con fill=true aplica gate de entrega (ambos LF + OCR + 4 PNG)."""
+    Con fill=true aplica gate de entrega (ambos LF + OCR + 4 PNG).
+    Integra capturas CYMDIST API (estado actual / con proyecto) por defecto."""
     s = _settings()
     body = request.get_json(silent=True) or {}
     do_fill = body.get("fill", True)
+    # Permitir forzar recaptura desde UI
+    if body.get("force_captures"):
+        s = dict(s)
+        s["force_cymdist_captures"] = True
+        s["informe_auto_cymdist_capture"] = True
     try:
         if do_fill:
             manifest = fill_informe(s, overwrite_copy=True, require_delivery=True)

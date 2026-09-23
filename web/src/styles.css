@@ -32,7 +32,10 @@ button.ghost {
   color: var(--accent);
   border: 1px solid var(--accent);
 }
-button.secondary { background: #44403c; }
+button.secondary {
+  background: #44403c;
+  border: 1px solid #292524;
+}
 /* Solo el botón en ejecución destaca; el resto disabled se atenúa sin parecer “todos corriendo” */
 button.running,
 button.running:disabled {
@@ -123,7 +126,18 @@ button.running:disabled {
 .muted { color: var(--muted); font-size: 13px; line-height: 1.5; }
 .ok { color: var(--ok); }
 .bad { color: var(--bad); }
-.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin: 12px 0;
+}
+.actions > button,
+.actions > a.btn-link {
+  flex: 0 0 auto;
+  margin: 0;
+}
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

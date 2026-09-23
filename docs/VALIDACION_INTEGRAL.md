@@ -6,10 +6,12 @@
 
 | Documento | Cambio |
 |-----------|--------|
-| [`docs/MANUAL_UI_DEMANDA.md`](MANUAL_UI_DEMANDA.md) | Nuevo manual operativo §§1–5 |
-| [`README.md`](../README.md) | Enlace al manual + reglas EA/SpotLoad/flujos |
-| [`docs/cymdist/README.md`](cymdist/README.md) | Situacional/proyectado = desconecta/conecta |
-| [`docs/ARQUITECTURA.md`](ARQUITECTURA.md) | Capas alineadas al flujo actual |
+| [`docs/ARQUITECTURA.md`](ARQUITECTURA.md) | Capas SPA v6, API, CymPy/COM, artefactos |
+| [`docs/FLUJO_TRABAJO.md`](FLUJO_TRABAJO.md) | Campaña §§1–7 + batch + criterios de cierre |
+| [`docs/MANUAL_UI_DEMANDA.md`](MANUAL_UI_DEMANDA.md) | Manual operativo UI §§1–7 |
+| [`README.md`](../README.md) | Estructura repo + enlaces docs |
+| [`docs/cymdist/README.md`](cymdist/README.md) | Situacional/proyectado = desconecta/conecta SpotLoad |
+| [`docs/ARTICULO_IEEE_OUTLINE.md`](ARTICULO_IEEE_OUTLINE.md) | Outline manuscrito IEEE |
 
 ## Checklist de validación
 
@@ -30,8 +32,12 @@ Informe JSON: `data/output/feeders/PA217/validation_integral_report.json`
 
 ## Flujo validado (resumen)
 
-1. **§2 Incluir off** → `Disconnected` + 0  
-2. **§2 EA** → Consumo (kWh); distribución actualiza kW residual  
-3. **§3** → P₃φ → A/B/C = P/3, Q/3  
-4. **§4 situacional** → desconecta §3 + LF + §5  
-5. **§4 proyectado** → conecta §3 + LF + §5  
+Numeración SPA actual (§§1–7):
+
+1. **§3 Incluir off** → `Disconnected` + 0  
+2. **§3 EA** → Consumo (kWh); distribución actualiza kW residual  
+3. **§4 SpotLoad** → P₃φ → A/B/C = P/3, Q/3 (Locked)  
+4. **§5 situacional** → desconecta §4 + LoadFlow (+ insumos §6)  
+5. **§5 proyectado** → conecta §4 + LoadFlow (+ insumos §6)  
+
+Nota histórica: en validaciones previas SpotLoad figuraba como §3 y flujos como §4; el producto SPA v6 usa la tabla de arriba.

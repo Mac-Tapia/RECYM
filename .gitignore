@@ -14,3 +14,10 @@ data/input/common/clientesimportantes/*.xlsb
 data/input/common/medicioncabecera/*.xls
 data/input/common/medicioncabecera/*.xlsx
 
+# Producción / estación local (no versionar)
+.env
+config/settings.local.json
+config/.api_key
+config/settings.json.bak
+*.zxst.bak
+

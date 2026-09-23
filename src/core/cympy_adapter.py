@@ -499,7 +499,16 @@ class CymPyAdapter(object):
             before = d.GetValue(field)
         except Exception:
             before = None
-        d.SetValue(target, field)
+        try:
+            d.SetValue(target, field)
+        except Exception as ex:
+            # No reventar el lote: Cyme a veces falla al toglear ConnectionStatus
+            return {
+                "before": before,
+                "after": None,
+                "connected": bool(connected),
+                "error": str(ex),
+            }
         after = None
         try:
             after = d.GetValue(field)

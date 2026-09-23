@@ -90,9 +90,9 @@ def render_informe_docx(docx_path, export_pdf=True, pdf_path=None, visible=False
         except Exception as ex:
             notes.append("aviso Repaginate: %s" % ex)
 
-        doc.Save()
-        notes.append("docx guardado")
-
+        # No hacer doc.Save() sobre el .docx de entrega: Word reescribe drawings
+        # y puede eliminar image9/image10 (mapa proyectado / trafo). El PDF se
+        # exporta desde la vista en memoria; el .docx XML-filled se preserva.
         if pdf_abs:
             try:
                 # wdExportFormatPDF = 17
@@ -118,7 +118,7 @@ def render_informe_docx(docx_path, export_pdf=True, pdf_path=None, visible=False
                 else:
                     notes.append("aviso: ExportAsFixedFormat sin archivo")
             except Exception as ex:
-                # Fallback SaveAs2 wdFormatPDF=17
+                # Fallback SaveAs2 wdFormatPDF=17 (solo escribe el PDF)
                 try:
                     doc.SaveAs2(pdf_abs, FileFormat=17)
                     if os.path.isfile(pdf_abs):
@@ -129,6 +129,7 @@ def render_informe_docx(docx_path, export_pdf=True, pdf_path=None, visible=False
                 except Exception as ex2:
                     notes.append("aviso PDF: %s | %s" % (ex, ex2))
 
+        notes.append("docx preservado (sin Word.Save)")
         result["ok"] = True
         result["docx"] = docx_abs
         return result
@@ -139,7 +140,7 @@ def render_informe_docx(docx_path, export_pdf=True, pdf_path=None, visible=False
     finally:
         try:
             if doc is not None:
-                doc.Close(False)  # wdDoNotSaveChanges (ya guardamos)
+                doc.Close(False)  # wdDoNotSaveChanges — no pisar layout XML
         except Exception:
             pass
         try:

@@ -37,6 +37,11 @@ export function Step7Suite() {
       <p className="muted">Herramientas del pipeline · contexto §1 ({feeder || "—"}).</p>
 
       <h3>7.1 Optimización CYMDIST</h3>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Si en §2.1 hay muchas caídas de tensión: ejecute <b>primero 7.1c</b> (bancos /
+        CapacitorPlacement con equipo BC22.9KV) y <b>después 7.1b</b> (reguladores /
+        RegulatorPlacement). Ambos usan equipos ya creados en la biblioteca CYMDIST.
+      </p>
       <div className="actions">
         <label style={{ display: "inline-flex", gap: 6, alignItems: "center", margin: 0 }}>
           <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
@@ -47,12 +52,12 @@ export function Step7Suite() {
           7.1a · Reconectadores
         </button>
         <button type="button" className="secondary" disabled={busy}
-          onClick={() => call("/api/optimizacion/regulators", "7.1b Regulators", { force })}>
-          7.1b · Reguladores
+          onClick={() => call("/api/optimizacion/capacitors", "7.1c Capacitors", { force })}>
+          7.1c · Capacitores (1º si hay caídas de V)
         </button>
         <button type="button" className="secondary" disabled={busy}
-          onClick={() => call("/api/optimizacion/capacitors", "7.1c Capacitors", { force })}>
-          7.1c · Capacitores
+          onClick={() => call("/api/optimizacion/regulators", "7.1b Regulators", { force })}>
+          7.1b · Reguladores (2º)
         </button>
       </div>
 

@@ -109,10 +109,42 @@ def job_loadflow_com(payload):
     )
 
 
+def job_capture_informe_color(payload):
+    """
+    Capturas CYMDIST del informe (VoltageLevel/LoadingLevel) en Python 32-bit.
+    Evita fallos de comtypes/CymPy cuando la UI corre en Python 64-bit.
+    """
+    import os as _os
+    _os.environ["RECYM_CAPTURE_WORKER"] = "1"
+    from core.feeder_context import load_settings
+    from pipeline.capture_informe_color_views import capture_informe_color_views
+
+    feeder = (payload.get("feeder_id") or "").strip() or None
+    s = load_settings(feeder_id=feeder, synthesize=True)
+    for k in (
+        "study_path", "database_mdb", "network_id", "database_connection_name",
+        "output_dir", "cyme_root",
+    ):
+        if payload.get(k):
+            s[k] = payload[k]
+    scenarios = payload.get("scenarios")
+    open_gui = payload.get("open_gui")
+    if open_gui is None:
+        open_gui = True
+    force = bool(payload.get("force", True))
+    return capture_informe_color_views(
+        settings=s,
+        scenarios=scenarios,
+        open_gui=bool(open_gui),
+        force=force,
+    )
+
+
 JOBS = {
     "cabecera": job_cabecera,
     "loadallocation_com": job_loadallocation_com,
     "loadflow_com": job_loadflow_com,
+    "capture_informe_color": job_capture_informe_color,
 }
 
 

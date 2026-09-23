@@ -2,13 +2,16 @@
 """
 Rellena automaticamente informe.docx + justificacion.xlsx con resultados LoadFlow.
 
-Flujo:
+Flujo (cualquier alimentador, p.ej. PA217 / IC106 / …):
   1) Copia plantilla limpia (data/output/informe) → doc/
   2) Exige ambos LoadFlow (situacional + proyectado) y meta OCR minima
   3) Genera graficas PNG desde JSON LF (o respeta override manual CYMDIST)
-  4) Escribe metricas situacional/proyectado en Excel
-  5) Sustituye valores clave en Word + reemplaza imagenes LF
-  6) Render final con Microsoft Word (campos, paginas, PDF)
+  4) Escribe metricas situacional/proyectado SOLO en celdas de ENTRADA del Excel
+     y restaura formulas canónicas de la plantilla original (Informe + C7/C41);
+     no fija MD/pérdidas: Excel calcula C185:G186 / VLOOKUP OSM
+  5) Extrae tablas evaluando esas formulas y las vuelca 1:1 a las 7 tablas Word
+  6) Sustituye textos (conclusión d = nodo de conexión SpotLoad CYMDIST) + imagenes
+  7) Render final con Microsoft Word (campos, paginas, PDF)
 
 Imagenes LF obligatorias (auto desde LoadFlow o captura CYMDIST):
   situacional_tension.png | situacional_cargabilidad.png
@@ -117,10 +120,25 @@ def metrics_from_lf(lf_data, settings=None):
     lf = lf_data or {}
     topo = dict(lf.get("topo") or {})
     settings = settings or {}
-    # Seguridad: si JSON viejo aún trae KWTOT×3, corregir aquí también
+    scen = str(lf.get("scenario") or "").strip().lower()
+    # Seguridad: si JSON viejo aún trae KWTOT×3 o sobrelectura leve, corregir aquí
     try:
-        from core.cymdist_com import normalize_lf_topo_powers
-        topo = normalize_lf_topo_powers(topo, settings)
+        from core.cymdist_com import normalize_lf_topo_powers, _parse_com_number
+        # Exponer KWTOT crudo situacional para escalar proyectado con el mismo factor
+        if scen == "proyectado" and settings.get("_situacional_kw_raw") in (None, ""):
+            try:
+                from pipeline.assemble_informe import informe_paths
+                sit_path = informe_paths(settings).get("loadflow_situacional")
+                if sit_path and os.path.isfile(sit_path):
+                    with open(sit_path, "r", encoding="utf-8") as f:
+                        sit_raw_topo = (json.load(f) or {}).get("topo") or {}
+                    settings = dict(settings)
+                    settings["_situacional_kw_raw"] = _parse_com_number(
+                        sit_raw_topo.get("KWTOT_raw") or sit_raw_topo.get("KWTOT")
+                    )
+            except Exception:
+                pass
+        topo = normalize_lf_topo_powers(topo, settings, scenario=scen)
     except Exception:
         pass
     kw = _num(topo.get("KWTOT"))
@@ -284,6 +302,19 @@ def _meta_cliente(settings):
         meta["potencia_txt"] = "—"
     if not (meta.get("alimentador") or "").strip():
         meta["alimentador"] = feeder
+
+    # Punto de diseño = nodo donde se conectó la SpotLoad en CYMDIST
+    if not (meta.get("nodo_conexion") or "").strip():
+        try:
+            from pipeline.generate_location_map import resolve_new_load_node
+            loc = resolve_new_load_node(settings)
+            nid = (loc or {}).get("NodeID") or ""
+            if nid:
+                meta["nodo_conexion"] = str(nid).strip()
+                meta["nodo_conexion_source"] = (loc or {}).get("source") or ""
+        except Exception:
+            pass
+
     return _complete_meta_fields(meta, settings)
 
 
@@ -355,123 +386,556 @@ def _check_delivery_gates(scenarios, meta, img_dir, charts_res=None, settings=No
     return (len(missing) == 0), missing
 
 
+# Celdas con fórmula en «Resultados de escenarios» (NUNCA sobrescribir con valor).
+RESULTADOS_FORMULA_CELLS = frozenset({"C7", "C41"})
+
+# Fórmulas canónicas de la plantilla (data/output/informe/justificacion.xlsx).
+# Se restauran en cada fill si faltan o si alguien las reemplazó por un número fijo.
+# Solo se escriben ENTRADAS LF en Resultados; Informe calcula por estas fórmulas.
+RESULTADOS_CANONICAL_FORMULAS = {
+    "C7": "=0.7*C6*C6+0.3*C6",       # Fperdida situacional
+    "C41": "=0.7*C40*C40+0.3*C40",   # Fperdida proyectado
+}
+
+INFORME_CANONICAL_FORMULAS = {
+    # Antecedentes (cabecera → texto)
+    "B14": '=CONCATENATE("El ",H7,", la Unidad de Proyectos y Obras distribución solicita evaluación de ",C6, " en media tensión, predio ubicado en el ",C5,".")',
+    "B15": '=CONCATENATE("La solicitud esta registrado con ",C10)',
+    "B16": '=CONCATENATE("El interesado solicita ",C6," ",H6,".")',
+    "B17": '=CONCATENATE("El interesado se encuentra próximo al alimentador ",C8,".")',
+    "B18": '=CONCATENATE("El transformador de la SET ",H8," tiene las siguientes características ",H9,".")',
+    # Situacional: producción / pérdidas / caída (cuadros Word 0–1)
+    "E32": "='Resultados de escenarios'!O14",
+    "F32": "='Resultados de escenarios'!P14",
+    "G32": "='Resultados de escenarios'!Q14",
+    "H32": "='Resultados de escenarios'!R14",
+    "E33": "='Resultados de escenarios'!O28",
+    "F33": "='Resultados de escenarios'!P28",
+    "G33": "='Resultados de escenarios'!Q28",
+    "H33": "='Resultados de escenarios'!R28",
+    "C37": "='Resultados de escenarios'!L15",
+    "C38": "='Resultados de escenarios'!L16",
+    "C39": "='Resultados de escenarios'!L17",
+    # Proyectado: producción / pérdidas / caída (cuadros Word 2, 4)
+    "E107": "='Resultados de escenarios'!O48",
+    "F107": "='Resultados de escenarios'!P48",
+    "G107": "='Resultados de escenarios'!Q48",
+    "H107": "='Resultados de escenarios'!R48",
+    "E108": "='Resultados de escenarios'!O62",
+    "F108": "='Resultados de escenarios'!P62",
+    "G108": "='Resultados de escenarios'!Q62",
+    "H108": "='Resultados de escenarios'!R62",
+    "C112": "='Resultados de escenarios'!L49",
+    "C113": "='Resultados de escenarios'!L50",
+    "C114": "='Resultados de escenarios'!L51",
+    # OSM / pérdidas reconocidas → bloque MD
+    "C179": "=C8",
+    "D179": "=VLOOKUP(C8,'Clientes por radial_V2'!C6:E98,3,0)",
+    "E179": "=VLOOKUP(C8,'Clientes por radial_V2'!C6:D98,2,0)",
+    "F179": "=VLOOKUP(E179,Perdidas_ELDU!D6:H32,5,0)",
+    "G179": "=VLOOKUP(E179,Perdidas_ELDU!D7:H32,4,0)",
+    # Tabla MD / pérdidas (cuadro Word perdidas_md) — no fijar valores aquí
+    "C185": "='Resultados de escenarios'!H5",
+    "D185": "=C185*24*365*'Resultados de escenarios'!$C$6",
+    "E185": "='Resultados de escenarios'!D16*1000",
+    "F185": "=E185/D185",
+    "G185": "=-(($G$179/100)*D185-E185)*$G$183",
+    "C186": "='Resultados de escenarios'!H39",
+    "D186": "=C186*24*365*'Resultados de escenarios'!$C$40",
+    "E186": "='Resultados de escenarios'!D50*1000",
+    "F186": "=E186/D186",
+    "G186": "=-(($G$179/100)*D186-E186)*$G$183",
+}
+
+
+# Mapa de celdas de ENTRADA (valores de ejecución LF). El resto de fórmulas
+# en hoja Informe referencian estas celdas (O14/H5, L15…, D16, O48/H39…).
+EXCEL_SCENARIO_INPUTS = {
+    "situacional": {
+        "title": "A2",
+        "punto": ("C5", "D5", "E5", "F5", "G5", "H5", "I5"),  # Vpu kVLL kVLN I kVA kW kvar
+        "fc": "C6",
+        "fperdida_formula": "C7",
+        "fuente_rows": (12, 14),          # Fuentes / Producción total
+        "carga_rows": (15, 16, 20),       # Cargas leída/utilizada/totales
+        "vpu_fases": ("L15", "L16", "L17"),
+        "loss_rows": (24, 28),            # Pérdidas líneas / totales (resumen O-R)
+        "loss_detail_clear": (25, 26, 27),
+        "cost_kw": ("C12", "C16"),        # kW pérdidas (entrada)
+        "cost_mwh": ("D12", "D16"),       # MW-h/año (derivado de kW×8760×Fperdida)
+        "cost_ks": ("E12", "E16"),        # k$/año (derivado)
+        "shunt_rows": (21, 22, 23),
+        "abnormal_clear": {
+            # Limpiar IDs de otro alimentador (plantilla LL202)
+            "count": ("J12", "J13", "J14", "J15", "J16", "J17", "J18", "J19", "J20"),
+            "worst": ("K12", "K13", "K14", "K15", "K16", "K17", "K18", "K19", "K20"),
+            "valor": ("L12", "L13", "L14", "L18", "L19", "L20"),
+        },
+    },
+    "proyectado": {
+        "title": "B34",
+        "punto": ("C39", "D39", "E39", "F39", "G39", "H39", "I39"),
+        "fc": "C40",
+        "fperdida_formula": "C41",
+        "fuente_rows": (46, 48),
+        "carga_rows": (49, 50, 54),
+        "vpu_fases": ("L49", "L50", "L51"),
+        "loss_rows": (58, 62),
+        "loss_detail_clear": (59, 60, 61),
+        "cost_kw": ("C46", "C50"),
+        "cost_mwh": ("D46", "D50"),
+        "cost_ks": ("E46", "E50"),
+        "shunt_rows": (55, 56, 57),
+        "abnormal_clear": {
+            "count": ("J46", "J47", "J48", "J49", "J50", "J51", "J52", "J53", "J54"),
+            "worst": ("K46", "K47", "K48", "K49", "K50", "K51", "K52", "K53", "K54"),
+            "valor": ("L46", "L47", "L48", "L52", "L53", "L54"),
+        },
+    },
+}
+
+
+def _cell_is_formula(ws, coord):
+    v = ws[coord].value
+    return isinstance(v, str) and v.startswith("=")
+
+
+def _safe_set(ws, coord, value, protected=None):
+    """Escribe valor solo si la celda no es fórmula (ni está en protected)."""
+    protected = protected or RESULTADOS_FORMULA_CELLS
+    if coord in protected or _cell_is_formula(ws, coord):
+        return False
+    ws[coord].value = value
+    return True
+
+
+def _round_or_none(val, nd=2):
+    if val is None:
+        return None
+    try:
+        return round(float(val), nd)
+    except Exception:
+        return None
+
+
+def _fperdida_from_fc(fc):
+    """Misma expresión que C7/C41: 0.7·FC² + 0.3·FC."""
+    try:
+        x = float(fc)
+    except Exception:
+        x = 0.74
+    return 0.7 * x * x + 0.3 * x
+
+
+def _loss_mwh_year(kw_loss, fc):
+    if kw_loss is None:
+        return None
+    return float(kw_loss) * 8760.0 * _fperdida_from_fc(fc) / 1000.0
+
+
+def _set_or_pq(ws, row, kw, kvar, kva, fp):
+    _safe_set(ws, "O%d" % row, _round_or_none(kw, 2))
+    _safe_set(ws, "P%d" % row, _round_or_none(kvar, 2))
+    _safe_set(ws, "Q%d" % row, _round_or_none(kva, 2))
+    _safe_set(ws, "R%d" % row, _round_or_none(fp, 2))
+
+
+def _clear_or_pq(ws, row):
+    _set_or_pq(ws, row, None, None, None, None)
+
+
 def _write_escenario_block(ws, m, mode):
-    """Escribe bloque situacional (filas ~2-28) o proyectado (filas ~34-62)."""
+    """
+    Rellena celdas de ENTRADA del bloque situacional/proyectado.
+    No toca fórmulas (C7/C41). Limpia residuos de la plantilla (otro feeder)
+    cuando no hay dato de ejecución.
+    """
     if not m:
+        return []
+    cfg = EXCEL_SCENARIO_INPUTS.get(mode)
+    if not cfg:
         return []
     notes = []
     feeder = m.get("feeder_id") or ""
     has_loss = m.get("kw_loss") is not None or m.get("kvar_loss") is not None
+    fc_coord = cfg["fc"]
+    fc_val = ws[fc_coord].value
+    if fc_val is None or (isinstance(fc_val, str) and not fc_val.strip()):
+        _safe_set(ws, fc_coord, 0.74)
+        fc_val = 0.74
 
-    def _round_or_none(val, nd=2):
-        if val is None:
-            return None
-        return round(val, nd)
+    title = (
+        "ESCENARIO ACTUAL DEL ALIMENTADOR %s" % feeder
+        if mode == "situacional"
+        else "ESCENARIO PROYECTADO DEL ALIMENTADOR %s" % feeder
+    )
+    _safe_set(ws, cfg["title"], title)
 
-    if mode == "situacional":
-        ws["A2"] = "ESCENARIO ACTUAL DEL ALIMENTADOR %s" % feeder
-        # Punto / cabecera
-        ws["C5"] = _round_or_none(m.get("vpu"), 4)
-        ws["D5"] = _round_or_none(m.get("vll"), 2)
-        ws["E5"] = _round_or_none(m.get("vln"), 2)
-        ws["F5"] = _round_or_none(m.get("i_a"), 1)
-        ws["G5"] = _round_or_none(m.get("kva"), 2)
-        ws["H5"] = _round_or_none(m.get("kw"), 2)
-        ws["I5"] = _round_or_none(m.get("kvar"), 2)
-        # Fuentes / produccion
-        for row in (12, 14):
-            ws["O%d" % row] = _round_or_none(m.get("kw"), 2)
-            ws["P%d" % row] = _round_or_none(m.get("kvar"), 2)
-            ws["Q%d" % row] = _round_or_none(m.get("kva"), 2)
-            ws["R%d" % row] = _round_or_none(m.get("fp_pct"), 2)
-        # Cargas approx = fuente - perdidas (solo si hay perdidas validas)
-        if has_loss and m.get("kw") is not None:
-            load_kw = m["kw"] - (m.get("kw_loss") or 0)
-            load_kvar = (m["kvar"] - (m.get("kvar_loss") or 0)) if m.get("kvar") is not None else None
-            load_kva = _sva(load_kw, load_kvar) if load_kvar is not None else None
-            for row in (15, 16, 20):
-                ws["O%d" % row] = _round_or_none(load_kw, 2)
-                ws["P%d" % row] = _round_or_none(load_kvar, 2)
-                ws["Q%d" % row] = _round_or_none(load_kva, 2)
-                ws["R%d" % row] = _round_or_none(_fp_pct(load_kw, load_kva), 2)
-        # Vpu fases (subtension peores)
-        ws["L15"] = _round_or_none(m.get("vpu_a"), 4)
-        ws["L16"] = _round_or_none(m.get("vpu_b"), 4)
-        ws["L17"] = _round_or_none(m.get("vpu_c"), 4)
-        # Perdidas: solo si validas
+    # Punto de diseño / cabecera eléctrica
+    punto_vals = (
+        _round_or_none(m.get("vpu"), 4),
+        _round_or_none(m.get("vll"), 2),
+        _round_or_none(m.get("vln"), 2),
+        _round_or_none(m.get("i_a"), 1),
+        _round_or_none(m.get("kva"), 2),
+        _round_or_none(m.get("kw"), 2),
+        _round_or_none(m.get("kvar"), 2),
+    )
+    for coord, val in zip(cfg["punto"], punto_vals):
+        _safe_set(ws, coord, val)
+
+    # Fuentes / producción = demanda en cabecera
+    for row in cfg["fuente_rows"]:
+        _set_or_pq(ws, row, m.get("kw"), m.get("kvar"), m.get("kva"), m.get("fp_pct"))
+
+    # Cargas: fuente − pérdidas si hay dato; si no, ≈ fuente (no dejar plantilla ajena)
+    if m.get("kw") is not None:
         if has_loss:
-            for row in (24, 28):
-                ws["O%d" % row] = _round_or_none(m.get("kw_loss"), 2)
-                ws["P%d" % row] = _round_or_none(m.get("kvar_loss"), 2)
-                ws["Q%d" % row] = _round_or_none(m.get("kva_loss"), 2)
-                ws["R%d" % row] = _round_or_none(m.get("fp_loss_pct"), 2)
-            ws["C12"] = _round_or_none(m.get("kw_loss"), 2)
-            ws["C16"] = _round_or_none(m.get("kw_loss"), 2)
-        notes.append("situacional: kW=%s kvar=%s" % (m.get("kw"), m.get("kvar")))
+            load_kw = m["kw"] - (m.get("kw_loss") or 0)
+            load_kvar = (
+                (m["kvar"] - (m.get("kvar_loss") or 0))
+                if m.get("kvar") is not None
+                else None
+            )
+        else:
+            load_kw = m["kw"]
+            load_kvar = m.get("kvar")
+        load_kva = _sva(load_kw, load_kvar) if load_kvar is not None else m.get("kva")
+        load_fp = _fp_pct(load_kw, load_kva)
+        for row in cfg["carga_rows"]:
+            _set_or_pq(ws, row, load_kw, load_kvar, load_kva, load_fp)
+
+    # Vpu por fase (entrada → Informe C37–C39 / C112–C114)
+    for coord, key in zip(cfg["vpu_fases"], ("vpu_a", "vpu_b", "vpu_c")):
+        _safe_set(ws, coord, _round_or_none(m.get(key), 4))
+
+    # Pérdidas resumen + costo anual
+    if has_loss:
+        for row in cfg["loss_rows"]:
+            _set_or_pq(
+                ws, row,
+                m.get("kw_loss"), m.get("kvar_loss"),
+                m.get("kva_loss"), m.get("fp_loss_pct"),
+            )
+        for row in cfg["loss_detail_clear"]:
+            _clear_or_pq(ws, row)
+        mwh = _loss_mwh_year(m.get("kw_loss"), fc_val)
+        for coord in cfg["cost_kw"]:
+            _safe_set(ws, coord, _round_or_none(m.get("kw_loss"), 2))
+        for coord in cfg["cost_mwh"]:
+            _safe_set(ws, coord, _round_or_none(mwh, 2))
+        for coord in cfg["cost_ks"]:
+            # Plantilla histórica: k$/año ≈ 0.1 × MW-h/año
+            _safe_set(ws, coord, _round_or_none((mwh or 0) * 0.1, 2) if mwh is not None else None)
     else:
-        ws["B34"] = "ESCENARIO PROYECTADO DEL ALIMENTADOR %s" % feeder
-        ws["C39"] = _round_or_none(m.get("vpu"), 4)
-        ws["D39"] = _round_or_none(m.get("vll"), 2)
-        ws["E39"] = _round_or_none(m.get("vln"), 2)
-        ws["F39"] = _round_or_none(m.get("i_a"), 1)
-        ws["G39"] = _round_or_none(m.get("kva"), 2)
-        ws["H39"] = _round_or_none(m.get("kw"), 2)
-        ws["I39"] = _round_or_none(m.get("kvar"), 2)
-        for row in (46, 48):
-            ws["O%d" % row] = _round_or_none(m.get("kw"), 2)
-            ws["P%d" % row] = _round_or_none(m.get("kvar"), 2)
-            ws["Q%d" % row] = _round_or_none(m.get("kva"), 2)
-            ws["R%d" % row] = _round_or_none(m.get("fp_pct"), 2)
-        if has_loss and m.get("kw") is not None:
-            load_kw = m["kw"] - (m.get("kw_loss") or 0)
-            load_kvar = (m["kvar"] - (m.get("kvar_loss") or 0)) if m.get("kvar") is not None else None
-            load_kva = _sva(load_kw, load_kvar) if load_kvar is not None else None
-            for row in (49, 50, 54):
-                ws["O%d" % row] = _round_or_none(load_kw, 2)
-                ws["P%d" % row] = _round_or_none(load_kvar, 2)
-                ws["Q%d" % row] = _round_or_none(load_kva, 2)
-                ws["R%d" % row] = _round_or_none(_fp_pct(load_kw, load_kva), 2)
-        ws["L49"] = _round_or_none(m.get("vpu_a"), 4)
-        ws["L50"] = _round_or_none(m.get("vpu_b"), 4)
-        ws["L51"] = _round_or_none(m.get("vpu_c"), 4)
-        if has_loss:
-            for row in (58, 62):
-                ws["O%d" % row] = _round_or_none(m.get("kw_loss"), 2)
-                ws["P%d" % row] = _round_or_none(m.get("kvar_loss"), 2)
-                ws["Q%d" % row] = _round_or_none(m.get("kva_loss"), 2)
-                ws["R%d" % row] = _round_or_none(m.get("fp_loss_pct"), 2)
-            ws["C46"] = _round_or_none(m.get("kw_loss"), 2)
-            ws["C50"] = _round_or_none(m.get("kw_loss"), 2)
-        notes.append("proyectado: kW=%s kvar=%s" % (m.get("kw"), m.get("kvar")))
+        # Sin KWLOSS de ejecución: borrar residuos de plantilla (otro estudio)
+        for row in list(cfg["loss_rows"]) + list(cfg["loss_detail_clear"]):
+            _clear_or_pq(ws, row)
+        for coord in list(cfg["cost_kw"]) + list(cfg["cost_mwh"]) + list(cfg["cost_ks"]):
+            _safe_set(ws, coord, None)
+        notes.append("%s: perdidas no disponibles (placeholders COM)" % mode)
+
+    # Capacitancia shunt: sin dato LF → limpiar (evitar números de LL202)
+    for row in cfg["shunt_rows"]:
+        _clear_or_pq(ws, row)
+
+    # Condiciones anormales de otro alimentador
+    abn = cfg.get("abnormal_clear") or {}
+    for coord in abn.get("count") or ():
+        _safe_set(ws, coord, 0)
+    for coord in abn.get("worst") or ():
+        _safe_set(ws, coord, None)
+    for coord in abn.get("valor") or ():
+        _safe_set(ws, coord, None)
+
+    notes.append("%s: kW=%s kvar=%s loss=%s" % (
+        mode, m.get("kw"), m.get("kvar"),
+        m.get("kw_loss") if has_loss else "n/d",
+    ))
     return notes
 
 
+def _formula_norm(s):
+    return (s or "").replace(" ", "").upper()
+
+
+def _ensure_canonical_formulas(ws, formulas, protected_inputs=None):
+    """
+    Restaura fórmulas de la plantilla original si la celda:
+      - está vacía, o
+      - tiene un valor fijo (ya no es fórmula), o
+      - es fórmula distinta a la canónica.
+    No toca celdas listadas en protected_inputs (entradas LF).
+    """
+    protected_inputs = protected_inputs or frozenset()
+    n = 0
+    for coord, formula in formulas.items():
+        if coord in protected_inputs:
+            continue
+        cur = ws[coord].value
+        if isinstance(cur, str) and cur.startswith("="):
+            if _formula_norm(cur) == _formula_norm(formula):
+                continue
+            ws[coord] = formula
+            n += 1
+        else:
+            # Vacío o número fijo → volver a fórmula de plantilla
+            ws[coord] = formula
+            n += 1
+    return n
+
+
+def _repair_informe_formulas(wi):
+    """Compat: asegura fórmulas canónicas Informe (plantilla original)."""
+    return _ensure_canonical_formulas(wi, INFORME_CANONICAL_FORMULAS)
+
+
 def fill_excel(xlsx_path, scenarios, meta):
+    """
+    Actualiza justificacion.xlsx para CUALQUIER alimentador:
+
+      1) Copia ya vino de plantilla (assemble); aquí solo se rellenan ENTRADAS LF
+      2) Se restauran fórmulas canónicas Informe + Resultados (C7/C41) si faltan
+         o si quedaron valores fijos — mismas expresiones que el Excel original
+      3) Etiquetas / cabecera con meta del alimentador en análisis
+      4) excel_tables evalúa la cadena de fórmulas (MD/pérdidas) para el Word
+
+    Nunca escribe números en C185:G186 ni en VLOOKUPs OSM: eso lo calcula Excel.
+    """
     wb = load_workbook(xlsx_path)
     notes = []
     if "Resultados de escenarios" in wb.sheetnames:
         ws = wb["Resultados de escenarios"]
+        n_res = _ensure_canonical_formulas(ws, RESULTADOS_CANONICAL_FORMULAS)
+        if n_res:
+            notes.append("Resultados: %d formulas Fperdida restauradas (C7/C41)" % n_res)
         notes += _write_escenario_block(ws, scenarios.get("situacional"), "situacional")
         notes += _write_escenario_block(ws, scenarios.get("proyectado"), "proyectado")
     if "Informe" in wb.sheetnames:
         wi = wb["Informe"]
-        wi["C4"] = meta.get("cliente") or ""
-        wi["C5"] = meta.get("ubicacion") or ""
-        wi["C6"] = meta.get("solicitud") or "Factibilidad y Punto de Diseño"
-        wi["H6"] = meta.get("potencia_txt") or ""
-        if meta.get("potencia_kw") is not None:
+        # Primero fórmulas (por si una corrida previa las convirtió en valores)
+        nfix = _ensure_canonical_formulas(wi, INFORME_CANONICAL_FORMULAS)
+        if nfix:
+            notes.append("Informe: %d formulas canónicas restauradas (plantilla)" % nfix)
+        # Cabecera: solo celdas de entrada (B14–B18 / OSM / MD son fórmulas)
+        for coord, val in (
+            ("C4", meta.get("cliente") or ""),
+            ("C5", meta.get("ubicacion") or ""),
+            ("C6", meta.get("solicitud") or "Factibilidad y Punto de Diseño"),
+            ("H6", meta.get("potencia_txt") or ""),
+            ("C8", meta.get("alimentador") or ""),
+            ("H8", meta.get("set") or ""),
+            ("H9", meta.get("transformador") or ""),
+            ("C10", meta.get("expediente") or ""),
+        ):
+            if not _cell_is_formula(wi, coord):
+                wi[coord] = val
+        if meta.get("potencia_kw") is not None and not _cell_is_formula(wi, "C7"):
             wi["C7"] = meta["potencia_kw"]
-        wi["H7"] = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        wi["C8"] = meta.get("alimentador") or ""
-        wi["H8"] = meta.get("set") or ""
-        if meta.get("tension_kv") is not None:
+        if not _cell_is_formula(wi, "H7"):
+            wi["H7"] = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        if meta.get("tension_kv") is not None and not _cell_is_formula(wi, "C9"):
             wi["C9"] = meta["tension_kv"]
-        wi["H9"] = meta.get("transformador") or ""
-        wi["C10"] = meta.get("expediente") or ""
-        notes.append("cabecera Informe completa (%s)" % meta.get("alimentador"))
+        feeder = meta.get("alimentador") or ""
+        # Etiquetas texto (no fórmula) del bloque MD / títulos — cualquier alimentador
+        for coord, txt in (
+            ("B101", "2.1 RED PROYECTADA DE ELECTRODUNAS %s" % feeder),
+            ("B181", "PERDIDAS OBTENIDAS DE ESTUDIOS REALIZADOS AL ALIMENTADOR %s (Incorporando cargas solicitadas)" % feeder),
+            ("B185", "ESTADO ACTUAL %s" % feeder),
+            ("B186", "ESTADO PROYECTADO %s" % feeder),
+        ):
+            if not _cell_is_formula(wi, coord):
+                wi[coord] = txt
+        notes.append("cabecera Informe completa (%s)" % feeder)
     wb.save(xlsx_path)
-    return notes
+    tables = extract_excel_tables_for_word(xlsx_path, scenarios, meta)
+    return notes, tables
 
+
+def _vlookup_exact(ws, lookup, first_row, last_row, key_col, return_col):
+    """VLOOKUP approximate=FALSE sobre hoja abierta."""
+    if ws is None or lookup is None:
+        return None
+    key = str(lookup).strip()
+    for r in range(first_row, last_row + 1):
+        cell = ws.cell(r, key_col).value
+        if cell is not None and str(cell).strip() == key:
+            return ws.cell(r, return_col).value
+    return None
+
+
+def _eval_informe_md_block(wb, mode):
+    """
+    Evalúa la cadena Informe!C185:G185 (o C186:G186) igual que Excel,
+    sin sobrescribir fórmulas. Fuente: Resultados de escenarios + VLOOKUP OSM.
+    """
+    cfg = EXCEL_SCENARIO_INPUTS[mode]
+    ws = wb["Resultados de escenarios"] if "Resultados de escenarios" in wb.sheetnames else None
+    wi = wb["Informe"] if "Informe" in wb.sheetnames else None
+    if ws is None:
+        return {}
+
+    kw = _num(ws[cfg["punto"][5]].value)  # H5 / H39
+    fc = _num(ws[cfg["fc"]].value)
+    if fc is None:
+        fc = 0.74
+    # Informe usa D16 / D50 (totales), no D12 / D46
+    mwh = _num(ws[cfg["cost_mwh"][-1]].value)
+    kw_loss = _num(ws[cfg["cost_kw"][-1]].value)
+
+    md_kwh = None
+    if kw is not None:
+        md_kwh = float(kw) * 24.0 * 365.0 * float(fc)
+
+    # E185 = D16*1000  (vacío → 0, como Excel)
+    loss_kwh = (float(mwh) if mwh is not None else 0.0) * 1000.0
+
+    loss_pct = None  # fracción 0–1 (formato 0.00% en Excel)
+    if md_kwh is not None and md_kwh > 0:
+        loss_pct = loss_kwh / md_kwh
+
+    # G179 / G183 para costo no reconocido (fórmulas Informe)
+    loss_cost = None
+    g179 = None
+    g183 = _num(wi["G183"].value) if wi is not None else None
+    if wi is not None and "Clientes por radial_V2" in wb.sheetnames and "Perdidas_ELDU" in wb.sheetnames:
+        feeder = wi["C8"].value
+        # E179 = VLOOKUP(C8, Clientes!C6:D98, 2, 0) → col D
+        e179 = _vlookup_exact(wb["Clientes por radial_V2"], feeder, 6, 98, 3, 4)
+        # G179 = VLOOKUP(E179, Perdidas_ELDU!D7:H32, 4, 0) → col G (índice 4 del rango)
+        if e179 is not None:
+            g179 = _num(_vlookup_exact(wb["Perdidas_ELDU"], e179, 7, 32, 4, 7))
+        if g179 is None:
+            # Intentar cached / valor directo si ya no es fórmula
+            g179 = _num(wi["G179"].value) if not _cell_is_formula(wi, "G179") else None
+    if md_kwh is not None and g179 is not None and g183 is not None:
+        # G185 = -(($G$179/100)*D185-E185)*$G$183
+        loss_cost = -((float(g179) / 100.0) * float(md_kwh) - float(loss_kwh)) * float(g183)
+
+    return {
+        "kw": kw,
+        "fc": fc,
+        "md_kwh": md_kwh,
+        "kw_loss": kw_loss,
+        "mwh_loss": mwh,
+        "loss_kwh": loss_kwh,
+        "loss_pct": loss_pct,
+        "loss_cost": loss_cost,
+        "g179": g179,
+        "from_excel_formulas": True,
+    }
+
+
+def extract_excel_tables_for_word(xlsx_path, scenarios=None, meta=None):
+    """
+    Extrae de justificacion.xlsx las tablas que corresponden 1:1 a las del Word.
+    Entradas LF = celdas Resultados; bloque MD/pérdidas = evaluación de fórmulas Informe.
+    """
+    wb = load_workbook(xlsx_path, data_only=False)
+    ws = wb["Resultados de escenarios"] if "Resultados de escenarios" in wb.sheetnames else None
+    meta = meta or {}
+    scenarios = scenarios or {}
+
+    def _pq(row):
+        if ws is None:
+            return {}
+        return {
+            "kw": _num(ws["O%d" % row].value),
+            "kvar": _num(ws["P%d" % row].value),
+            "kva": _num(ws["Q%d" % row].value),
+            "fp_pct": _num(ws["R%d" % row].value),
+        }
+
+    def _v_pct(coord):
+        if ws is None:
+            return None
+        v = _num(ws[coord].value)
+        if v is None:
+            return None
+        # L15… guarda Vp.u.; Word muestra %
+        return (v * 100.0) if v <= 1.5 else v
+
+    def _scenario_pack(mode, m_fallback):
+        cfg = EXCEL_SCENARIO_INPUTS[mode]
+        fuente_row = cfg["fuente_rows"][-1]  # producción total
+        loss_row = cfg["loss_rows"][-1]      # pérdidas totales
+        punto = cfg["punto"]
+        md = _eval_informe_md_block(wb, mode)
+        pack = {
+            "fuente": _pq(fuente_row),
+            "loss": _pq(loss_row),
+            "v_pct_a": _v_pct(cfg["vpu_fases"][0]),
+            "v_pct_b": _v_pct(cfg["vpu_fases"][1]),
+            "v_pct_c": _v_pct(cfg["vpu_fases"][2]),
+            "kw": md.get("kw") if md.get("kw") is not None else (
+                _num(ws[punto[5]].value) if ws is not None else None
+            ),
+            "kvar": _num(ws[punto[6]].value) if ws is not None else None,
+            "kva": _num(ws[punto[4]].value) if ws is not None else None,
+            "vpu": _num(ws[punto[0]].value) if ws is not None else None,
+            "vll": _num(ws[punto[1]].value) if ws is not None else None,
+            "vln": _num(ws[punto[2]].value) if ws is not None else None,
+            "i_a": _num(ws[punto[3]].value) if ws is not None else None,
+            "kw_loss": md.get("kw_loss"),
+            "mwh_loss": md.get("mwh_loss"),
+            "md_kwh": md.get("md_kwh"),
+            "loss_kwh": md.get("loss_kwh"),
+            "loss_pct": md.get("loss_pct"),
+            "loss_cost": md.get("loss_cost"),
+            "fp_pct": _pq(fuente_row).get("fp_pct"),
+            "fc": md.get("fc") if md.get("fc") is not None else 0.74,
+            "from_excel_formulas": md.get("from_excel_formulas"),
+        }
+        # Fallback a métricas LF si Excel vacío
+        fb = m_fallback or {}
+        if pack["fuente"].get("kw") is None and fb.get("kw") is not None:
+            pack["fuente"] = {
+                "kw": fb.get("kw"), "kvar": fb.get("kvar"),
+                "kva": fb.get("kva"), "fp_pct": fb.get("fp_pct"),
+            }
+        if pack["kw"] is None:
+            pack["kw"] = fb.get("kw")
+        if pack["v_pct_a"] is None and fb.get("v_pct_a") is not None:
+            pack["v_pct_a"] = fb.get("v_pct_a")
+            pack["v_pct_b"] = fb.get("v_pct_b")
+            pack["v_pct_c"] = fb.get("v_pct_c")
+        if pack["loss"].get("kw") is None and fb.get("kw_loss") is not None:
+            pack["loss"] = {
+                "kw": fb.get("kw_loss"), "kvar": fb.get("kvar_loss"),
+                "kva": fb.get("kva_loss"), "fp_pct": fb.get("fp_loss_pct"),
+            }
+            pack["kw_loss"] = fb.get("kw_loss")
+            # Re-evaluar kWh/año de pérdidas con FC Excel si LF trae kW loss
+            if pack.get("mwh_loss") is None and pack["kw_loss"] is not None:
+                pack["mwh_loss"] = _loss_mwh_year(pack["kw_loss"], pack.get("fc"))
+                pack["loss_kwh"] = float(pack["mwh_loss"]) * 1000.0
+                if pack.get("md_kwh") and pack["md_kwh"] > 0:
+                    pack["loss_pct"] = pack["loss_kwh"] / float(pack["md_kwh"])
+        return pack
+
+    sit = _scenario_pack("situacional", scenarios.get("situacional"))
+    proy = _scenario_pack("proyectado", scenarios.get("proyectado"))
+    return {
+        "situacional": sit,
+        "proyectado": proy,
+        "meta": {
+            "alimentador": meta.get("alimentador"),
+            "sistema_electrico": meta.get("sistema_electrico"),
+            "codigo_se": meta.get("codigo_se"),
+            "potencia_kw": meta.get("potencia_kw"),
+            "tension_kv": meta.get("tension_kv"),
+            "nodo_conexion": meta.get("nodo_conexion"),
+        },
+        "mapping": {
+            "situacional_fuente": "Resultados!O14:R14 (+ O28:R28 pérdidas)",
+            "situacional_caida": "Resultados!L15:L17 → %",
+            "proyectado_fuente": "Resultados!O48:R48 (+ O62:R62 pérdidas)",
+            "punto_diseno": "meta.nodo_conexion + meta.potencia_kw + Resultados proyectado V/I",
+            "proyectado_caida": "Resultados!L49:L51 → %",
+            "osm_alimentador": "Informe!C8 + meta",
+            "perdidas_md": "Informe!C185:G186 (=H5/H39, FC, D16/D50, G179, G183)",
+        },
+    }
 
 def _cell_texts(tc):
     return list(tc.iter("{%s}t" % W_NS))
@@ -599,45 +1063,59 @@ def _punto_diseno_metrics(proy, meta):
     }
 
 
-def _fill_source_table(tbl, m, include_losses=True):
-    """Tabla potencia fuente + perdidas (4 filas x 5 cols)."""
+def _fmt_pq_cell(val, nd_int=0, nd_frac=2):
+    if val is None:
+        return None
+    try:
+        x = float(val)
+    except Exception:
+        return str(val)
+    if abs(x - round(x)) < 1e-6:
+        return _fmt(x, nd_int, comma=False)
+    return _fmt(x, nd_frac, comma=False)
+
+
+def _fill_source_table(tbl, fuente, loss=None, clear_loss_if_missing=True):
+    """Tabla potencia fuente + perdidas (4 filas x 5 cols). Datos desde Excel."""
     done = []
-    if not m:
-        return done
+    fuente = fuente or {}
+    loss = loss or {}
     rows = _tbl_rows(tbl)
     if len(rows) < 4:
         return done
-    # fila potencia (idx 2): kW, kvar, kVA, FP
     pot = rows[2]
     if len(pot) >= 5:
-        if m.get("kw") is not None and _set_cell_text(pot[1], _fmt(m["kw"], 0, comma=False)):
+        if fuente.get("kw") is not None and _set_cell_text(pot[1], _fmt_pq_cell(fuente["kw"])):
             done.append("fuente.kw")
-        if m.get("kvar") is not None and _set_cell_text(pot[2], _fmt(m["kvar"], 0, comma=False) if abs(m["kvar"] - round(m["kvar"])) < 1e-6 else _fmt(m["kvar"], 2, comma=False)):
+        if fuente.get("kvar") is not None and _set_cell_text(pot[2], _fmt_pq_cell(fuente["kvar"])):
             done.append("fuente.kvar")
-        if m.get("kva") is not None and _set_cell_text(pot[3], _fmt(m["kva"], 0, comma=False) if abs(m["kva"] - round(m["kva"])) < 1e-6 else _fmt(m["kva"], 2, comma=False)):
+        if fuente.get("kva") is not None and _set_cell_text(pot[3], _fmt_pq_cell(fuente["kva"])):
             done.append("fuente.kva")
-        if m.get("fp_pct") is not None and _set_cell_text(pot[4], _fmt(m["fp_pct"], 2)):
+        if fuente.get("fp_pct") is not None and _set_cell_text(pot[4], _fmt(fuente["fp_pct"], 2)):
             done.append("fuente.fp")
-    # fila perdidas (idx 3): solo si validas
-    if include_losses and (m.get("kw_loss") is not None or m.get("kvar_loss") is not None):
-        loss = rows[3]
-        if len(loss) >= 5:
-            if m.get("kw_loss") is not None and _set_cell_text(loss[1], _fmt(m["kw_loss"], 2, comma=False)):
-                done.append("loss.kw")
-            if m.get("kvar_loss") is not None and _set_cell_text(loss[2], _fmt(m["kvar_loss"], 2, comma=False)):
-                done.append("loss.kvar")
-            if m.get("kva_loss") is not None and _set_cell_text(loss[3], _fmt(m["kva_loss"], 2, comma=False)):
-                done.append("loss.kva")
-            if m.get("fp_loss_pct") is not None and _set_cell_text(loss[4], _fmt(m["fp_loss_pct"], 2, comma=False)):
-                done.append("loss.fp")
+    loss_row = rows[3]
+    has_loss = loss.get("kw") is not None or loss.get("kvar") is not None
+    if has_loss and len(loss_row) >= 5:
+        if loss.get("kw") is not None and _set_cell_text(loss_row[1], _fmt(loss["kw"], 2, comma=False)):
+            done.append("loss.kw")
+        if loss.get("kvar") is not None and _set_cell_text(loss_row[2], _fmt(loss["kvar"], 2, comma=False)):
+            done.append("loss.kvar")
+        if loss.get("kva") is not None and _set_cell_text(loss_row[3], _fmt(loss["kva"], 2, comma=False)):
+            done.append("loss.kva")
+        if loss.get("fp_pct") is not None and _set_cell_text(loss_row[4], _fmt(loss["fp_pct"], 2, comma=False)):
+            done.append("loss.fp")
+    elif clear_loss_if_missing and len(loss_row) >= 5:
+        # Evitar residuos de plantilla (otro alimentador)
+        for idx, key in ((1, "kw"), (2, "kvar"), (3, "kva"), (4, "fp")):
+            if _set_cell_text(loss_row[idx], "—"):
+                done.append("loss.%s.cleared" % key)
     return done
 
 
-def _fill_voltage_drop_table(tbl, m):
-    """Tabla caida A/B/C %."""
+def _fill_voltage_drop_table(tbl, pack):
+    """Tabla caida A/B/C % (valores ya en % desde extract Excel)."""
     done = []
-    if not m:
-        return done
+    pack = pack or {}
     rows = _tbl_rows(tbl)
     mapping = {1: "v_pct_a", 2: "v_pct_b", 3: "v_pct_c"}
     for idx, key in mapping.items():
@@ -646,7 +1124,7 @@ def _fill_voltage_drop_table(tbl, m):
         cells = rows[idx]
         if len(cells) < 2:
             continue
-        val = m.get(key)
+        val = pack.get(key)
         if val is None:
             continue
         if _set_cell_text(cells[1], _fmt(val, 2, comma=False) + "%"):
@@ -690,7 +1168,6 @@ def _fill_osm_feeder_table(tbl, meta):
     if len(rows) < 2:
         return done
     cells = rows[1]
-    # col1 alimentador, col2 nombre SE, col3 codigo SE
     vals = [
         None,
         feeder,
@@ -706,57 +1183,154 @@ def _fill_osm_feeder_table(tbl, meta):
 
 
 def _fill_perdidas_md_table(tbl, sit, proy, meta):
-    """Tabla ESTADO ACTUAL / PROYECTADO con MD kW."""
+    """Tabla ESTADO ACTUAL / PROYECTADO: valores = fórmulas Informe!C185:G186."""
     done = []
     rows = _tbl_rows(tbl)
     if len(rows) < 3:
         return done
     feeder = (meta or {}).get("alimentador") or ""
-    # fila 1: situacional
-    r1 = rows[1]
-    if len(r1) >= 2:
-        label = ("ESTADO ACTUAL %s" % feeder).strip()
-        if feeder and _set_cell_text(r1[0], label):
-            done.append("md.sit.label")
-        if sit and sit.get("kw") is not None and _set_cell_text(r1[1], _fmt_md_kw(sit["kw"])):
-            done.append("md.sit.kw")
-        # Pérdidas Tec kWh-año / % solo si hay kw_loss valido
-        if sit and sit.get("kw_loss") is not None and len(r1) >= 4:
-            # kWh-año ≈ kw_loss * 8760 * factor; plantilla usa valor absoluto — actualizar % si posible
-            if sit.get("kw") and sit["kw"] > 0:
-                pct = 100.0 * sit["kw_loss"] / sit["kw"]
-                if len(r1) >= 5 and _set_cell_text(r1[4], _fmt(pct, 2, comma=False) + "%"):
-                    done.append("md.sit.pct")
-    # fila 2: proyectado
-    r2 = rows[2]
-    if len(r2) >= 2:
-        label = ("ESTADO PRYECTADO %s" % feeder).strip()
-        if feeder and _set_cell_text(r2[0], label):
-            done.append("md.proy.label")
-        if proy and proy.get("kw") is not None and _set_cell_text(r2[1], _fmt_md_kw(proy["kw"])):
-            done.append("md.proy.kw")
-        if proy and proy.get("kw_loss") is not None and proy.get("kw") and proy["kw"] > 0 and len(r2) >= 5:
-            pct = 100.0 * proy["kw_loss"] / proy["kw"]
-            if _set_cell_text(r2[4], _fmt(pct, 2, comma=False) + "%"):
-                done.append("md.proy.pct")
+    sit = sit or {}
+    proy = proy or {}
+
+    def _fill_md_row(row_cells, label, pack, prefix):
+        local = []
+        if len(row_cells) < 2:
+            return local
+        if feeder and _set_cell_text(row_cells[0], label):
+            local.append("%s.label" % prefix)
+        kw = pack.get("kw")
+        if kw is not None and _set_cell_text(row_cells[1], _fmt_md_kw(kw)):
+            local.append("%s.kw" % prefix)
+
+        # D185 = C185*24*365*FC  (ya evaluado en extract → md_kwh)
+        md_kwh = pack.get("md_kwh")
+        fc = pack.get("fc")
+        if fc is None:
+            fc = 0.74
+        if md_kwh is None and kw is not None:
+            md_kwh = float(kw) * 24.0 * 365.0 * float(fc)
+        if md_kwh is not None and len(row_cells) >= 3:
+            if _set_cell_text(row_cells[2], _fmt_md_kw(md_kwh)):
+                local.append("%s.kwh" % prefix)
+
+        # E/F/G: mismos resultados que Informe (vacío D16 → 0, no "—")
+        if pack.get("from_excel_formulas") or pack.get("loss_kwh") is not None or pack.get("md_kwh") is not None:
+            loss_kwh = pack.get("loss_kwh")
+            if loss_kwh is None:
+                mwh = pack.get("mwh_loss")
+                loss_kwh = (float(mwh) if mwh is not None else 0.0) * 1000.0
+            if len(row_cells) >= 4 and _set_cell_text(row_cells[3], _fmt_md_kw(loss_kwh)):
+                local.append("%s.loss_kwh" % prefix)
+            loss_pct = pack.get("loss_pct")
+            if loss_pct is None and md_kwh and md_kwh > 0:
+                loss_pct = float(loss_kwh) / float(md_kwh)
+            if loss_pct is not None and len(row_cells) >= 5:
+                # Excel F185 formato 0.00% → valor fracción
+                if _set_cell_text(row_cells[4], _fmt(float(loss_pct) * 100.0, 2, comma=False) + "%"):
+                    local.append("%s.pct" % prefix)
+            loss_cost = pack.get("loss_cost")
+            if loss_cost is not None and len(row_cells) >= 6:
+                if _set_cell_text(row_cells[5], _fmt_md_kw(loss_cost)):
+                    local.append("%s.cost" % prefix)
+        elif pack.get("kw_loss") is None and len(row_cells) >= 4:
+            if _set_cell_text(row_cells[3], "—"):
+                local.append("%s.loss_kwh.cleared" % prefix)
+            if len(row_cells) >= 5 and _set_cell_text(row_cells[4], "—"):
+                local.append("%s.pct.cleared" % prefix)
+            if len(row_cells) >= 6 and _set_cell_text(row_cells[5], "—"):
+                local.append("%s.cost.cleared" % prefix)
+        return local
+
+    done += _fill_md_row(rows[1], ("ESTADO ACTUAL %s" % feeder).strip(), sit, "md.sit")
+    done += _fill_md_row(rows[2], ("ESTADO PROYECTADO %s" % feeder).strip(), proy, "md.proy")
     return done
 
 
-def _fill_word_tables(root, scenarios, meta):
-    """Rellena los 7 cuadros de la plantilla EMAPICA por indice."""
+def _fill_word_tables(root, scenarios, meta, excel_tables=None):
+    """
+    Rellena los 7 cuadros Word con correspondencia precisa al Excel:
+      0 situacional_fuente ← O14:R14 + O28:R28
+      1 situacional_caida  ← L15:L17 (% )
+      2 proyectado_fuente  ← O48:R48 + O62:R62
+      3 punto_diseno       ← meta potencia + V/I proyectado
+      4 proyectado_caida   ← L49:L51
+      5 osm_alimentador    ← meta alimentador
+      6 perdidas_md        ← H5/H39 + D16/D50
+    """
     tables = list(root.iter("{%s}tbl" % W_NS))
-    sit = scenarios.get("situacional")
-    proy = scenarios.get("proyectado")
-    report = {"n_tables": len(tables), "filled": [], "cells": []}
+    xt = excel_tables or {}
+    sit_x = xt.get("situacional") or {}
+    proy_x = xt.get("proyectado") or {}
+    sit = scenarios.get("situacional") or {}
+    proy = scenarios.get("proyectado") or {}
+    report = {"n_tables": len(tables), "filled": [], "cells": [], "source": "excel" if excel_tables else "metrics"}
+
+    # Packs para tablas fuente/caída: preferir extracción Excel
+    sit_fuente = sit_x.get("fuente") or {
+        "kw": sit.get("kw"), "kvar": sit.get("kvar"),
+        "kva": sit.get("kva"), "fp_pct": sit.get("fp_pct"),
+    }
+    sit_loss = sit_x.get("loss") or {
+        "kw": sit.get("kw_loss"), "kvar": sit.get("kvar_loss"),
+        "kva": sit.get("kva_loss"), "fp_pct": sit.get("fp_loss_pct"),
+    }
+    proy_fuente = proy_x.get("fuente") or {
+        "kw": proy.get("kw"), "kvar": proy.get("kvar"),
+        "kva": proy.get("kva"), "fp_pct": proy.get("fp_pct"),
+    }
+    proy_loss = proy_x.get("loss") or {
+        "kw": proy.get("kw_loss"), "kvar": proy.get("kvar_loss"),
+        "kva": proy.get("kva_loss"), "fp_pct": proy.get("fp_loss_pct"),
+    }
+    sit_v = {
+        "v_pct_a": sit_x.get("v_pct_a", sit.get("v_pct_a")),
+        "v_pct_b": sit_x.get("v_pct_b", sit.get("v_pct_b")),
+        "v_pct_c": sit_x.get("v_pct_c", sit.get("v_pct_c")),
+    }
+    proy_v = {
+        "v_pct_a": proy_x.get("v_pct_a", proy.get("v_pct_a")),
+        "v_pct_b": proy_x.get("v_pct_b", proy.get("v_pct_b")),
+        "v_pct_c": proy_x.get("v_pct_c", proy.get("v_pct_c")),
+    }
+    sit_md = {
+        "kw": sit_x.get("kw", sit.get("kw")),
+        "kw_loss": sit_x.get("kw_loss", sit.get("kw_loss")),
+        "mwh_loss": sit_x.get("mwh_loss"),
+        "md_kwh": sit_x.get("md_kwh"),
+        "loss_kwh": sit_x.get("loss_kwh"),
+        "loss_pct": sit_x.get("loss_pct"),
+        "loss_cost": sit_x.get("loss_cost"),
+        "fc": sit_x.get("fc", 0.74),
+        "from_excel_formulas": sit_x.get("from_excel_formulas"),
+    }
+    proy_md = {
+        "kw": proy_x.get("kw", proy.get("kw")),
+        "kw_loss": proy_x.get("kw_loss", proy.get("kw_loss")),
+        "mwh_loss": proy_x.get("mwh_loss"),
+        "md_kwh": proy_x.get("md_kwh"),
+        "loss_kwh": proy_x.get("loss_kwh"),
+        "loss_pct": proy_x.get("loss_pct"),
+        "loss_cost": proy_x.get("loss_cost"),
+        "fc": proy_x.get("fc", 0.74),
+        "from_excel_formulas": proy_x.get("from_excel_formulas"),
+    }
+    # Punto de diseño: potencia solicitada + tensión del escenario proyectado Excel
+    pd = _punto_diseno_metrics(proy, meta)
+    if proy_x.get("vpu") is not None:
+        pd["vpu"] = proy_x["vpu"]
+    if proy_x.get("vll") is not None:
+        pd["vll"] = proy_x["vll"]
+    if proy_x.get("vln") is not None:
+        pd["vln"] = proy_x["vln"]
 
     fillers = [
-        ("situacional_fuente", lambda t: _fill_source_table(t, sit)),
-        ("situacional_caida", lambda t: _fill_voltage_drop_table(t, sit)),
-        ("proyectado_fuente", lambda t: _fill_source_table(t, proy)),
-        ("punto_diseno", lambda t: _fill_punto_diseno_table(t, _punto_diseno_metrics(proy, meta))),
-        ("proyectado_caida", lambda t: _fill_voltage_drop_table(t, proy)),
+        ("situacional_fuente", lambda t: _fill_source_table(t, sit_fuente, sit_loss)),
+        ("situacional_caida", lambda t: _fill_voltage_drop_table(t, sit_v)),
+        ("proyectado_fuente", lambda t: _fill_source_table(t, proy_fuente, proy_loss)),
+        ("punto_diseno", lambda t: _fill_punto_diseno_table(t, pd)),
+        ("proyectado_caida", lambda t: _fill_voltage_drop_table(t, proy_v)),
         ("osm_alimentador", lambda t: _fill_osm_feeder_table(t, meta)),
-        ("perdidas_md", lambda t: _fill_perdidas_md_table(t, sit, proy, meta)),
+        ("perdidas_md", lambda t: _fill_perdidas_md_table(t, sit_md, proy_md, meta)),
     ]
     for i, (name, fn) in enumerate(fillers):
         if i >= len(tables):
@@ -780,6 +1354,7 @@ def _build_header_replacements(meta, scenarios=None):
     set_name = (meta or {}).get("set") or ""
     trafo = (meta or {}).get("transformador") or ""
     proyecto = (meta or {}).get("proyecto") or ""
+    nodo = (meta or {}).get("nodo_conexion") or ""
     if pot_kw is not None and not pot_txt:
         pot_txt = "%sKW" % _fmt(pot_kw, 0, comma=False)
     pot_display = ("%s kW" % _fmt(pot_kw, 0, comma=False)) if pot_kw is not None else (pot_txt or "")
@@ -796,6 +1371,8 @@ def _build_header_replacements(meta, scenarios=None):
     # Frases LARGAS primero (antes de IC106 / 430 kW / EMAPICA sueltos)
     if cliente and pot_display:
         label = "Carga-%s-%s" % ((proyecto or cliente)[:40], pot_display)
+        if nodo:
+            label = "%s- Nodo %s" % (label, nodo)
         old_carga = "Carga-Bomba de Agua Residual-juan Santa-430 kW- Cod IGEA-580224223"
         # La plantilla a veces duplica el rótulo en el mismo párrafo
         reps.append((old_carga + old_carga, label))
@@ -815,16 +1392,25 @@ def _build_header_replacements(meta, scenarios=None):
             "flujo de carga evidencian capacidad suficiente para atender la demanda requerida y mantienen "
             "niveles de tensión dentro de los rangos establecidos por la normativa vigente."
         ) % (alimentador, set_name or "SET asociada")
+        if nodo:
+            punto_txt = (
+                "en el nodo %s del alimentador %s (punto de conexión de la nueva carga en CYMDIST)"
+                % (nodo, alimentador)
+            )
+        else:
+            punto_txt = "en el alimentador %s%s" % (
+                alimentador,
+                (" — proyecto «%s»" % proyecto) if proyecto else "",
+            )
         concl3 = (
             "En consecuencia, para la atención de la demanda requerida por el predio %s, se recomienda "
-            "asignar el punto de diseño en el alimentador %s%s. Asimismo, se verifica que tanto el "
+            "asignar el punto de diseño %s. Asimismo, se verifica que tanto el "
             "alimentador como el transformador de potencia de la %s cuentan con capacidad disponible "
             "para el suministro solicitado, manteniéndose los niveles de tensión dentro de los límites "
             "permisibles y sin afectar la calidad de producto ni las condiciones operativas de la red eléctrica."
         ) % (
             cliente,
-            alimentador,
-            (" — proyecto «%s»" % proyecto) if proyecto else "",
+            punto_txt,
             set_name or "SET",
         )
         # Plantilla base trae un párrafo de rechazo (IC107): puente breve (no duplicar concl2)
@@ -995,7 +1581,7 @@ def _patch_document_xml_wt(xml_bytes, new_texts):
     return b"".join(parts), changed
 
 
-def fill_word(docx_path, scenarios, meta, images_dir=None):
+def fill_word(docx_path, scenarios, meta, images_dir=None, excel_tables=None):
     tmp = docx_path + ".__fill_tmp"
     if os.path.isdir(tmp):
         shutil.rmtree(tmp)
@@ -1026,7 +1612,7 @@ def fill_word(docx_path, scenarios, meta, images_dir=None):
         root = tree.getroot()
         done = _fill_word_headers(root, meta, scenarios)
         if xml_name == "document.xml":
-            tables_report = _fill_word_tables(root, scenarios, meta)
+            tables_report = _fill_word_tables(root, scenarios, meta, excel_tables=excel_tables)
             header_done = done
         elif done:
             header_done.extend([dict(x, where=xml_name) for x in done])
@@ -1060,6 +1646,7 @@ def fill_word(docx_path, scenarios, meta, images_dir=None):
         "replacements": header_done,
         "tables_filled": tables_report.get("filled") or [],
         "tables_cells": tables_report.get("cells") or [],
+        "tables_source": tables_report.get("source"),
         "n_tables": tables_report.get("n_tables"),
         "images_replaced": images_replaced,
         "wt_patched": wt_changed_total,
@@ -1332,6 +1919,91 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     mkdir(img_dir)
     charts_res = None
 
+    # Preferir capturas CYMDIST vivas (API: coloreo + ExportActiveView / GUI).
+    # Orden: 1) captura API situacional+proyectado  2) mapa inventario (fallback)
+    #        3) graficas matplotlib solo si aun falta slot
+    capture_res = None
+    prefer_cymdist = bool(s.get("informe_prefer_cymdist_captures", True))
+    # Por defecto SI: integrar capturas estado actual / con proyecto via CYMDIST API
+    auto_capture = s.get("informe_auto_cymdist_capture")
+    if auto_capture is None:
+        auto_capture = True
+    else:
+        auto_capture = bool(auto_capture)
+    force_cap = bool(s.get("force_cymdist_captures", False))
+    force_charts = bool(s.get("force_informe_charts", False))
+    if prefer_cymdist:
+        try:
+            from pipeline.capture_informe_color_views import (
+                is_cymdist_capture,
+                is_live_cymdist_view,
+                ensure_standard_legends,
+                capture_informe_color_views,
+            )
+            from pipeline.render_informe_color_maps import generate_informe_color_maps
+            ensure_standard_legends(force=False)
+
+            missing_live = [
+                f for f in REQUIRED_LF_IMAGES
+                if not is_live_cymdist_view(os.path.join(img_dir, f))
+            ]
+            if auto_capture and (missing_live or force_cap):
+                notes.append(
+                    "captura CYMDIST API: activando coloreo VoltageLevel/LoadingLevel "
+                    "en situacional + proyectado…"
+                )
+                capture_res = capture_informe_color_views(
+                    settings=s,
+                    open_gui=bool(s.get("informe_capture_open_gui", True)),
+                    force=force_cap or bool(missing_live),
+                )
+                # Persist log for UI diagnostics
+                try:
+                    with open(os.path.join(img_dir, "capture_log.txt"), "a", encoding="utf-8") as lf:
+                        lf.write("\n--- fill_informe capture %s ---\n" % datetime.now().isoformat(timespec="seconds"))
+                        lf.write(json.dumps(capture_res, indent=2, ensure_ascii=False, default=str))
+                        lf.write("\n")
+                except Exception:
+                    pass
+                notes.append(
+                    "cymdist API captures: %d ok, err: %d"
+                    % (
+                        len(capture_res.get("generated") or []),
+                        len(capture_res.get("errors") or []),
+                    )
+                )
+                for err in (capture_res.get("errors") or [])[:4]:
+                    notes.append("capture: %s" % err)
+            else:
+                notes.append("cymdist live views ya presentes (4 PNG)")
+
+            # Fallback inventario solo para slots que NO tienen captura viva
+            still_missing = [
+                f for f in REQUIRED_LF_IMAGES
+                if not is_live_cymdist_view(os.path.join(img_dir, f))
+                and not is_cymdist_capture(os.path.join(img_dir, f))
+            ]
+            if still_missing or (
+                force_cap and not (capture_res and capture_res.get("generated"))
+            ):
+                rend = generate_informe_color_maps(
+                    settings=s, force=False  # nunca pisar live views
+                )
+                notes.append(
+                    "color maps fallback: %d gen, %d skip, err: %d"
+                    % (
+                        len(rend.get("generated") or []),
+                        len(rend.get("skipped") or []),
+                        len(rend.get("errors") or []),
+                    )
+                )
+                for err in (rend.get("errors") or [])[:3]:
+                    notes.append("color map: %s" % err)
+            else:
+                notes.append("sin fallback topology_render (capturas API OK)")
+        except Exception as ex:
+            notes.append("cymdist color omitido: %s" % ex)
+
     if scenarios.get("situacional") or scenarios.get("proyectado"):
         try:
             charts_res = generate_informe_charts(
@@ -1341,7 +2013,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
                     "proyectado": scenarios.get("proyectado"),
                 },
                 paths=paths,
-                force=True,
+                force=force_charts,
             )
             notes.append(
                 "charts generated: %d skipped: %d"
@@ -1397,6 +2069,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
             "required_lf_images": list(REQUIRED_LF_IMAGES),
             "charts_generated": (charts_res or {}).get("generated") or [],
             "charts": charts_res,
+            "cymdist_captures": capture_res,
             "location_map": map_res,
             "scenarios_used": scenarios_used,
             "notes": notes,
@@ -1428,12 +2101,16 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     except Exception as ex:
         notes.append("aviso invalidar confirm: %s" % ex)
 
-    xnotes = fill_excel(paths["justificacion_doc"], scenarios, meta)
+    xnotes, excel_tables = fill_excel(paths["justificacion_doc"], scenarios, meta)
     notes.extend(xnotes)
-    wres = fill_word(paths["informe_doc"], scenarios, meta, images_dir=img_dir)
+    wres = fill_word(
+        paths["informe_doc"], scenarios, meta,
+        images_dir=img_dir, excel_tables=excel_tables,
+    )
     notes.append("word replacements: %d" % len(wres.get("replacements") or []))
     _tbl = ", ".join(wres.get("tables_filled") or []) or "(none)"
     notes.append("word tables: %s" % _tbl)
+    notes.append("word tables source: %s" % (wres.get("tables_source") or excel_tables and "excel" or "metrics"))
     notes.append("images replaced: %d" % len(wres.get("images_replaced") or []))
 
     replaced_names = [
@@ -1473,9 +2150,15 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
         "required_lf_images": list(REQUIRED_LF_IMAGES),
         "charts_generated": (charts_res or {}).get("generated") or [],
         "charts": charts_res,
+        "cymdist_captures": capture_res,
         "location_map": map_res,
         "scenarios_used": scenarios_used,
         "excel_notes": xnotes,
+        "excel_tables": {
+            "mapping": (excel_tables or {}).get("mapping"),
+            "situacional": (excel_tables or {}).get("situacional"),
+            "proyectado": (excel_tables or {}).get("proyectado"),
+        },
         "word": wres,
         "render": render_res,
         "lf_images_replaced": lf_replaced,

@@ -19,6 +19,7 @@ export function Step3Clientes() {
   const [files, setFiles] = useState<{ suministro?: string[]; clientesimportantes?: string[] }>({});
   const [rows, setRows] = useState<Json[]>([]);
   const [activo, setActivo] = useState<Record<string, boolean>>({});
+  const [restarCab, setRestarCab] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState<ActionId>("");
 
@@ -34,16 +35,26 @@ export function Step3Clientes() {
 
   function syncActivoFromRows(list: Json[]) {
     const map: Record<string, boolean> = {};
+    const rmap: Record<string, boolean> = {};
     for (const r of list) {
-      map[rowKey(r)] = truthy(r.Activo ?? true);
+      const key = rowKey(r);
+      map[key] = truthy(r.Activo ?? true);
+      rmap[key] = truthy(r.RestarCabecera ?? false);
     }
     setActivo(map);
+    setRestarCab(rmap);
   }
 
   function markAll(on: boolean) {
     const next: Record<string, boolean> = {};
     for (const r of rows) next[rowKey(r)] = on;
     setActivo(next);
+  }
+
+  function markAllRestar(on: boolean) {
+    const next: Record<string, boolean> = {};
+    for (const r of rows) next[rowKey(r)] = on;
+    setRestarCab(next);
   }
 
   function activoMapFromUi() {
@@ -55,8 +66,20 @@ export function Step3Clientes() {
     return map;
   }
 
+  function restarCabMapFromUi() {
+    const map: Record<string, boolean> = {};
+    for (const r of rows) {
+      const key = rowKey(r);
+      map[key] = restarCab[key] === true;
+    }
+    return map;
+  }
+
   const nIncluidas = rows.filter((r) => activo[rowKey(r)] !== false).length;
   const nExcluidas = rows.length - nIncluidas;
+  const nRestanCab = rows.filter(
+    (r) => activo[rowKey(r)] === false && restarCab[rowKey(r)] === true
+  ).length;
 
   async function loadFiles() {
     const j = await api<{ ok?: boolean; suministro?: string[]; clientesimportantes?: string[] }>(
@@ -85,6 +108,7 @@ export function Step3Clientes() {
     // Limpiar tabla/consola previas al re-pulsar (anti-saturación UI + modelo)
     setRows([]);
     setActivo({});
+    setRestarCab({});
     setMsg(`3.1 · ${fid} · limpiando CI previos en CYMDIST y cruzando NIS…`);
     try {
       const j = await api<{
@@ -150,6 +174,7 @@ export function Step3Clientes() {
           feeder: fid,
           feeders: [fid],
           activo: activoMapFromUi(),
+          restar_cabecera: restarCabMapFromUi(),
           apply_cymdist: applyCymdist,
           merge_inventory: false,
         }),
@@ -195,6 +220,11 @@ export function Step3Clientes() {
         from_saved_table?: boolean;
         rows?: Json[];
         report?: Json[];
+        P_kW?: number;
+        Q_kvar?: number;
+        P_kW_medicion?: number;
+        P_kW_excluidas_restadas?: number;
+        cabecera_ajustada?: Json;
       }>("/api/clientes/aplicar", {
         method: "POST",
         body: JSON.stringify({
@@ -205,6 +235,7 @@ export function Step3Clientes() {
           open_gui: true,
           rebuild: false,
           activo: activoMapFromUi(),
+          restar_cabecera: restarCabMapFromUi(),
         }),
         timeoutMs: 300000,
       });
@@ -228,6 +259,10 @@ export function Step3Clientes() {
           `3.2 OK · EA→Consumo(KWH) ${j.ok_count} · excluidas ${j.excluido_count ?? 0} · sin SED ${j.sin_sed_count ?? 0} · KWH verificado ${j.kwh_verified ?? 0}`) +
           (nLib > 0 ? `\nLiberados previos: ${nLib} SED (anti-saturación)` : "") +
           (j.warn_kwh_count ? ` · WARN KWH ${j.warn_kwh_count}` : "") +
+          (Number(j.P_kW_excluidas_restadas || 0) > 0 && j.P_kW != null
+            ? `\n→ Cabecera lista para 3.3: P=${j.P_kW} kW` +
+              (j.Q_kvar != null ? ` · Q=${j.Q_kvar} kvar` : "")
+            : "") +
           (rep ? `\n${rep}` : "")
       );
     } catch (e) {
@@ -240,19 +275,41 @@ export function Step3Clientes() {
   async function runDistrib() {
     setBusy("3.3");
     const fid = (feeder || "").trim();
-    // Limpiar consola previa al re-pulsar (evita mezclar resultados viejos)
     setMsg(
-      `3.3 · ${fid || "alimentador"} · limpiando residual previo y redistribuyendo…`
+      `3.3 · ${fid || "alimentador"} · guardando Restar cab. y ajustando P max §1 antes de redistribuir…`
     );
     try {
-      const j = await runJob("distribucion", { feeder: fid || undefined }, (job) => {
-        const m = String(job.message || "");
-        if (m) setMsg(`3.3 · ${m}`);
-      });
+      if (rows.length && fid) {
+        await api("/api/clientes/activo", {
+          method: "POST",
+          body: JSON.stringify({
+            feeder: fid,
+            feeders: [fid],
+            activo: activoMapFromUi(),
+            restar_cabecera: restarCabMapFromUi(),
+            apply_cymdist: false,
+            merge_inventory: false,
+          }),
+          timeoutMs: 60000,
+        });
+      }
+      const j = await runJob(
+        "distribucion",
+        {
+          feeder: fid || undefined,
+          activo: activoMapFromUi(),
+          restar_cabecera: restarCabMapFromUi(),
+        },
+        (job) => {
+          const m = String(job.message || "");
+          if (m) setMsg(`3.3 · ${m}`);
+        }
+      );
       const res = (j.result as Json) || j;
       const timing = (res.timing as Json) || {};
       const val = (res.validation as Json) || {};
       const cleared = (res.residual_cleared as Json) || {};
+      const cabAdj = (res.cabecera_ajustada as Json) || {};
       const fails = (val.fails as Json[] | undefined) || [];
       const failLines = fails
         .slice(0, 12)
@@ -273,6 +330,12 @@ export function Step3Clientes() {
               ? "OK con WARN"
               : "OK";
       const nCleared = Number(cleared.n_clear ?? 0);
+      const cabLine =
+        Number(res.P_kW_excluidas_restadas || 0) > 0
+          ? `\nCabecera usada: P_med=${res.P_kW_medicion ?? "?"} - sum(Pot Restar cab.)=${res.P_kW_excluidas_restadas} -> P=${res.P_cabecera_kW} kW`
+          : cabAdj.msg
+            ? `\n${String(cabAdj.msg)}`
+            : "";
       setMsg(
         `3.3 ${label} · ${String(res.feeder_id || feeder || "")}` +
           ` · ${String(res.method || res.status || "")}` +
@@ -284,6 +347,7 @@ export function Step3Clientes() {
           (nCleared > 0
             ? `\nResidual previo limpiado: ${nCleared} SED → 0 kW (fijos intactos)`
             : "") +
+          cabLine +
           `\n${String(val.msg || res.aviso || "")}` +
           ` · OK ${String(val.n_ok ?? 0)} · WARN ${String(val.n_warn ?? 0)} · FAIL ${String(val.n_fail ?? 0)}` +
           ` · ceros fijos ${String(val.n_zero_fixed ?? 0)} · ceros residual ${String(val.n_zero_residual ?? 0)}` +
@@ -302,10 +366,9 @@ export function Step3Clientes() {
       <h2>3 · Clientes importantes → SED + distribución</h2>
       <p className="muted">
         <b>3.1</b> cruzar NIS (libera CI previos fuera de tabla) ·{" "}
-        <b>3.2</b> EA→Consumo(KWH) y Pot Locked (actualiza/sobrescribe) ·{" "}
-        <b>3.3</b> = <b>API CYMDIST</b> (limpia residual y redistribuye) sobre el
-        alimentador de §1: su estudio (<code>.zxst</code>) + BD del proyecto (
-        <b>20260919</b>). No fijo a PA217.
+        <b>3.2</b> EA→Consumo(KWH) y Pot Locked ·{" "}
+        <b>3.3</b> resta Pot (Restar cab.) de P máx §1 y luego redistribuye · estudio (
+        <code>.zxst</code>) + BD del proyecto (<b>20260919</b>). No fijo a PA217.
         {" · "}Alimentador: <b>{feeder || "— (configure §1)"}</b>
       </p>
 
@@ -365,7 +428,14 @@ export function Step3Clientes() {
       <p className="muted" style={{ marginTop: 0 }}>
         Incluidas: <b>{nIncluidas}</b> · Excluidas (se desconectan): <b>{nExcluidas}</b>
         {" · "}
+        Restan cabecera: <b>{nRestanCab}</b>
+        {" · "}
         {rows.length} filas
+      </p>
+      <p className="muted" style={{ marginTop: 0 }}>
+        <b>Incluir</b> off = desconectar en CYMDIST. <b>Restar cab.</b> = además restar Pot de
+        P(kW) máx §1 (carga que ya no pertenece al alimentador). Si solo olvidaron actualizar
+        EA/Pot, desmarque Incluir y deje Restar cab. off.
       </p>
       <div className="actions">
         <button type="button" className="ghost" disabled={Boolean(busy) || !rows.length} onClick={() => markAll(true)}>
@@ -373,6 +443,22 @@ export function Step3Clientes() {
         </button>
         <button type="button" className="ghost" disabled={Boolean(busy) || !rows.length} onClick={() => markAll(false)}>
           Desmarcar todas
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          disabled={Boolean(busy) || !rows.length}
+          onClick={() => markAllRestar(true)}
+        >
+          Restar cab. todas
+        </button>
+        <button
+          type="button"
+          className="ghost"
+          disabled={Boolean(busy) || !rows.length}
+          onClick={() => markAllRestar(false)}
+        >
+          Restar cab. ninguna
         </button>
         <button
           type="button"
@@ -387,7 +473,10 @@ export function Step3Clientes() {
         <table>
           <thead>
             <tr>
-              <th>Incluir</th>
+              <th title="Incluir: conectada con EA/Pot. Off = desconectar">Incluir</th>
+              <th title="Si Incluir off: restar Pot de P máx §1. Off = solo desconectar">
+                Restar cab.
+              </th>
               <th>RADIAL</th>
               <th>Suministro</th>
               <th>Cliente</th>
@@ -400,7 +489,7 @@ export function Step3Clientes() {
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={8}>
+                <td colSpan={9}>
                   Sin filas. Pulse <b>3.1 · Armar tabla (cruzar NIS)</b> para el alimentador{" "}
                   <b>{feeder || "activo"}</b>.
                 </td>
@@ -409,6 +498,7 @@ export function Step3Clientes() {
             {rows.slice(0, 200).map((r, i) => {
               const key = rowKey(r);
               const on = activo[key] !== false;
+              const restar = restarCab[key] === true;
               return (
                 <tr key={key || i} style={on ? undefined : { opacity: 0.55 }}>
                   <td>
@@ -418,6 +508,19 @@ export function Step3Clientes() {
                       disabled={Boolean(busy)}
                       title={on ? "Incluida en modelo" : "Excluida → Disconnected en CYMDIST"}
                       onChange={(e) => setActivo({ ...activo, [key]: e.target.checked })}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={restar}
+                      disabled={Boolean(busy)}
+                      title={
+                        restar
+                          ? "Al desmarcar Incluir: restar Pot de cabecera §1"
+                          : "Solo desconectar; no tocar P(kW) máx §1"
+                      }
+                      onChange={(e) => setRestarCab({ ...restarCab, [key]: e.target.checked })}
                     />
                   </td>
                   <td>{String(r.RADIAL || "")}</td>

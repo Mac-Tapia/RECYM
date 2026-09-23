@@ -61,13 +61,20 @@ def _run_action(action, payload, feeder, job_id=None):
             result = run_network_diagnostic(s, suffix="")
             # 2.1 = estado actual: actualizar «antes» y alinear «después»
             summary = (result.get("summary") or {}) if isinstance(result, dict) else {}
-            after_summary = dict(summary)
-            after_summary["phase"] = "after"
-            after_summary["empty"] = False
             if isinstance(summary, dict):
                 summary = dict(summary)
                 summary["empty"] = False
                 summary.setdefault("phase", "before")
+            try:
+                from pipeline.voltage_opt_recommendations import (
+                    attach_recommendations_to_summary,
+                )
+                summary = attach_recommendations_to_summary(summary, settings=s)
+            except Exception as ex_rec:
+                print("AVISO recomendaciones tensión §7:", ex_rec)
+            after_summary = dict(summary)
+            after_summary["phase"] = "after"
+            after_summary["empty"] = False
             before_path = output_path(s, "diagnostics", "dashboard_summary.json")
             after_path = output_path(s, "diagnostics", "dashboard_summary_after.json")
             after_csv = output_path(s, "diagnostics", "cymdist_diagnostic_errors_after.csv")
@@ -92,8 +99,8 @@ def _run_action(action, payload, feeder, job_id=None):
                     result["tablero_error"] = str(ex_t)
             if isinstance(result, dict):
                 result["ok"] = True
-                # Incluir summary completo para que la SPA pinte tablas al instante
                 result["summary"] = summary
+                result["voltage_opt"] = summary.get("voltage_opt")
                 result["tablero"] = {
                     "before": summary,
                     "after": after_summary,
@@ -102,11 +109,16 @@ def _run_action(action, payload, feeder, job_id=None):
                     "top_errors": summary.get("top_errors"),
                     "n_problems": summary.get("n_problems"),
                     "has_diagnostic": True,
+                    "voltage_opt": summary.get("voltage_opt"),
                 }
-                result["msg"] = (
+                msg_base = (
                     "Diagnóstico OK · %s msgs · problemas=%s · tablero actualizado"
                     % (summary.get("total_messages"), summary.get("n_problems"))
                 )
+                vopt = summary.get("voltage_opt") or {}
+                if vopt.get("triggered"):
+                    msg_base += " · " + str(vopt.get("msg") or "")
+                result["msg"] = msg_base
             return result
 
         return _calidad(_diag_and_tablero)
@@ -259,6 +271,11 @@ def _run_action(action, payload, feeder, job_id=None):
             s2 = dict(s)
             s2["_job_progress"] = _prog
             s2["skip_db_project_save"] = True
+            # Mapas de selección §3 (Incluir / Restar cab.) desde la SPA
+            if payload.get("activo") is not None:
+                s2["_activo_map"] = payload.get("activo")
+            if payload.get("restar_cabecera") is not None:
+                s2["_restar_map"] = payload.get("restar_cabecera")
             # Forzar enlace estudio+BD del alimentador activo (cualquier radial)
             try:
                 from core.feeder_context import resolve_cymdist_binding
@@ -268,7 +285,12 @@ def _run_action(action, payload, feeder, job_id=None):
                 s2["database_connection_name"] = bind["database_connection_name"]
             except Exception as ex_bind:
                 return {"ok": False, "error": "Enlace estudio/BD: %s" % ex_bind}
-            result = run_load_allocation_module(s2, sess)
+            result = run_load_allocation_module(
+                s2,
+                sess,
+                activo_map=payload.get("activo"),
+                restar_map=payload.get("restar_cabecera"),
+            )
             summary = {k: result[k] for k in result if k not in ("scaled", "applied")}
             summary["n_scaled"] = len(result.get("scaled") or [])
             summary["n_applied"] = len(result.get("applied") or [])
@@ -369,18 +391,54 @@ def _run_action(action, payload, feeder, job_id=None):
     raise ValueError("Acción desconocida: %s" % action)
 
 
+def run_action_inprocess(action, payload, feeder, job_id=None):
+    """API pública para el worker CLI (siempre in-process en el hijo)."""
+    return _run_action(action, payload, feeder, job_id=job_id)
+
+
 def _worker(job_id, action, payload, feeder):
     _set_job(job_id, status="running", message="Ejecutando %s…" % action)
     try:
         payload = dict(payload or {})
         payload["_job_id"] = job_id
-        result = _run_action(action, payload, feeder, job_id=job_id)
+
+        use_iso = False
+        try:
+            from core.cympy_isolation import should_isolate_action, run_job_action_isolated
+
+            use_iso = should_isolate_action(action)
+        except Exception as ex_iso:
+            print("AVISO isolation:", ex_iso)
+            use_iso = False
+
+        if use_iso:
+            def _prog(msg):
+                try:
+                    _set_job(job_id, message=msg)
+                except Exception:
+                    pass
+
+            timeout = 600.0
+            if action in ("distribucion", "flujo", "calidad_hasta_limpio", "calidad_sistema", "calidad_eld"):
+                timeout = 900.0
+            result = run_job_action_isolated(
+                action,
+                payload=payload,
+                feeder=feeder,
+                timeout=timeout,
+                progress_cb=_prog,
+            )
+        else:
+            result = _run_action(action, payload, feeder, job_id=job_id)
+
         ok = True
         if isinstance(result, dict) and result.get("ok") is False:
             ok = False
         msg = "Listo"
         if isinstance(result, dict):
             msg = result.get("msg") or result.get("error") or ("Listo" if ok else "Error")
+            if result.get("isolated") and ok:
+                msg = (msg or "Listo") + " · aislado"
         _set_job(
             job_id,
             status="ok" if ok else "error",

@@ -1,6 +1,7 @@
 # Contrato API UI RECYM (§§1–7)
 
-Base: `http://127.0.0.1:5055`  
+Base: `http://127.0.0.1:5055` · UI version `6.0-spa`  
+Arquitectura: [`ARQUITECTURA.md`](ARQUITECTURA.md) · Flujo: [`FLUJO_TRABAJO.md`](FLUJO_TRABAJO.md)  
 Header de contexto: `X-Feeder: <ID>` (opcional; también `feeder` en query/body).
 
 ## Numerales UI → endpoints

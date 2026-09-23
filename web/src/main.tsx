@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { App } from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { FeederProvider } from "./state/feeder";
 
 const qc = new QueryClient({
@@ -13,10 +14,12 @@ const qc = new QueryClient({
 
 createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={qc}>
-    <FeederProvider>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </FeederProvider>
+    <ErrorBoundary>
+      <FeederProvider>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </FeederProvider>
+    </ErrorBoundary>
   </QueryClientProvider>
 );

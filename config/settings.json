@@ -48,8 +48,14 @@
     "Underground": "XLPE120",
     "Sectionalizer": "SEC22.9KV",
     "Switch": "SW22.9KV",
-    "_comment": "IDs reales de biblioteca CYMDIST 20260919. Switch=SW22.9KV (no SEC). Fuentes SET* por voltage."
+    "ShuntCapacitor": "BC22.9KV",
+    "Regulator": "REG22.9KV",
+    "_comment": "IDs reales de biblioteca CYMDIST 20260919. Opt §7 usa ShuntCapacitor/Regulator ya creados."
   },
+  "voltage_drop_opt_threshold": 3,
+  "opt_capacitor_equipment": "BC22.9KV",
+  "opt_regulator_equipment": "REG22.9KV",
+  "opt_capacitor_count": 2,
   "run_sequence": [
     "validate_inputs",
     "network_diagnostic",
@@ -66,5 +72,8 @@
     "report"
   ],
   "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\PA217.zxst",
-  "ui_study_file": "PA217.zxst"
+  "ui_study_file": "PA217.zxst",
+  "informe_prefer_cymdist_captures": true,
+  "informe_auto_cymdist_capture": true,
+  "informe_capture_open_gui": true
 }

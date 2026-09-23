@@ -23,6 +23,7 @@ type Board = {
   diag_refresh?: Json;
   before?: DiagSnap;
   after?: DiagSnap;
+  voltage_opt?: Json;
   clientes?: {
     n?: number;
     n_activos?: number;
@@ -109,6 +110,7 @@ function applyDiagResult(prev: Board | null, result: Json): Board {
     generated_at: new Date().toISOString(),
     before,
     after,
+    voltage_opt: (result.voltage_opt as Json) || (tab?.voltage_opt as Json) || (summary as Json)?.voltage_opt,
     clientes: prev?.clientes,
   };
 }
@@ -192,9 +194,16 @@ export function Step2CalidadTablero() {
         // 2) Releer tablero.json regenerado (tablas definitivas en disco)
         try {
           const j = await refreshBoard(1, false, false);
+          const vopt = (result?.voltage_opt as Json) || (result?.tablero as Json)?.voltage_opt;
+          if (vopt) {
+            setBoard((prev) => ({ ...(prev || j || {}), ...(j || {}), voltage_opt: vopt }));
+          }
           if (j?.before?.empty !== true) {
+            const recMsg = vopt && (vopt as Json).triggered
+              ? `\n${String((vopt as Json).msg || "")}`
+              : "";
             setMsg(
-              `2.1 OK · antes=${j?.before?.total_messages ?? n} · después=${j?.after?.total_messages ?? n} · tablas actualizadas`
+              `2.1 OK · antes=${j?.before?.total_messages ?? n} · después=${j?.after?.total_messages ?? n} · tablas actualizadas${recMsg}`
             );
           } else {
             // Disco vacío pero job trajo datos → mantener snapshot del job
@@ -350,6 +359,34 @@ export function Step2CalidadTablero() {
   const rows = board?.clientes?.rows || [];
   const ready = Boolean(gate?.ready);
   const nIncluidas = rows.filter((r) => activo[rowKey(r)] !== false).length;
+  const vopt = (board?.voltage_opt || {}) as Json;
+  const voptTriggered = Boolean(vopt.triggered);
+  const voptRecs = (Array.isArray(vopt.recommendations) ? vopt.recommendations : []) as Json[];
+
+  async function runOptFromRec(rec: Json) {
+    const action = String(rec.action || "");
+    const step = String(rec.step || "");
+    if (!action) return;
+    const label = `${step} · ${String(rec.title || action)}`;
+    setBusy(label);
+    setMsg(`${label} · ejecutando módulo CYMDIST (equipo ${String(rec.equipment_id || "")})…`);
+    try {
+      const j = await api<Json>(`/api/optimizacion/${action}`, {
+        method: "POST",
+        body: JSON.stringify({ force: true }),
+        timeoutMs: 600000,
+      });
+      setMsg(
+        `${label}: ${String(j.msg || (j.ok ? "OK" : j.error) || "")}` +
+          (j.equipment_id ? ` · equipo ${j.equipment_id}` : "") +
+          (j.resolved_module ? ` · módulo ${j.resolved_module}` : "")
+      );
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy("");
+    }
+  }
 
   return (
     <>
@@ -397,6 +434,35 @@ export function Step2CalidadTablero() {
             onClick={() => job("calidad_eld", "2.8")}>2.8 · Diagnosticar ELD</button>
         </div>
         <pre className="out muted">{msg}</pre>
+        {voptTriggered && (
+          <div className="panel" style={{ marginTop: 12, borderLeft: "3px solid #0f766e" }}>
+            <h3 style={{ marginTop: 0 }}>Recomendación ante caídas de tensión</h3>
+            <p className="muted" style={{ marginTop: 0 }}>
+              {String(vopt.msg || "")}
+              {" · "}Problemas de tensión: <b>{String(vopt.n_voltage_issues ?? 0)}</b>
+              {" "}(umbral {String(vopt.threshold ?? 3)}). Orden: primero capacitores, luego reguladores.
+              Usa equipos ya creados en CYMDIST y sus módulos de ubicación óptima.
+            </p>
+            <div className="actions">
+              {voptRecs.map((rec) => (
+                <button
+                  key={String(rec.step || rec.action)}
+                  type="button"
+                  className="secondary"
+                  disabled={Boolean(busy)}
+                  title={String(rec.reason || "")}
+                  onClick={() => runOptFromRec(rec)}
+                >
+                  {String(rec.priority || "")}. {String(rec.step)} · {String(rec.title || rec.action)}
+                  {rec.equipment_id ? ` (${String(rec.equipment_id)})` : ""}
+                </button>
+              ))}
+              <a className="ghost" href="/7" style={{ alignSelf: "center" }}>
+                Ir a §7 Opt
+              </a>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="panel">
