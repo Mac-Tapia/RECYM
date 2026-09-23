@@ -4,6 +4,20 @@ __pycache__/
 *.pyc
 data/output/
 *.log
+web/node_modules/
+web/dist/
 
 # Archivos >100MB (limite GitHub); mantener locales
 data/input/common/clientesimportantes/*.xlsb
+
+# Mediciones cabecera (Excel pesados locales)
+data/input/common/medicioncabecera/*.xls
+data/input/common/medicioncabecera/*.xlsx
+
+# Producción / estación local (no versionar)
+.env
+config/settings.local.json
+config/.api_key
+config/settings.json.bak
+*.zxst.bak
+

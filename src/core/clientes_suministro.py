@@ -368,22 +368,26 @@ def build_feeder_clientes_table(settings, feeder_id, clientes_file=None, suminis
     }
     return enriched, meta
 
-def score_sed_load(load_id, sed):
-    """Mayor score = mejor match SED → LoadID."""
+def score_sed_load(load_id, sed, section_id=""):
+    """Mayor score = mejor match SED → LoadID (o SectionID)."""
     lid = str(load_id or "").upper()
+    sec = str(section_id or "").upper()
     sed = norm_sed(sed)
-    if not sed or sed not in lid:
+    if not sed:
+        return -1
+    hay = lid if sed in lid else (sec if sed in sec else "")
+    if not hay:
         return -1
     # exact trailing _SED
-    if lid.endswith("_" + sed) or lid.endswith(sed):
-        return 100
+    if hay.endswith("_" + sed) or hay.endswith(sed):
+        return 100 if hay is lid or hay == lid else 90
     # _SED-2 / _SED-11 variants
-    m = re.search(r"_" + re.escape(sed) + r"(-\d+)?$", lid)
+    m = re.search(r"_" + re.escape(sed) + r"(-\d+)?$", hay)
     if m:
         if m.group(1):
             return 70
         return 95
-    if "_" + sed + "-" in lid or "_" + sed + "_" in lid:
+    if "_" + sed + "-" in hay or "_" + sed + "_" in hay:
         return 50
     return 10
 
@@ -395,8 +399,13 @@ def resolve_sed_to_loads(loads, sed, primary_only=True):
     """
     scored = []
     for L in loads:
-        lid = L.get("LoadID") if isinstance(L, dict) else str(L)
-        sc = score_sed_load(lid, sed)
+        if isinstance(L, dict):
+            lid = L.get("LoadID")
+            sec = L.get("SectionID") or ""
+        else:
+            lid = str(L)
+            sec = ""
+        sc = score_sed_load(lid, sed, section_id=sec)
         if sc >= 0:
             scored.append((sc, str(lid)))
     scored.sort(key=lambda x: (-x[0], x[1]))
@@ -417,6 +426,8 @@ def attach_cymdist_loads(rows, loads_inventory, primary_only=True):
         row["Match_SED"] = bool(lids)
         if "Activo" not in row:
             row["Activo"] = True
+        if "RestarCabecera" not in row:
+            row["RestarCabecera"] = False
         out.append(row)
     return out
 
@@ -436,6 +447,24 @@ def ensure_activo(rows, default=True):
             row["Activo"] = truthy(row.get("Activo"))
         out.append(row)
     return out
+
+
+def ensure_restar_cabecera(rows, default=False):
+    """Garantiza RestarCabecera: por defecto off (solo se marca a mano).
+
+    Si Incluir off y RestarCabecera on → restar Pot de P máx §1.
+    """
+    from core.common import truthy
+    out = []
+    for r in rows:
+        row = dict(r)
+        if "RestarCabecera" not in row or row.get("RestarCabecera") in (None, ""):
+            row["RestarCabecera"] = bool(default)
+        else:
+            row["RestarCabecera"] = truthy(row.get("RestarCabecera"))
+        out.append(row)
+    return out
+
 
 def merge_activo(rows, activo_map=None, previous_rows=None):
     """
@@ -474,6 +503,45 @@ def merge_activo(rows, activo_map=None, previous_rows=None):
         out.append(row)
     return out
 
+
+def merge_restar_cabecera(rows, restar_map=None, previous_rows=None):
+    """Aplica RestarCabecera desde mapa {key: bool} y/o filas previas.
+
+    Por defecto False (sin marcar). True + Activo=False → restar Pot de cabecera §1.
+    """
+    from core.common import truthy
+    prev = {}
+    if previous_rows:
+        for r in previous_rows:
+            prev[row_key(r)] = truthy(r.get("RestarCabecera", False))
+            sumi = str(r.get("Suministro") or "").strip()
+            if sumi:
+                prev.setdefault(sumi, truthy(r.get("RestarCabecera", False)))
+    rmap = {}
+    if restar_map:
+        for k, v in restar_map.items():
+            rmap[str(k).strip()] = truthy(v)
+    out = []
+    for r in rows:
+        row = dict(r)
+        key = row_key(row)
+        sumi = str(row.get("Suministro") or "").strip()
+        if key in rmap:
+            row["RestarCabecera"] = rmap[key]
+        elif sumi in rmap:
+            row["RestarCabecera"] = rmap[sumi]
+        elif key in prev:
+            row["RestarCabecera"] = prev[key]
+        elif sumi in prev:
+            row["RestarCabecera"] = prev[sumi]
+        elif "RestarCabecera" not in row or row.get("RestarCabecera") in (None, ""):
+            row["RestarCabecera"] = False
+        else:
+            row["RestarCabecera"] = truthy(row.get("RestarCabecera"))
+        out.append(row)
+    return out
+
+
 def load_saved_clientes_rows(path):
     """Lee filas de clientes_alimentador.json si existe."""
     if not path or not os.path.isfile(path):
@@ -491,7 +559,7 @@ def save_table_csv(path, rows, headers=None):
     if headers is None:
         headers = [
             "RADIAL", "Suministro", "Cliente", "SED", "EA", "Pot",
-            "Match_CI", "LoadID_CYMDIST", "Match_SED", "Activo",
+            "Match_CI", "LoadID_CYMDIST", "Match_SED", "Activo", "RestarCabecera",
             "Generador", "Concesion", "Cliente_CI", "Codigo_CL",
         ]
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
@@ -506,3 +574,195 @@ def save_table_json(path, rows, meta=None):
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"meta": meta or {}, "rows": rows}, f, ensure_ascii=False, indent=2)
     return path
+
+
+def _sed_from_load_id(load_id):
+    """Extrae código SED de IDs tipo DEV_2010_328586_SE30424 → SE30424."""
+    s = str(load_id or "").strip().upper()
+    m = re.search(r"(SE\d{3,})", s)
+    if m:
+        return m.group(1)
+    return s
+
+
+def _parse_kw(v):
+    if v in (None, ""):
+        return None
+    try:
+        return float(str(v).replace(",", ".").replace(" ", ""))
+    except Exception:
+        return None
+
+
+def seed_clientes_from_inventory(settings, previous_rows=None, open_cymdist=False):
+    """Arma filas Incluir desde inventario SpotLoad del alimentador activo.
+
+    Universal: usa data/output/feeders/<feeder_id>/inventory/loads.json.
+    No filtra por capacidad SED (260044): todas entran con Activo=True
+    (o se respeta selección previa). Si falta el JSON y open_cymdist=True,
+    inventaria desde el estudio CYMDIST de ese alimentador.
+    """
+    from core.feeder_context import output_path
+
+    inv_path = output_path(settings, "inventory", "loads.json")
+    loads = []
+    if os.path.isfile(inv_path):
+        try:
+            with open(inv_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            loads = data.get("loads") or []
+        except Exception:
+            loads = []
+
+    if not loads and open_cymdist:
+        try:
+            from core.common import require_cympy, load_json
+            from core.cympy_adapter import CymPyAdapter
+            from pipeline.inventory_loads import collect_loads, save_feeder_loads
+
+            api = load_json("config/cympy_api_map.json")
+            c = require_cympy(settings)
+            a = CymPyAdapter(c, api, settings)
+            a.open_study(force_backup=False)
+            try:
+                loads = collect_loads(c, settings.get("network_id")) or []
+                save_feeder_loads(
+                    settings.get("feeder_id"),
+                    settings.get("network_id"),
+                    loads,
+                    settings=settings,
+                )
+            finally:
+                try:
+                    a.close_study(save=False)
+                except Exception:
+                    pass
+        except Exception as ex:
+            loads = []
+            print("AVISO seed inventario SpotLoad %s: %s" % (
+                settings.get("feeder_id"), ex
+            ))
+
+    feeder = str(settings.get("feeder_id") or "").strip()
+    rows = []
+    for L in loads:
+        lid = str(L.get("LoadID") or "").strip()
+        if not lid:
+            continue
+        sed = _sed_from_load_id(lid)
+        pot = _parse_kw(L.get("kW"))
+        rows.append({
+            "RADIAL": feeder or L.get("Feeder") or "",
+            "Suministro": lid,  # sin NIS Excel: clave = LoadID|SED
+            "Cliente": str(L.get("Label") or lid).replace(" (SpotLoad)", ""),
+            "SED": sed,
+            "EA": None,
+            "Pot": pot,
+            "Match_CI": False,
+            "LoadID_CYMDIST": lid,
+            "Match_SED": True,
+            "Activo": True,
+            "RestarCabecera": False,
+            "Origen": "inventario_spotload",
+            "SectionID": L.get("SectionID") or "",
+        })
+
+    rows = merge_activo(rows, previous_rows=previous_rows)
+    rows = ensure_activo(rows, default=True)
+    rows = merge_restar_cabecera(rows, previous_rows=previous_rows)
+    rows = ensure_restar_cabecera(rows, default=False)
+    meta = {
+        "source": "inventory_loads",
+        "feeder_id": feeder,
+        "inventory_path": inv_path if os.path.isfile(inv_path) else None,
+        "n_loads": len(rows),
+        "n_activos": sum(1 for r in rows if r.get("Activo")),
+        "n_excluidos": sum(1 for r in rows if not r.get("Activo")),
+        "note": (
+            "Tabla sembrada desde SpotLoad del modelo (%s). "
+            "Capacidad SED (260044) no excluye Incluir."
+            % (feeder or "?")
+        ),
+    }
+    return rows, meta
+
+
+def ensure_clientes_table(settings, force_inventory=False, open_cymdist=False, merge_inventory=None):
+    """Devuelve filas clientes del alimentador activo (cualquier feeder BD).
+
+    Excel armado si existe; si no (o force_inventory), inventario SpotLoad.
+    merge_inventory=False: no mezcla SpotLoad residual (usar en §3 cruzar NIS).
+    """
+    from core.feeder_context import output_path
+
+    json_path = output_path(settings, "clientes", "clientes_alimentador.json")
+    rows = load_saved_clientes_rows(json_path)
+    meta = {}
+    if os.path.isfile(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                meta = (json.load(f).get("meta") or {})
+        except Exception:
+            meta = {}
+
+    # Tabla de otro radial → descartar (evitar arrastrar PA217 a IN112)
+    cur_feeder = str(settings.get("feeder_id") or "").strip().upper()
+    prev_feeder = str((meta or {}).get("feeder_id") or "").strip().upper()
+    if rows and prev_feeder and cur_feeder and prev_feeder != cur_feeder:
+        rows = []
+        meta = {}
+
+    # §3 cruzada NIS: no contaminar con inventario (~250 SpotLoad)
+    if merge_inventory is None:
+        merge_inventory = not bool(
+            (meta or {}).get("clientes_file") or (meta or {}).get("n_con_ea_pot")
+        )
+
+    if rows and not force_inventory:
+        if not merge_inventory:
+            return rows, meta, json_path
+        # Asegurar que SpotLoads del inventario (p.ej. 260044) también estén
+        rows2, meta2 = seed_clientes_from_inventory(
+            settings, previous_rows=rows, open_cymdist=False
+        )
+        by_lid = {
+            str(r.get("LoadID_CYMDIST") or "").strip(): r
+            for r in rows if r.get("LoadID_CYMDIST")
+        }
+        added = 0
+        for r in rows2:
+            lid = str(r.get("LoadID_CYMDIST") or "").strip()
+            if lid and lid not in by_lid:
+                rows.append(r)
+                by_lid[lid] = r
+                added += 1
+        if added:
+            meta = dict(meta)
+            meta["merged_inventory"] = added
+            meta["feeder_id"] = cur_feeder or meta.get("feeder_id")
+            meta["n_activos"] = sum(1 for r in rows if r.get("Activo"))
+            meta["n_excluidos"] = sum(1 for r in rows if not r.get("Activo"))
+            save_table_json(json_path, rows, meta)
+            save_table_csv(output_path(settings, "clientes", "clientes_alimentador.csv"), rows)
+        return rows, meta, json_path
+
+    rows, meta = seed_clientes_from_inventory(
+        settings,
+        previous_rows=rows or None,
+        open_cymdist=bool(open_cymdist or force_inventory),
+    )
+    save_table_json(json_path, rows, meta)
+    save_table_csv(output_path(settings, "clientes", "clientes_alimentador.csv"), rows)
+    return rows, meta, json_path
+
+
+def clientes_importantes_rows(rows):
+    """Filas de clientesimportantes (con EA), excluye inventario SpotLoad."""
+    out = []
+    for r in rows or []:
+        if r.get("Origen") == "inventario_spotload":
+            continue
+        if r.get("EA") in (None, ""):
+            continue
+        out.append(r)
+    return out

@@ -1,0 +1,179 @@
+% RECYM — IEEE PES Transactions draft (IEEEtran)
+% Target: IEEE Transactions on Power Delivery
+% First submission limit (PES): <= 10 pages
+\documentclass[journal]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{url}
+% hyperref omitted for lean MiKTeX builds
+
+\begin{document}
+
+\title{RECYM: A Multi-Feeder CYMDIST Workflow for Demand Allocation,
+Spot-Load Studies, and Situational--Projected Load-Flow Comparison}
+
+\author{\IEEEauthorblockN{First~A.~Author\IEEEauthorrefmark{1},
+Second~B.~Author\IEEEauthorrefmark{2}, and
+Third~C.~Author\IEEEauthorrefmark{1}}
+\IEEEauthorblockA{\IEEEauthorrefmark{1}TODO Affiliation 1, City, Country
+(e-mail: corresponding@author.edu)}
+\IEEEauthorblockA{\IEEEauthorrefmark{2}TODO Affiliation 2, City, Country}}
+
+\maketitle
+
+\begin{abstract}
+Distribution utilities must repeatedly correct network models, allocate measured
+headroom demand, connect prospective concentrated loads, and compare base versus
+future load-flow cases inside commercial tools such as CYMDIST. Manual campaigns
+are error-prone, hard to audit, and difficult to reproduce across dozens of
+feeders. This paper presents RECYM, a multi-feeder software suite that couples
+CYMDIST/CymPy and COM engines with a seven-step single-page application and a
+batch pipeline. The workflow enforces a model-quality gate, maps large-customer
+energy and contracted power onto secondary distribution transformers, allocates
+residual demand by energy (kWh) against a measured headroom total, inserts locked
+three-phase spot loads on existing nodes, and runs dual load-flow scenarios that
+disconnect or reconnect the prospective load. On Electro Dunas feeder PA217
+(22.9\,kV; 1324 nodes; 253 loads), RECYM preserved headroom balance at
+9537.88\,kW, updated ten secondary transformers with energy-to-kWh and
+power-to-kW locked injections, and connected a 1420\,kW spot load for
+situational--projected comparison, with zero diagnostic problems on the quality
+board after corrections. The architecture, coupling rules, and reproducible
+artifacts are documented so peer utilities can replicate the campaign on
+additional feeders.
+\end{abstract}
+
+\begin{IEEEkeywords}
+CYMDIST, demand allocation, distribution networks, load flow,
+power system modeling, software tools, spot load.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Planning and connection studies on medium-voltage distribution feeders require a
+trustworthy digital twin: correct connectivity and equipment data, demand that
+matches metered headroom, explicit treatment of large customers, and a transparent
+comparison between the present operating point and a projected case that includes
+a new concentrated load~\cite{kersting2017,gonen2014}.
+Commercial packages such as CYMDIST provide load allocation and load-flow
+engines, but production campaigns still rely on long sequences of manual clicks,
+spreadsheets, and ad-hoc scripts.
+
+Open platforms emphasize flexible simulation APIs~\cite{dugan2011}, while vendor
+documentation covers allocation and load-flow algorithms in
+isolation~\cite{cyme_alloc,cyme_lf}.
+What remains scarce is an end-to-end operational workflow---diagnostics,
+large-customer injection, kWh-based residual allocation, locked spot-load
+insertion, dual-scenario load flow, and delivery-report generation---bound to a
+multi-feeder configuration and an auditable user interface.
+
+This paper presents RECYM. The contributions are:
+(i)~a layered SPA/API/pipeline/CymPy--COM architecture for one feeder or batch
+modes;
+(ii)~a seven-step campaign with coupling rules that prevent incorrect mixing of
+allocation, spot load, and situational/projected cases; and
+(iii)~an industrial case study on feeder PA217 demonstrating headroom-consistent
+allocation, SED updates, a 1420\,kW spot load, and reproducible artifacts.
+
+\section{Related Work}
+Distribution modeling fundamentals are well established~\cite{kersting2017,gonen2014}.
+Load allocation to match metered feeder totals is standard utility
+practice~\cite{cyme_alloc}.
+Compensation-based power flow for weakly meshed networks underpins many
+engines~\cite{shirmohammadi1988}.
+OpenDSS~\cite{dugan2011} and pandapower~\cite{thurner2018} automate research
+studies; RECYM instead orchestrates CYMDIST engines for industrial campaigns.
+
+\section{System Architecture}
+\subsection{Layered Design}
+RECYM comprises: (1)~a React SPA with seven operator panels;
+(2)~a FastAPI job layer with SSE progress and a Flask bridge;
+(3)~domain pipelines (diagnostics, customers, allocation, spot load, load flow,
+reports, optional optimization);
+(4)~CymPy and COM adapters; and
+(5)~external \texttt{.zxst}/\texttt{.mdb}/Excel data.
+Fig.~\ref{fig:arch} (placeholder) shows the stack.
+
+\subsection{Multi-Feeder Configuration}
+Global paths live in \texttt{settings.json}; each feeder JSON stores
+\texttt{network\_id}, study path, workbooks, and
+\texttt{data/output/feeders/<ID>/}.
+Writes require a resolved study path and \texttt{dry\_run=false}.
+
+\section{Proposed Workflow}
+\subsection{Seven-Step Campaign}
+Table~\ref{tab:steps} summarizes the campaign.
+After connecting a spot load, residual allocation must not be re-run; only load
+flow follows.
+Situational versus projected differs solely by disconnecting or reconnecting the
+prospective spot load.
+
+\begin{table}[!t]
+\caption{RECYM Operator Campaign}
+\label{tab:steps}
+\centering
+\begin{tabular}{@{}clp{5.6cm}@{}}
+\toprule
+Step & Panel & Function \\
+\midrule
+1 & Context & Bind DB/study; save headroom $P,Q$ \\
+2 & Quality & NetworkDiagnostic; corrections; gate \\
+3 & Customers & SED EA$\to$kWh, Pot$\to$kW; allocation \\
+4 & Spot load & Existing node; $P/3$ per phase; Locked \\
+5 & Load flows & Situational (off) / projected (on) \\
+6 & Reports & Meta OCR + Word/PDF package \\
+7 & Suite & Optional equipment optimization \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Spot-Load Phase Split}
+For three-phase demand $P$ and $Q$ at an existing node,
+\begin{equation}
+P_{\phi}=\frac{P}{3},\qquad Q_{\phi}=\frac{Q}{3},\quad \phi\in\{A,B,C\}.
+\end{equation}
+
+\section{Case Study Setup}
+Electro Dunas feeder PA217 (\texttt{NET\_2030\_179\_PA217}),
+$V_{\mathrm{ll}}=22.9$\,kV, has 1324 nodes, 1324 sections, and 253 loads.
+Headroom: $P=9537.88$\,kW, $Q=2587.65$\,kvar, $S=9882.67$\,kVA
+(loading factor 65.05\,\%).
+Prospect load: 1420\,kW at node \texttt{NODE\_1080\_320357\_MI-17145\_2}.
+Software stack: CYMDIST 9.2, CymPy, COM, RECYM SPA v6.
+
+\section{Results and Discussion}
+After corrections, the quality board reported zero problems.
+Ten SED loads were written Connected with EA$\to$Consumo and Pot$\to$kW Locked;
+one customer was excluded (Disconnected); one row lacked SED mapping.
+Allocation validation: $\sum P=9537.87$\,kW versus headroom $9537.88$\,kW
+($d=0.0$\,\%).
+The 1420\,kW spot load uses equal phase split
+($P_{\phi}=473.33$\,kW/phase).
+Integral validation for PA217 returned PASS (21 September 2026).
+Load-flow $V_{\min}$/loss scalars must be frozen from a non-dry-run export
+before camera-ready tables.
+Limitations include Windows COM dependence, single-session assumptions, and
+utility-specific workbook mapping.
+
+\section{Conclusion}
+RECYM orchestrates CYMDIST for multi-feeder demand and connection studies via a
+quality gate, SED injection, kWh allocation, locked spot loads, and
+situational--projected load flows.
+Future work includes multi-feeder LF KPI packs and production use of optional
+equipment optimization.
+
+\section*{Acknowledgment}
+TODO: funding and institutional support.
+
+\begin{thebibliography}{00}
+\bibitem{kersting2017} W.~H. Kersting, \emph{Distribution System Modeling and Analysis}, 4th~ed. Boca Raton, FL, USA: CRC Press, 2017.
+\bibitem{gonen2014} T.~G\"onen, \emph{Electric Power Distribution Engineering}, 3rd~ed. Boca Raton, FL, USA: CRC Press, 2014.
+\bibitem{dugan2011} R.~C. Dugan and T.~E. McDermott, ``An open source platform for collaborating on smart grid research,'' in \emph{Proc. IEEE Power Energy Soc. Gen. Meeting}, Detroit, MI, USA, 2011, pp.~1--7.
+\bibitem{cyme_alloc} CYME International T\&D, \emph{CYMDIST User Guide} (Load Allocation), Eaton, ver.~9.2.
+\bibitem{cyme_lf} CYME International T\&D, \emph{CYMDIST User Guide} (Balanced Load Flow), Eaton, ver.~9.2.
+\bibitem{shirmohammadi1988} D.~Shirmohammadi, H.~W. Hong, A.~Semlyen, and G.~X. Luo, ``A compensation-based power flow method for weakly meshed distribution and transmission networks,'' \emph{IEEE Trans. Power Syst.}, vol.~3, no.~2, pp.~753--762, May 1988.
+\bibitem{thurner2018} L.~Thurner \emph{et al.}, ``pandapower---An open-source Python tool for convenient modeling, analysis, and optimization of electric power systems,'' \emph{IEEE Trans. Power Syst.}, vol.~33, no.~6, pp.~6510--6521, Nov. 2018.
+\end{thebibliography}
+
+\end{document}

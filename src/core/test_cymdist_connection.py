@@ -15,7 +15,9 @@ def main():
     print("projects_dir:", s.get("projects_dir"))
     print("database_dir:", s.get("database_dir"))
     print("database_mdb:", s.get("database_mdb"))
-    print("Estudios .zxst en disco:", ", ".join(list_study_files(s)) or "(ninguno)")
+    print("Estudios .zxst en disco:", ", ".join(
+        (x["name"] if isinstance(x, dict) else x) for x in list_study_files(s)
+    ) or "(ninguno)")
     print("study_path resuelto:", s.get("study_path") or "(vacío)")
     print("study exists:", os.path.isfile(s.get("study_path") or ""))
     print("mdb exists:", os.path.isfile(s.get("database_mdb") or ""))

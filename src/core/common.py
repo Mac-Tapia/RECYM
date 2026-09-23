@@ -7,6 +7,11 @@ def p(*parts):
     return os.path.join(ROOT, *parts)
 
 def load_json(rel):
+    # Overlay local + env para settings (ver settings_loader).
+    norm = (rel or "").replace("\\", "/")
+    if norm == "config/settings.json":
+        from core.settings_loader import load_settings
+        return load_settings()
     with open(p(*rel.split("/")), "r", encoding="utf-8") as f:
         return json.load(f)
 

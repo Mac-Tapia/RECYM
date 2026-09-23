@@ -1,0 +1,56 @@
+% Draft IEEEtran skeleton — compile with: pdflatex + bibtex
+% Requires IEEEtran.cls from CTAN / IEEE
+\documentclass[journal]{IEEEtran}
+\usepackage{amsmath,amssymb,graphicx,cite,url,booktabs}
+\begin{document}
+
+\title{RECYM: An Automated Multi-Feeder Workflow for Demand Allocation and Load-Flow Studies in CYMDIST Distribution Networks}
+
+\author{
+  \IEEEauthorblockN{Mac Tapia Ccosyo\IEEEauthorrefmark{1}}
+  \IEEEauthorblockA{\IEEEauthorrefmark{1}Electro Dunas S.A.A., Peru \\
+  Email: mtapia@electrodunas.com}
+}
+
+\maketitle
+
+\begin{abstract}
+Distribution utilities need repeatable procedures to clean network models, allocate measured substation demand, inject important-customer and prospective spot loads, and compare situational versus projected operating cases. This paper presents RECYM, a multi-feeder software suite that couples CYMDIST/CymPy with a seven-step SPA and batch pipeline. On feeder PA217 (22.9\,kV, Electro Dunas), the campaign closed with zero diagnostic problems, eleven important customers verified within tight tolerances, headroom-balanced allocation ($\Delta\approx0\%$), a 1420\,kW prospective spot load, and successful dual load flows.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Distribution networks, load allocation, load flow analysis, CYMDIST, power system modeling, software tools.
+\end{IEEEkeywords}
+
+\section{Introduction}
+% Full text: see MANUSCRIPT.md
+Modern distribution planning relies on detailed feeder models~\cite{Kersting2017,Gonen2014}.
+Commercial packages such as CYMDIST provide load allocation and unbalanced load-flow engines~\cite{CYME92}.
+This paper presents RECYM and validates it on Electro Dunas feeder PA217.
+
+\section{Related Work}
+See~\cite{Dugan2011OpenDSS,Thurner2018Pandapower,Peppanen2015AMI,Rylander2015Hosting,IEEE1547_2018}.
+
+\section{System Architecture}
+Layered SPA/API/pipeline/CymPy design; multi-feeder JSON configuration; COM load allocation/flow~\cite{CYME92}.
+
+\section{Proposed Workflow}
+Seven steps: context, quality gate, customers+allocation, spot load, dual LF, reports, suite.
+
+\section{Case Study}
+PA217, $V_{LL}=22.9$\,kV, headroom $P=9537.88$\,kW, prospective load 1420\,kW.
+
+\section{Results and Discussion}
+Zero diagnostic messages; 11/11 precision OK; allocation balance $\Delta\approx0\%$; situational and projected LF OK; 21/21 closure steps.
+
+\section{Conclusion}
+RECYM automates CYMDIST demand campaigns with auditable artifacts and dual-scenario load flows.
+
+\appendices
+\section{Batch Sequence}
+validate\_inputs $\rightarrow$ \ldots $\rightarrow$ demand\_allocation $\rightarrow$ report.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

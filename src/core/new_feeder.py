@@ -13,7 +13,7 @@ def main():
     ap.add_argument("--network-id", default="", help="NetworkID CYMDIST")
     ap.add_argument("--study-path", default="", help="Ruta .sxst/.mdb")
     ap.add_argument("--voltage", type=float, default=22.9, help="Tensión LL kV")
-    ap.add_argument("--from-feeder", default="PA217", help="Copiar Excels desde este alimentador")
+    ap.add_argument("--from-feeder", default="", help="Copiar Excels desde este alimentador (vacío = plantilla sola)")
     args = ap.parse_args()
 
     fid = args.feeder_id.strip().upper().replace(" ", "_")
@@ -26,13 +26,22 @@ def main():
     )
     dest = p("data", "input", "feeders", fid)
     mkdir(dest)
-    src = p("data", "input", "feeders", args.from_feeder)
-    for fname in ("Control_Simulacion.xlsx", "Catalogo_Maestro.xlsx"):
-        sfile = os.path.join(src, fname)
-        dfile = os.path.join(dest, fname)
-        if os.path.isfile(sfile) and not os.path.isfile(dfile):
-            shutil.copy2(sfile, dfile)
-            print("Copiado Excel:", dfile)
+    from_feeder = (args.from_feeder or "").strip()
+    if not from_feeder:
+        # Preferir active_feeder de settings si existe carpeta de input
+        try:
+            from core.common import load_json
+            from_feeder = str((load_json("config/settings.json") or {}).get("active_feeder") or "").strip()
+        except Exception:
+            from_feeder = ""
+    src = p("data", "input", "feeders", from_feeder) if from_feeder else ""
+    if src and os.path.isdir(src):
+        for fname in ("Control_Simulacion.xlsx", "Catalogo_Maestro.xlsx"):
+            sfile = os.path.join(src, fname)
+            dfile = os.path.join(dest, fname)
+            if os.path.isfile(sfile) and not os.path.isfile(dfile):
+                shutil.copy2(sfile, dfile)
+                print("Copiado Excel:", dfile)
     print("Creado:", path)
     print("Datos:", dest)
     print("Alimentadores:", ", ".join(list_feeders()))

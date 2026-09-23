@@ -91,11 +91,12 @@ def main():
 
     inv = {}
     cympy = None
+    adapter = None
     try:
         api = load_json("config/cympy_api_map.json")
         cympy = require_cympy(s)
-        a = CymPyAdapter(cympy, api, s)
-        a.open_study()
+        adapter = CymPyAdapter(cympy, api, s)
+        adapter.open_study()
         inv = inventory_library(cympy)
         save_inventory(output_path(s, "inventory", "equipment_library.json"), inv)
     except Exception as ex:
@@ -103,6 +104,7 @@ def main():
 
     ctx = {
         "cympy": cympy,
+        "adapter": adapter,
         "inv": inv,
         "defaults": s.get("default_equipment") or {},
         "catalog_hints": _catalog_size_hints(s),

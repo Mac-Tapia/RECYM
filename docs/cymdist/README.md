@@ -15,6 +15,25 @@ Fuente: instalacion CYME 9.2 (`C:\Program Files (x86)\CYME\CYME\tutorial\How-to`
 | Orden | 1º EA/Pot en SED → 2º distribuir → 3º flujo | Después de tener kW-kvar correctos |
 | Error frecuente | 130013 si parámetros de flujo no válidos | Convergencia / límites si el modelo es inconsistente |
 
+### Plantilla correcta · Propiedades de la red → Demanda (antes de 3.3)
+
+RECYM escribe esta plantilla en `set_network_demand` / 3.3:
+
+| Campo | Valor |
+|-------|-------|
+| Ingresar demanda de la red | ON |
+| Modelo de carga | DEFAULT |
+| Conectado | ON |
+| **Total** | **ON** (P/Q totales, no por fase) |
+| Tipo | kW-kvar |
+| P / Q | Cabecera §1 (p.ej. 9537,88 / 2587,65) |
+| Pérdidas | 0 W por fase |
+| Datos aguas abajo | **Consumo kW-h** (método KWH) |
+| Factor de carga (FdC) | 65,0 % (`Topo.LoadFactor`) |
+| Constante k | 0,3 (`Topo.LossLoadFactorK`) |
+
+FdC/k son de **pérdidas anuales** (Topo); no cambian el peso kWh del prorrateo. Si tras 3.3 el flujo en fuente no cierra a la cabecera, revisar Locked/residual y, si aplica, ajustar FdC en `config/settings.json` (`network_load_factor_pct`).
+
 En RECYM (UI de demanda — detalle en [`docs/MANUAL_UI_DEMANDA.md`](../MANUAL_UI_DEMANDA.md)):
 
 - **Cargar EA/Pot** → EA = Consumo (kWh); Pot = kW Locked (clientes fijos). Incluir off = `Disconnected`.

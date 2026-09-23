@@ -185,13 +185,20 @@ def run(settings=None):
     if s.get("save_after_fix", True):
         try:
             from cympy.enums import SaveStudyEquipmentOption
-            import cympy.db as db
             path = s.get("study_path") or ""
+            # Solo .zxst. db.Update/SaveProject cuelgan en MDB grandes (~450MB)
+            # y bloquean 5.1/UI — mismo patrón que skip_db_project_save en §3.3.
             c.study.Save(path, True, True, SaveStudyEquipmentOption.AllEquipments)
-            db.Update()
-            db.SaveProject()
             result["saved_study"] = True
-            result["notes"].append("study.Save(AllEquipments)+db OK")
+            result["notes"].append("study.Save(AllEquipments) OK (sin SaveProject)")
+            if not (s.get("skip_db_project_save") or s.get("isolated_work_study")):
+                try:
+                    import cympy.db as db
+                    db.Update()
+                    # SaveProject omitido a propósito (cuelga waitress/SPA)
+                    result["notes"].append("db.Update OK (SaveProject omitido)")
+                except Exception as ex_db:
+                    result["notes"].append("db.Update AVISO: %s" % ex_db)
         except Exception as ex:
             result["saved_study"] = False
             result["notes"].append("save_study: %s" % ex)
@@ -201,9 +208,10 @@ def run(settings=None):
         c.study.Close()
     except Exception:
         pass
+    # NO DisconnectDatabase aquí: deja sin BD al proceso SPA y el 5.1 siguiente cuelga.
     try:
-        import cympy.db as db
-        db.DisconnectDatabase()
+        from core import cympy_adapter as _ad
+        _ad._PROCESS_STUDY_PATH = None
     except Exception:
         pass
 

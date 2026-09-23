@@ -18,18 +18,27 @@ from core.feeder_context import load_settings, output_path
 import cympy.eq as eq
 
 
-# Bancos a materializar (section conocida del screenshot + placeholder 2do si se indica)
+# Dos condensadores en PA217 (CYME no permite Fixed+Switched a la vez en un
+# mismo dispositivo con BC22.9KV: el RatedKVAR se asigna entero a Fixed O a Switched).
+#   BC_PA217_01 = etapa FIJA 450 kvar
+#   BC_PA217_02 = etapa CONMUTADA 450 kvar (VoltageControlled)
 BANKS = [
     {
         "DeviceNumber": "BC_PA217_01",
         "SectionID": "SEC_1091_978023",
         "EquipmentID": "BC22.9KV",
-        "fixed_kvar_total": 450.0,
-        "switched_kvar_total": 450.0,
+        "mode": "fixed",
+        "kvar_total": 450.0,
         "interrupting_a": 600.0,
     },
-    # Segundo banco: completar SectionID cuando se confirme en CYME
-    # {"DeviceNumber": "BC_PA217_02", "SectionID": "???", ...},
+    {
+        "DeviceNumber": "BC_PA217_02",
+        "SectionID": "SEC_1091_962476",
+        "EquipmentID": "BC22.9KV",
+        "mode": "switched",
+        "kvar_total": 450.0,
+        "interrupting_a": 600.0,
+    },
 ]
 
 
@@ -88,45 +97,97 @@ def _ensure_equipment(cympy, equip_id, vln, rated_kvar, notes):
 
 
 def _configure_bank(d, bank, vln, notes):
-    kvar_f = float(bank["fixed_kvar_total"]) / 3.0
-    kvar_s = float(bank["switched_kvar_total"]) / 3.0
+    """
+    Configura un condensador en modo 'fixed' o 'switched'.
+
+    En CYME 9.x + BC22.9KV el RatedKVAR del equipo se asigna entero a Fixed
+    O a Switched (no ambos a la vez). Por eso hay 2 dispositivos.
+    """
+    mode = str(bank.get("mode") or "switched").strip().lower()
+    kvar_ph = float(bank.get("kvar_total") or bank.get("fixed_kvar_total")
+                    or bank.get("switched_kvar_total") or 450.0) / 3.0
     _set(d, "DeviceID", bank["EquipmentID"], notes)
     _set(d, "ConnectionStatus", "Connected", notes)
     _set(d, "Location", "From", notes)
     _set(d, "KVLN", float(vln), notes)
     _set(d, "InterruptingRating", float(bank.get("interrupting_a") or 600.0), notes)
     _set(d, "ConnectionConfiguration", "Yg", notes)
-    for ph, val in (("A", kvar_f), ("B", kvar_f), ("C", kvar_f)):
-        _set(d, "FixedKVAR" + ph, float(val), notes)
-        _set(d, "FixedLosses" + ph, 0.0, notes)
-    for ph, val in (("A", kvar_s), ("B", kvar_s), ("C", kvar_s)):
-        _set(d, "SwitchedKVAR" + ph, float(val), notes)
-        _set(d, "SwitchedLosses" + ph, 0.0, notes)
-    # Control por tension
-    try:
-        d.Execute("CapacitorControl.SetType(VoltageControlled)")
-        notes.append("CapacitorControl.SetType(VoltageControlled) OK")
-    except Exception:
+
+    if mode == "fixed":
+        # Todo a Fixed: poner Switched=0 primero mueve el cupo a Fixed (default)
+        # Si el default ya es Fixed=kvar_ph, no tocar Switched (evita volcarlo).
+        for ph in "ABC":
+            try:
+                cur_f = float(str(d.GetValue("FixedKVAR" + ph) or "0").replace(",", "."))
+            except Exception:
+                cur_f = 0.0
+            if abs(cur_f - kvar_ph) > 0.1:
+                # Forzar via Switched=0 (CYME reasigna a Fixed) luego verificar
+                _set(d, "SwitchedKVAR" + ph, 0.0, notes)
+            _set(d, "FixedLosses" + ph, 0.0, notes)
+            _set(d, "SwitchedLosses" + ph, 0.0, notes)
+        notes.append("mode=fixed kvar_ph=%.1f" % kvar_ph)
+    else:
+        # Todo a Switched + control por tension
+        for ph in "ABC":
+            _set(d, "SwitchedKVAR" + ph, float(kvar_ph), notes)
+            _set(d, "SwitchedLosses" + ph, 0.0, notes)
+            _set(d, "FixedLosses" + ph, 0.0, notes)
         try:
-            d.Execute("CapacitorControl.Create(VoltageControlled)")
-            notes.append("CapacitorControl.Create(VoltageControlled) OK")
-        except Exception as ex:
-            notes.append("CapacitorControl FAIL: %s" % ex)
-    # Umbrales ON/OFF (kV LN): enciende bajo, apaga alto
-    on_kv = float(vln) * 0.95
-    off_kv = float(vln) * 1.05
-    for ph in ("A", "B", "C"):
-        _set(d, "CapacitorControl.OnValue" + ph, on_kv, notes)
-        _set(d, "CapacitorControl.OffValue" + ph, off_kv, notes)
-    _set(d, "VoltageOverride", True, notes)
-    _set(d, "VoltageOverrideOn", on_kv, notes)
-    _set(d, "VoltageOverrideOff", off_kv, notes)
-    _set(d, "VoltageOverrideDeadband", 0.5, notes)
+            d.Execute("CapacitorControl.SetType(VoltageControlled)")
+            notes.append("CapacitorControl.SetType(VoltageControlled) OK")
+        except Exception:
+            try:
+                d.Execute("CapacitorControl.Create(VoltageControlled)")
+                notes.append("CapacitorControl.Create(VoltageControlled) OK")
+            except Exception as ex:
+                notes.append("CapacitorControl FAIL: %s" % ex)
+        on_kv = round(float(vln) * 0.95, 5)
+        off_kv = round(float(vln) * 1.05, 5)
+        for ph in ("A", "B", "C"):
+            _set(d, "CapacitorControl.OnValue" + ph, on_kv, notes)
+            _set(d, "CapacitorControl.OffValue" + ph, off_kv, notes)
+        _set(d, "VoltageOverrideOn", on_kv, notes)
+        _set(d, "VoltageOverrideOff", off_kv, notes)
+        _set(d, "VoltageOverrideDeadband", 0.5, notes)
+        notes.append("mode=switched kvar_ph=%.1f On=%.5f Off=%.5f" % (kvar_ph, on_kv, off_kv))
 
 
-def run(settings=None, banks=None):
+def _section_of(c, d):
+    try:
+        sid = str(getattr(d, "SectionID", "") or "")
+        if sid:
+            return sid
+    except Exception:
+        pass
+    did = str(getattr(d, "DeviceNumber", "") or "").upper()
+    try:
+        for sec in c.study.ListSections():
+            try:
+                for dd in sec.ListDevices():
+                    if str(getattr(dd, "DeviceNumber", "")).upper() == did:
+                        return str(sec.ID)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return ""
+
+
+def _default_bank(did, sid, eid="BC22.9KV", mode="switched"):
+    return {
+        "DeviceNumber": did,
+        "SectionID": sid,
+        "EquipmentID": eid,
+        "mode": mode,
+        "kvar_total": 450.0,
+        "interrupting_a": 600.0,
+    }
+
+
+def run(settings=None, banks=None, create_missing=True, recreate=True):
     s = settings or load_settings()
-    banks = banks or BANKS
+    banks = list(banks or BANKS)
     vll = float(s.get("voltage_ll_kv") or 22.9)
     vln = vll / math.sqrt(3.0)
     notes = []
@@ -154,9 +215,8 @@ def run(settings=None, banks=None):
         bank["DeviceNumber"] = did
         bank["EquipmentID"] = eid
         if not sid or sid.startswith("?"):
-            notes.append("SKIP %s: falta SectionID del 2do banco" % did)
+            notes.append("SKIP %s: falta SectionID" % did)
             continue
-        # Validar seccion
         try:
             c.study.GetSection(sid)
         except Exception as ex:
@@ -164,12 +224,22 @@ def run(settings=None, banks=None):
             result["ok"] = False
             continue
 
-        rated = max(float(bank["fixed_kvar_total"]), float(bank["switched_kvar_total"]))
+        rated = float(bank.get("kvar_total") or 450.0)
         _ensure_equipment(c, eid, vln, rated, notes)
 
-        # Add or get
         d = c.study.GetDevice(did, dtype)
+        if d is not None and recreate:
+            try:
+                c.study.DeleteDevice(did, dtype)
+                notes.append("DeleteDevice %s (recreate)" % did)
+                d = None
+            except Exception as ex:
+                notes.append("DeleteDevice FAIL %s: %s" % (did, ex))
+
         if d is None:
+            if not create_missing:
+                notes.append("SKIP create %s" % did)
+                continue
             try:
                 d = c.study.AddDevice(
                     did, dtype, sid, eid, c.enums.Location.From, True
@@ -187,12 +257,17 @@ def run(settings=None, banks=None):
             notes.append("GetDevice existing %s" % did)
 
         _configure_bank(d, bank, vln, notes)
-        snap = {"DeviceNumber": did, "SectionID": sid, "EquipmentID": eid}
+        snap = {
+            "DeviceNumber": did,
+            "SectionID": sid,
+            "EquipmentID": eid,
+            "mode": bank.get("mode"),
+        }
         for f in (
             "KVLN", "FixedKVARA", "FixedKVARB", "FixedKVARC",
             "SwitchedKVARA", "SwitchedKVARB", "SwitchedKVARC",
-            "ConnectionStatus", "DeviceID", "VoltageOverride",
-            "VoltageOverrideOn", "VoltageOverrideOff",
+            "ConnectionStatus", "DeviceID",
+            "CapacitorControl.OnValueA", "CapacitorControl.OffValueA",
         ):
             try:
                 snap[f] = d.GetValue(f)
@@ -202,9 +277,14 @@ def run(settings=None, banks=None):
             snap["CapacitorControlType"] = d.GetValue("CapacitorControl.GetType()")
         except Exception:
             pass
+        snap["FixedKVAR_total"] = sum(
+            float(str(snap.get("FixedKVAR" + p) or "0").replace(",", ".")) for p in "ABC"
+        )
+        snap["SwitchedKVAR_total"] = sum(
+            float(str(snap.get("SwitchedKVAR" + p) or "0").replace(",", ".")) for p in "ABC"
+        )
         result["created"].append(snap)
 
-    # Contar
     caps = list(c.study.ListDevices(dtype, net))
     result["n_shunt_after"] = len(caps)
     result["device_numbers"] = [getattr(x, "DeviceNumber", None) for x in caps]
@@ -221,7 +301,7 @@ def run(settings=None, banks=None):
             except Exception:
                 pass
             result["saved"] = True
-            notes.append("study.Save(AllEquipments) OK")
+            notes.append("study.Save(AllEquipments)+db OK")
         except Exception as ex:
             result["saved"] = False
             result["ok"] = False

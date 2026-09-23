@@ -27,10 +27,26 @@ def _mtime(path):
         return 0.0
 
 
+def _is_cymdist_capture(png_path):
+    side = (png_path or "") + ".cymdist.json"
+    if not png_path or not os.path.isfile(png_path):
+        return False
+    if os.path.isfile(side):
+        try:
+            import json
+            meta = json.load(open(side, encoding="utf-8"))
+            return str(meta.get("source") or "").startswith("cymdist")
+        except Exception:
+            return True
+    return False
+
+
 def _should_skip(png_path, lf_json_path):
-    """True si hay PNG manual mas reciente que el JSON LF."""
+    """True si hay captura CYMDIST o PNG manual mas reciente que el JSON LF."""
     if not os.path.isfile(png_path):
         return False
+    if _is_cymdist_capture(png_path):
+        return True
     lf_m = _mtime(lf_json_path)
     png_m = _mtime(png_path)
     if lf_m <= 0:
