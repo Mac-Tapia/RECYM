@@ -300,12 +300,15 @@ def connect_spot_load(settings, node_id, mode, p_kw, q_kvar=None, cosfi=None,
             result["aviso_com"] = "CymPy OK pero fallo apertura CYMDIST COM: %s" % ex
     elif open_gui:
         # Camino robusto (default): CymPy ya escribio SpotLoad+P/Q.
-        # Un solo ciclo: pause (kill si hacia falta) → open GUI (sin recrear COM).
+        # fresh=True evita AV 0xc0000005 (Save/CymPy+COM solapados).
         try:
-            from core.cymdist_com import pause_cymdist_for_cympy, open_cymdist_gui
+            from core.cymdist_com import open_cymdist_gui
+            import time as _t
             reason = "spot_load:%s" % (result.get("LoadID") or "")
-            pause_cymdist_for_cympy(settings)  # libera .zxst si Cyme tenia el estudio
-            gui = open_cymdist_gui(settings, kill_existing=False, reason=reason)
+            _t.sleep(1.2)
+            gui = open_cymdist_gui(
+                settings, kill_existing=True, fresh=True, reason=reason
+            )
             result["com"] = gui
             result["cymdist_open"] = bool(gui.get("ok") or gui.get("cymdist_open"))
             if gui.get("ok"):
@@ -340,32 +343,44 @@ def connect_spot_load(settings, node_id, mode, p_kw, q_kvar=None, cosfi=None,
     return result
 
 
-# Columnas de plantilla §4 lote (CSV/Excel)
+# Columnas de plantilla §4.3 = mismos campos que §4.2 (+ Accion para lote)
+# 4.2: NodeID, Nombre (DeviceNumber), SectionID (opcional/auto), Modo, P_kW, Q_kvar, cosfi
 SPOT_LOAD_BATCH_HEADERS = [
-    "Accion", "NodeID", "Nombre", "Modo", "P_kW", "Q_kvar", "cosfi", "Cliente", "Notas",
+    "Accion",
+    "NodeID",
+    "Nombre",
+    "SectionID",
+    "Modo",
+    "P_kW",
+    "Q_kvar",
+    "cosfi",
+    "Cliente",
+    "Notas",
 ]
 SPOT_LOAD_BATCH_SAMPLE = [
     {
         "Accion": "NUEVA",
         "NodeID": "16955",
         "Nombre": "CARGA_CLIENTE_01",
+        "SectionID": "",
         "Modo": "KW_COSFI",
         "P_kW": "150",
         "Q_kvar": "",
         "cosfi": "0.95",
         "Cliente": "Ejemplo SA",
-        "Notas": "Completar NodeID real del alimentador",
+        "Notas": "SectionID vacio = se deriva del nodo (igual que 4.2)",
     },
     {
         "Accion": "ACTUALIZAR",
         "NodeID": "17001",
         "Nombre": "CARGA_CLIENTE_02",
+        "SectionID": "",
         "Modo": "KW_KVAR",
         "P_kW": "80",
         "Q_kvar": "26.3",
         "cosfi": "",
         "Cliente": "Otro cliente",
-        "Notas": "Actualiza P/Q si ya existe el DeviceNumber",
+        "Notas": "Actualiza P/Q de una sola carga ya existente (Nombre=DeviceNumber)",
     },
 ]
 
@@ -386,11 +401,17 @@ _BATCH_ALIASES = {
     "nodeid": "NodeID",
     "node_id": "NodeID",
     "nodo": "NodeID",
+    "nodo_seleccionado": "NodeID",
     "nombre": "Nombre",
+    "nombre_carga": "Nombre",
     "load_name": "Nombre",
     "loadid": "Nombre",
     "load_id": "Nombre",
     "devicenumber": "Nombre",
+    "sectionid": "SectionID",
+    "section_id": "SectionID",
+    "seccion": "SectionID",
+    "tramo": "SectionID",
     "modo": "Modo",
     "mode": "Modo",
     "p_kw": "P_kW",
@@ -398,12 +419,14 @@ _BATCH_ALIASES = {
     "kw": "P_kW",
     "potencia": "P_kW",
     "potencia_kw": "P_kW",
+    "p_trifasica_kw": "P_kW",
     "q_kvar": "Q_kvar",
     "q": "Q_kvar",
     "kvar": "Q_kvar",
     "cosfi": "cosfi",
     "cos_fi": "cosfi",
     "cosphi": "cosfi",
+    "cosφ": "cosfi",
     "fp": "cosfi",
     "factor_potencia": "cosfi",
     "cliente": "Cliente",
@@ -431,11 +454,13 @@ def normalize_batch_row(raw, row_index=0):
         modo = "KW_KVAR"
     node_id = str(mapped.get("NodeID") or "").strip()
     nombre = str(mapped.get("Nombre") or "").strip()
+    section_id = str(mapped.get("SectionID") or "").strip()
     row = {
         "row": int(row_index) + 1,
         "Accion": accion,
         "NodeID": node_id,
         "Nombre": nombre,
+        "SectionID": section_id,
         "Modo": modo if modo in ("KW_COSFI", "KW_KVAR") else "KW_COSFI",
         "P_kW": mapped.get("P_kW"),
         "Q_kvar": mapped.get("Q_kvar"),
@@ -551,16 +576,25 @@ def build_batch_template_xlsx():
     ws_i = wb.active
     ws_i.title = "Instrucciones"
     lines = [
-        "Plantilla RECYM §4 — SpotLoad en bloque",
+        "Plantilla RECYM §4.3 — mismos campos que §4.2 (una o varias cargas)",
         "",
-        "1) Complete la hoja «Cargas» (una fila por cliente).",
-        "2) Accion = NUEVA (crear) o ACTUALIZAR (reaplicar P/Q si ya existe el Nombre).",
-        "3) NodeID = nodo existente del alimentador activo (no se crean nodos).",
-        "4) Nombre = DeviceNumber dibujado en CYMDIST (sin espacios raros).",
-        "5) Modo = KW_COSFI (P + cosφ) o KW_KVAR (P + Q).",
-        "6) Guarde y suba el archivo en la UI → Conectar en bloque.",
+        "4.3 es OPCIONAL: si no hay archivo, §5 y siguientes siguen igual (use 4.2 o ninguna).",
         "",
-        "P trifásica → en CYMDIST A/B/C = P/3 y Q/3. Locked (fuera de distribución).",
+        "Campos (= 4.2):",
+        "  NodeID     = nodo existente (Buscar nodo en 4.2)",
+        "  Nombre     = DeviceNumber dibujado en CYMDIST",
+        "  SectionID  = opcional; vacio = se deriva del nodo (igual que 4.2)",
+        "  Modo       = KW_COSFI (P + cosφ) o KW_KVAR (P + Q)",
+        "  P_kW       = potencia trifasica",
+        "  Q_kvar     = si Modo=KW_KVAR",
+        "  cosfi      = si Modo=KW_COSFI (default 0.95)",
+        "",
+        "Accion:",
+        "  NUEVA      = crear SpotLoad y cargar en CYMDIST",
+        "  ACTUALIZAR = una sola carga ya existente (mismo Nombre): reescribe P/Q en CYMDIST",
+        "",
+        "Puede ser 1 fila (actualizar una carga) o N filas (lote).",
+        "P trifasica -> en CYMDIST A/B/C = P/3 y Q/3. Locked (fuera de distribucion).",
     ]
     for i, line in enumerate(lines, 1):
         ws_i.cell(row=i, column=1, value=line)
@@ -587,7 +621,7 @@ def build_batch_template_xlsx():
         for col, h in enumerate(SPOT_LOAD_BATCH_HEADERS, 1):
             cell = ws.cell(row=i, column=col, value=r.get(h, ""))
             cell.border = thin
-    widths = [12, 12, 22, 12, 10, 10, 8, 18, 36]
+    widths = [12, 12, 22, 14, 12, 10, 10, 8, 18, 40]
     from openpyxl.utils import get_column_letter
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
@@ -718,6 +752,7 @@ def connect_spot_loads_bulk(settings, rows, open_gui=True):
                 lock=True,
                 adapter=adapter,
                 load_name=row.get("Nombre"),
+                # NUEVA y ACTUALIZAR: recrear/reescribir P/Q en CYMDIST (mismos campos 4.2)
                 recreate=True,
                 open_gui=False,
                 save=False,
@@ -725,6 +760,8 @@ def connect_spot_loads_bulk(settings, rows, open_gui=True):
             res["Accion"] = row.get("Accion")
             res["Cliente"] = row.get("Cliente")
             res["row"] = row.get("row")
+            if row.get("SectionID") and not res.get("SectionID"):
+                res["SectionID"] = row.get("SectionID")
             append_report(settings, res)
             _upsert_inventory_load(settings, res)
             results.append(res)
@@ -761,11 +798,14 @@ def connect_spot_loads_bulk(settings, rows, open_gui=True):
     gui_info = None
     if open_gui and last_ok and not settings.get("dry_run"):
         try:
-            from core.cymdist_com import pause_cymdist_for_cympy, open_cymdist_gui
-            pause_cymdist_for_cympy(settings)
+            from core.cymdist_com import open_cymdist_gui
+            import time as _t
+            _t.sleep(1.5)
+            # fresh=True: evita AV 0xc0000005 al reabrir tras escrituras CymPy
             gui_info = open_cymdist_gui(
                 settings,
-                kill_existing=False,
+                kill_existing=True,
+                fresh=True,
                 reason="spot_load_bulk:%s" % (last_ok.get("LoadID") or ""),
             )
         except Exception as ex:

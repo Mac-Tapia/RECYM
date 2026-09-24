@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, runJob, type Json } from "../api/client";
 import { useFeeder } from "../state/feeder";
+import { ContextBind, useHasSectionContext } from "../components/ContextBind";
 
 type ActionId = "" | "3.1" | "3.2" | "3.3" | "files" | "incluir";
 
@@ -14,6 +15,7 @@ function rowKey(r: Json) {
 
 export function Step3Clientes() {
   const { feeder } = useFeeder();
+  const hasCtx = useHasSectionContext();
   const [suministro, setSuministro] = useState("");
   const [clientesFile, setClientesFile] = useState("");
   const [files, setFiles] = useState<{ suministro?: string[]; clientesimportantes?: string[] }>({});
@@ -28,7 +30,7 @@ export function Step3Clientes() {
     const active = busy === id;
     return {
       className: `${kind}${active ? " running" : ""}`.trim(),
-      disabled: Boolean(busy),
+      disabled: Boolean(busy) || !hasCtx,
       "aria-busy": active,
     } as const;
   }
@@ -276,7 +278,7 @@ export function Step3Clientes() {
     setBusy("3.3");
     const fid = (feeder || "").trim();
     setMsg(
-      `3.3 · ${fid || "alimentador"} · guardando Restar cab. y ajustando P max §1 antes de redistribuir…`
+      `3.3 · ${fid || "alimentador"} · desconectar no-Incluir + Restar cab. + módulo CYMDIST LoadAllocation…`
     );
     try {
       if (rows.length && fid) {
@@ -330,12 +332,22 @@ export function Step3Clientes() {
               ? "OK con WARN"
               : "OK";
       const nCleared = Number(cleared.n_clear ?? 0);
+      const disc = (res.excluidas_disconnected as Json) || {};
+      const nDisc = Number(disc.n_ok ?? 0);
       const cabLine =
         Number(res.P_kW_excluidas_restadas || 0) > 0
-          ? `\nCabecera usada: P_med=${res.P_kW_medicion ?? "?"} - sum(Pot Restar cab.)=${res.P_kW_excluidas_restadas} -> P=${res.P_cabecera_kW} kW`
+          ? `\nCabecera: P_med=${res.P_kW_medicion ?? "?"} - Restar cab.=${res.P_kW_excluidas_restadas} -> P=${res.P_cabecera_kW} kW`
           : cabAdj.msg
             ? `\n${String(cabAdj.msg)}`
             : "";
+      const discLine =
+        nDisc > 0
+          ? `\nDesconectadas en CYMDIST (Incluir off): ${nDisc} · ${String(disc.msg || "")}`
+          : "";
+      const scaleLine =
+        res.aviso_fijos_vs_cabecera
+          ? `\n${String(res.aviso_fijos_vs_cabecera)}`
+          : "";
       setMsg(
         `3.3 ${label} · ${String(res.feeder_id || feeder || "")}` +
           ` · ${String(res.method || res.status || "")}` +
@@ -348,6 +360,8 @@ export function Step3Clientes() {
             ? `\nResidual previo limpiado: ${nCleared} SED → 0 kW (fijos intactos)`
             : "") +
           cabLine +
+          discLine +
+          scaleLine +
           `\n${String(val.msg || res.aviso || "")}` +
           ` · OK ${String(val.n_ok ?? 0)} · WARN ${String(val.n_warn ?? 0)} · FAIL ${String(val.n_fail ?? 0)}` +
           ` · ceros fijos ${String(val.n_zero_fixed ?? 0)} · ceros residual ${String(val.n_zero_residual ?? 0)}` +
@@ -364,12 +378,11 @@ export function Step3Clientes() {
   return (
     <section className="panel">
       <h2>3 · Clientes importantes → SED + distribución</h2>
+      <ContextBind hint="EA/Pot y distribución se escriben en CYMDIST sobre el estudio de §1" />
       <p className="muted">
-        <b>3.1</b> cruzar NIS (libera CI previos fuera de tabla) ·{" "}
-        <b>3.2</b> EA→Consumo(KWH) y Pot Locked ·{" "}
-        <b>3.3</b> resta Pot (Restar cab.) de P máx §1 y luego redistribuye · estudio (
-        <code>.zxst</code>) + BD del proyecto (<b>20260919</b>). No fijo a PA217.
-        {" · "}Alimentador: <b>{feeder || "— (configure §1)"}</b>
+        <b>3.1</b> cruzar NIS · <b>3.2</b> EA→Consumo(KWH) y Pot Locked ·{" "}
+        <b>3.3</b> antes del módulo: desconecta en CYMDIST las no Incluir y resta Pot (Restar
+        cab.) de P máx §1; luego ejecuta solo <b>Load Allocation</b> de CYMDIST.
       </p>
 
       <div className="grid">
@@ -406,7 +419,7 @@ export function Step3Clientes() {
           3.2 · Cargar EA/Pot en CYMDIST
         </button>
         <button type="button" {...btnProps("3.3")} disabled={Boolean(busy)} onClick={runDistrib}>
-          3.3 · Ejecutar distribución de carga
+          3.3 · Ejecutar módulo Load Allocation (CYMDIST)
         </button>
         <button
           type="button"

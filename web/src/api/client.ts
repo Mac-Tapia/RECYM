@@ -1,6 +1,9 @@
 export type Json = Record<string, unknown>;
 
 let activeFeeder = "";
+let activeStudyPath = "";
+let activeDatabaseMdb = "";
+let activeNetwork = "";
 let apiKey = "";
 let bootstrapPromise: Promise<void> | null = null;
 
@@ -12,6 +15,28 @@ export function setActiveFeeder(feeder: string) {
 
 export function getActiveFeeder() {
   return activeFeeder;
+}
+
+/** Contexto §1 completo: cada job/CymPy debe usar esta BD+estudio, no un fijo. */
+export function setActiveContext(opts: {
+  feeder?: string;
+  network?: string;
+  studyPath?: string;
+  databaseMdb?: string;
+}) {
+  if (opts.feeder !== undefined) activeFeeder = (opts.feeder || "").trim();
+  if (opts.network !== undefined) activeNetwork = (opts.network || "").trim();
+  if (opts.studyPath !== undefined) activeStudyPath = (opts.studyPath || "").trim();
+  if (opts.databaseMdb !== undefined) activeDatabaseMdb = (opts.databaseMdb || "").trim();
+}
+
+export function getActiveContext() {
+  return {
+    feeder: activeFeeder,
+    network: activeNetwork,
+    studyPath: activeStudyPath,
+    databaseMdb: activeDatabaseMdb,
+  };
 }
 
 export function setApiKey(key: string) {
@@ -58,6 +83,29 @@ function withAuthHeaders(h: Headers) {
   const key = getApiKey();
   if (key && !h.has("X-Api-Key")) h.set("X-Api-Key", key);
   if (activeFeeder) h.set("X-Feeder", activeFeeder);
+  if (activeStudyPath && !h.has("X-Study-Path")) h.set("X-Study-Path", activeStudyPath);
+  if (activeDatabaseMdb && !h.has("X-Database-Mdb")) {
+    h.set("X-Database-Mdb", activeDatabaseMdb);
+  }
+}
+
+/** Inyecta feeder/estudio/BD de §1 en bodies JSON (POST/PUT/PATCH). */
+function injectContextBody(body: BodyInit | null | undefined): BodyInit | null | undefined {
+  if (body == null || typeof body !== "string") return body;
+  try {
+    const obj = JSON.parse(body) as Record<string, unknown>;
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return body;
+    const ctx = getActiveContext();
+    if (!obj.feeder && ctx.feeder) obj.feeder = ctx.feeder;
+    if (!obj.feeder_id && ctx.feeder) obj.feeder_id = ctx.feeder;
+    if (!obj.network_id && ctx.network) obj.network_id = ctx.network;
+    if (!obj.study_path && ctx.studyPath) obj.study_path = ctx.studyPath;
+    if (!obj.database_mdb && ctx.databaseMdb) obj.database_mdb = ctx.databaseMdb;
+    if (!obj.feeders && ctx.feeder) obj.feeders = [ctx.feeder];
+    return JSON.stringify(obj);
+  } catch {
+    return body;
+  }
 }
 
 export async function api<T = Json>(
@@ -69,13 +117,19 @@ export async function api<T = Json>(
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const h = new Headers(headers || {});
-  if (!h.has("Content-Type") && rest.body && !(rest.body instanceof FormData)) {
+  const method = String(rest.method || "GET").toUpperCase();
+  let body = rest.body;
+  if (method !== "GET" && method !== "HEAD" && !(body instanceof FormData)) {
+    body = injectContextBody(body ?? "{}");
+  }
+  if (!h.has("Content-Type") && body && !(body instanceof FormData)) {
     h.set("Content-Type", "application/json");
   }
   withAuthHeaders(h);
   try {
     const r = await fetch(path, {
       ...rest,
+      body,
       headers: h,
       signal: ctrl.signal,
       credentials: "same-origin",
@@ -111,9 +165,23 @@ export async function runJob(
   payload: Json = {},
   onUpdate?: (job: Json) => void
 ): Promise<Json> {
+  const ctx = getActiveContext();
+  const merged: Json = {
+    ...payload,
+    // Inyectar BD/estudio/alimentador activos de §1 si el caller no los pasó
+    feeder: payload.feeder || ctx.feeder || undefined,
+    feeder_id: payload.feeder_id || ctx.feeder || undefined,
+    network_id: payload.network_id || ctx.network || undefined,
+    study_path: payload.study_path || ctx.studyPath || undefined,
+    database_mdb: payload.database_mdb || ctx.databaseMdb || undefined,
+  };
   const created = await api<{ ok: boolean; job_id: string; error?: string }>("/api/jobs", {
     method: "POST",
-    body: JSON.stringify({ action, payload, feeder: activeFeeder || undefined }),
+    body: JSON.stringify({
+      action,
+      payload: merged,
+      feeder: activeFeeder || merged.feeder || undefined,
+    }),
   });
   if (!created.ok || !created.job_id) {
     throw new Error(created.error || "No se pudo crear job");

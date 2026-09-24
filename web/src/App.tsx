@@ -1,4 +1,5 @@
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { useEffect } from "react";
 import { useFeeder } from "./state/feeder";
 import { api } from "./api/client";
 import { Step1Contexto } from "./pages/Step1Contexto";
@@ -20,7 +21,34 @@ const STEPS = [
 ];
 
 export function App() {
-  const { feeder } = useFeeder();
+  const { feeder, studyPath, databaseMdb, setContext } = useFeeder();
+  const studyFile = (studyPath || "").split(/[/\\]/).pop() || "";
+  const dbFile = (databaseMdb || "").split(/[/\\]/).pop() || "";
+
+  useEffect(() => {
+    // Bootstrap contexto §1 al cargar la SPA (cualquier numeral)
+    (async () => {
+      try {
+        const j = await api<{
+          ok?: boolean;
+          current_feeder?: string;
+          current_network?: string;
+          current_study?: string;
+          current_database?: string;
+        }>("/api/contexto/archivos", { timeoutMs: 30000 });
+        if (j?.ok && (j.current_feeder || j.current_study || j.current_database)) {
+          setContext({
+            feeder: j.current_feeder || "",
+            network: j.current_network || "",
+            studyPath: j.current_study || "",
+            databaseMdb: j.current_database || "",
+          });
+        }
+      } catch {
+        /* sin contexto aún */
+      }
+    })();
+  }, [setContext]);
 
   async function refreshUi() {
     // Actualizar DEBE vaciar el tablero (campos → 0). Ping+reload solo
@@ -69,6 +97,18 @@ export function App() {
           Demanda Electro Dunas · SPA v6
           <br />
           Alimentador: <b>{feeder || "—"}</b>
+          {studyFile ? (
+            <>
+              <br />
+              Estudio: <b>{studyFile}</b>
+            </>
+          ) : null}
+          {dbFile ? (
+            <>
+              <br />
+              BD: <b>{dbFile}</b>
+            </>
+          ) : null}
         </div>
         <nav>
           {STEPS.map((s) => (

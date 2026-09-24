@@ -182,7 +182,7 @@ tr.off-row{opacity:.55;background:#fafaf9}
       </div>
     </div>
     <div class="actions" style="margin-top:8px">
-      <button type="button" id="btnCtxApply" class="secondary" onclick="applyContextFiles()">Aplicar BD + estudio</button>
+      <button type="button" id="btnCtxApply" class="secondary" onclick="applyContextFiles()">1.1 · Verificar y conectar en CYMDIST</button>
       <button type="button" class="ghost" onclick="refreshContextFiles()">Actualizar listas</button>
       <span class="muted" id="ctxMsg">Seleccione base de datos y estudio/proyecto.</span>
     </div>
@@ -351,7 +351,7 @@ tr.off-row{opacity:.55;background:#fafaf9}
       <button type="button" class="ghost" onclick="refreshCiFiles()">Actualizar lista de archivos</button>
       <button type="button" id="btnBuildCli" onclick="buildClientes()" disabled>Armar tabla (cruzar NIS)</button>
       <button type="button" id="btnApplyCli" class="secondary" onclick="applyClientes()" disabled>Cargar EA/Pot en CYMDIST</button>
-      <button type="button" id="btnAlloc" onclick="runDistribucion()" title="Tras Cargar EA/Pot: reparte cabecera − clientes → residual SED">Ejecutar distribución de carga</button>
+      <button type="button" id="btnAlloc" onclick="runDistribucion()" title="Ejecuta solo el modulo Load Allocation de CYMDIST (cabecera §1 y fijos 3.2 ya cargados)">3.3 · Ejecutar módulo Load Allocation (CYMDIST)</button>
       <span class="muted" id="cliMsg">Seleccione un archivo de clientesimportantes.</span>
     </div>
     <div class="muted" id="distMsg" style="margin-top:6px"></div>
@@ -1109,7 +1109,7 @@ async function saveHead(opts){
   body.study_path = sel.study_path;
   body.feeder = feeder;
   const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-  const timer = setTimeout(function(){ try { if (ctrl) ctrl.abort(); } catch(e) {} }, 120000);
+  const timer = setTimeout(function(){ try { if (ctrl) ctrl.abort(); } catch(e) {} }, 200000);
   try{
     const headers = {'Content-Type': 'application/json'};
     if (feeder) headers['X-Feeder'] = feeder;
@@ -1131,7 +1131,9 @@ async function saveHead(opts){
       if(j.network_id) msg += ' · red '+j.network_id;
       if(j.cymdist_ok || j.cymdist){
         msg += ' · SetDemand API';
-        if(j.cymdist && j.cymdist.saved) msg += ' · estudio .zxst guardado';
+        if(j.study_saved || (j.cymdist && j.cymdist.saved)) msg += ' · estudio guardado';
+        if(j.db_updated || (j.cymdist && j.cymdist.db_updated)) msg += ' · BD actualizada';
+        if(j.project_saved || (j.cymdist && j.cymdist.project_saved)) msg += ' · proyecto CYME';
       }
       if(j.elapsed_sec!=null) msg += ' · '+j.elapsed_sec+'s';
       if(j.reset_downstream){
@@ -2690,6 +2692,9 @@ async function runDistribucion(){
     } else if (d.consumo_ok===false) {
       msg.innerHTML += ` · <span class="err">Consumo(KWH) clientes: revisar</span>`;
     }
+    if (d.aviso_fijos_vs_cabecera) {
+      msg.innerHTML += ` · <span class="warn">${d.aviso_fijos_vs_cabecera}</span>`;
+    }
     if (d.aviso_nuevas) {
       msg.innerHTML += ` · <span class="muted">${d.aviso_nuevas}</span>`;
     }
@@ -3606,11 +3611,57 @@ def _request_feeder_network():
 
 
 def _settings():
-    """Settings del request. Sintetiza config si el alimentador está en BD sin JSON local."""
+    """Settings del request: alimentador + estudio/BD de §1 (overlay body/headers).
+
+    Toda operación CYMDIST (§§2–7) debe usar la misma BD/estudio seleccionados
+    en §1; se resuelve por ruta (importar/activar) vía resolve_cymdist_binding.
+    """
     feeder, network_id = _request_feeder_network()
+    body = request.get_json(silent=True) or {}
+    db = (
+        (body.get("database_mdb") or "").strip()
+        or (request.headers.get("X-Database-Mdb") or "").strip()
+        or None
+    )
+    st = (
+        (body.get("study_path") or body.get("ui_study_path") or "").strip()
+        or (request.headers.get("X-Study-Path") or "").strip()
+        or None
+    )
     if feeder:
-        return load_settings(feeder_id=feeder, network_id=network_id, synthesize=True)
-    return load_settings()
+        s = load_settings(feeder_id=feeder, network_id=network_id, synthesize=True)
+    else:
+        s = load_settings()
+
+    if st:
+        from core.feeder_context import resolve_writable_study_path
+        s["ui_study_path"] = st
+        s["study_path"] = resolve_writable_study_path(st, s)
+        s["study_file"] = os.path.basename(s["study_path"])
+    if db:
+        s["database_mdb"] = db
+        try:
+            from core.cympy_adapter import find_cymdist_connection_for_mdb
+            found = find_cymdist_connection_for_mdb(db)
+            if found and found.get("name"):
+                s["database_connection_name"] = found["name"]
+        except Exception:
+            s["database_connection_name"] = os.path.splitext(os.path.basename(db))[0]
+    if body.get("network_id") and not network_id:
+        s["network_id"] = body.get("network_id")
+
+    try:
+        from core.feeder_context import resolve_cymdist_binding
+        bind = resolve_cymdist_binding(s)
+        s["study_path"] = bind["study_path"]
+        s["ui_study_path"] = bind.get("ui_study_path") or s.get("ui_study_path")
+        s["database_mdb"] = bind["database_mdb"]
+        s["database_connection_name"] = bind["database_connection_name"]
+        s["_cymdist_binding"] = bind
+    except Exception as ex:
+        # Lecturas suaves (listas) pueden no tener estudio aún
+        s["_cymdist_binding_error"] = str(ex)
+    return s
 
 
 def _jsonify_safe(payload, status=200):
@@ -3838,23 +3889,114 @@ def index():
 
 @app.route("/api/contexto/archivos")
 def api_contexto_archivos():
-    """Lista .mdb, .zxst y alimentadores de la BD (cualquiera, sin fijo)."""
+    """Lista .mdb, .zxst y alimentadores de la BD (cualquiera, sin fijo).
+
+    Query:
+      database_mdb — BD seleccionada en UI (actualiza catálogo de alimentadores)
+      refresh=1    — fuerza relectura de redes vía CYMDIST para esa BD
+    """
     from core.feeder_context import list_database_files, list_study_files, list_bd_feeder_catalog
     from core.common import load_json
+    import copy
     try:
-        from core.common import load_json
         global_s = load_json("config/settings.json")
         try:
             s = _settings()
         except Exception:
             s = global_s
+
+        q_mdb = (request.args.get("database_mdb") or "").strip()
+        refresh = request.args.get("refresh") in ("1", "true", "True", "yes")
+
+        # Settings efectivos para listar (BD elegida en el desplegable)
+        eff = copy.deepcopy(global_s) if isinstance(global_s, dict) else dict(global_s or {})
+        if q_mdb:
+            if not os.path.isfile(q_mdb):
+                return jsonify({
+                    "ok": False,
+                    "error": "Base de datos no encontrada: %s" % q_mdb,
+                    "databases": list_database_files(global_s),
+                    "studies": list_study_files(global_s, all_files=True),
+                    "feeders": [],
+                }), 400
+            eff["database_mdb"] = q_mdb
+            eff["database_dir"] = os.path.dirname(q_mdb)
+            eff["database_connection_name"] = os.path.splitext(os.path.basename(q_mdb))[0]
+
         dbs = list_database_files(global_s)
-        studies = list_study_files(global_s)
-        feeders = list_bd_feeder_catalog(global_s)
-        cur_db = s.get("database_mdb") or global_s.get("database_mdb") or ""
+        # Desplegable: TODOS los .zxst/.xst/.zsxst (no colapsar por stem)
+        studies = list_study_files(global_s, all_files=True)
+
+        networks = None
+        net_meta = {}
+        if refresh or q_mdb:
+            try:
+                from pipeline.model_quality_gate import list_bd_networks, clear_networks_cache
+                if refresh:
+                    clear_networks_cache()
+                # soft: catálogo en disco de ESA conexión; si no hay, subir a force
+                # para devolver TODOS los alimentadores de la .mdb seleccionada
+                net_res = list_bd_networks(eff, force=bool(refresh), soft=not refresh)
+                if (
+                    q_mdb
+                    and not refresh
+                    and isinstance(net_res, dict)
+                    and not (net_res.get("networks") or [])
+                ):
+                    clear_networks_cache()
+                    net_res = list_bd_networks(eff, force=True, soft=False)
+                    net_meta["auto_forced"] = True
+                if isinstance(net_res, dict):
+                    networks = net_res.get("networks") or []
+                    net_meta.update({
+                        "networks_source": net_res.get("source"),
+                        "networks_connection": net_res.get("connection"),
+                        "networks_n": net_res.get("n"),
+                        "networks_msg": net_res.get("msg"),
+                        "networks_error": net_res.get("error"),
+                    })
+                    if refresh and not net_res.get("ok") and net_res.get("error"):
+                        return jsonify({
+                            "ok": False,
+                            "error": net_res.get("error"),
+                            "databases": dbs,
+                            "studies": studies,
+                            "feeders": [],
+                            **net_meta,
+                        }), 503
+            except Exception as ex_net:
+                net_meta = {"networks_error": str(ex_net)}
+                if refresh:
+                    return jsonify({
+                        "ok": False,
+                        "error": "No se pudieron listar alimentadores: %s" % ex_net,
+                        "databases": dbs,
+                        "studies": studies,
+                        "feeders": [],
+                        **net_meta,
+                    }), 503
+
+        # Si pedimos BD concreta y aún no hay redes, no inventar lista solo-estudio
+        if q_mdb and networks is not None and len(networks) == 0:
+            feeders = []
+            net_meta.setdefault(
+                "networks_msg",
+                "Sin alimentadores de la BD aún. Pulse Actualizar listas.",
+            )
+        else:
+            # Redes de la .mdb + estudios locales huérfanos (PA217v2, etc.)
+            feeders = list_bd_feeder_catalog(
+                eff,
+                networks=networks,
+                include_orphan_studies=True,
+            )
+
+        cur_db = q_mdb or s.get("database_mdb") or global_s.get("database_mdb") or ""
+        # Preferir elección UI (.xst/.zsxst); study_path puede ser el .zxst writable
         cur_st = (
-            s.get("study_path")
-            or global_s.get("ui_study_path")
+            global_s.get("ui_study_path")
+            or s.get("ui_study_path")
+            or s.get("study_path")
             or global_s.get("eld_study_path")
             or ""
         )
@@ -3864,13 +4006,28 @@ def api_contexto_archivos():
             "studies": studies,
             "feeders": feeders,
             "n_feeders": len(feeders),
+            "n_studies": len(studies),
             "current_database": cur_db,
             "current_study": cur_st,
+            "current_study_open": s.get("study_path") or "",
             "current_feeder": s.get("feeder_id") or global_s.get("active_feeder") or "",
             "current_network": s.get("network_id") or "",
+            "database_connection_name": (
+                s.get("database_connection_name")
+                or global_s.get("database_connection_name")
+                or ""
+            ),
             "database_dir": global_s.get("database_dir"),
             "projects_dir": global_s.get("projects_dir"),
-            "msg": "Cualquier alimentador de la BD se puede cargar (sin fijo).",
+            "msg": (
+                "BD %s · %d alimentadores · %d estudios"
+                % (
+                    os.path.basename(cur_db) if cur_db else "—",
+                    len(feeders),
+                    len(studies),
+                )
+            ),
+            **net_meta,
         })
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex), "databases": [], "studies": [], "feeders": []})
@@ -3881,6 +4038,7 @@ def api_contexto_aplicar():
     """Persiste BD y/o estudio elegidos en settings (+ feeder si aplica).
 
     Reinicia Tablero dinámico / gate §2: sin valores hasta 2.1 · Diagnosticar.
+    Sincroniza CYMDIST vivo con la misma BD + estudio del numeral 1.
     """
     from core.feeder_context import apply_context_selection, load_settings
     body = request.get_json(silent=True) or {}
@@ -3905,8 +4063,15 @@ def api_contexto_aplicar():
         try:
             fid = (result.get("feeder_id") or body.get("feeder") or "").strip()
             s = load_settings(feeder_id=fid, synthesize=True) if fid else _settings()
-            if body.get("study_path"):
-                s["study_path"] = body.get("study_path")
+            # Usar estudio writable del contexto (.zxst), no el .xst UI
+            if result.get("study_path"):
+                s["study_path"] = result.get("study_path")
+            if result.get("ui_study_path"):
+                s["ui_study_path"] = result.get("ui_study_path")
+            if result.get("database_mdb"):
+                s["database_mdb"] = result.get("database_mdb")
+            if result.get("database_connection_name"):
+                s["database_connection_name"] = result.get("database_connection_name")
             reset_info = reset_downstream_after_cabecera(s)
             result["reset_downstream"] = reset_info
             result["msg"] = (
@@ -3916,6 +4081,43 @@ def api_contexto_aplicar():
         except Exception as ex_reset:
             print("AVISO reset tablero tras contexto:", ex_reset)
             result["reset_error"] = str(ex_reset)
+
+        # Anclar Cyme GUI al mismo BD + estudio del §1 (sin matar si ya está abierto)
+        try:
+            from core.cymdist_com import open_cymdist_gui
+            fid = (result.get("feeder_id") or body.get("feeder") or "").strip()
+            s_gui = load_settings(feeder_id=fid, synthesize=True) if fid else _settings()
+            for k in ("study_path", "ui_study_path", "database_mdb",
+                      "database_connection_name", "network_id"):
+                if result.get(k):
+                    s_gui[k] = result.get(k)
+            # Preferir archivo exacto de la UI (.xst PA217v2)
+            if body.get("study_path"):
+                s_gui["ui_study_path"] = body.get("study_path")
+            gui = open_cymdist_gui(s_gui, kill_existing=False, reason="contexto_aplicar_1")
+            result["cymdist_sync"] = gui
+            if gui.get("ok"):
+                if gui.get("database_connection_name"):
+                    result["database_connection_name"] = gui["database_connection_name"]
+                db_bit = gui.get("msg") or (
+                    "%s / %s"
+                    % (
+                        gui.get("database_connection_name")
+                        or os.path.basename(gui.get("database_mdb") or ""),
+                        os.path.basename(gui.get("study_path") or ""),
+                    )
+                )
+                result["msg"] = (
+                    (result.get("msg") or "Contexto aplicado")
+                    + " · "
+                    + db_bit
+                )
+            else:
+                result["cymdist_sync_error"] = gui.get("error")
+        except Exception as ex_gui:
+            print("AVISO sync CYMDIST tras §1:", ex_gui)
+            result["cymdist_sync_error"] = str(ex_gui)
+
         return jsonify(result)
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
@@ -4258,9 +4460,10 @@ def _cabecera_payload_from_session(s, sess):
 
 @app.route("/api/cabecera/medicion/archivos")
 def api_cabecera_medicion_archivos():
-    """Lista Excel de medicioncabecera + path del mapeo medidor."""
+    """Lista Excel de medicioncabecera + códigos/medidores de medidoralimentador."""
     try:
         from core.cabecera_medicion_excel import (
+            list_map_alimentadores,
             list_medicioncabecera_files,
             medidoralimentador_path,
             medicioncabecera_dir,
@@ -4268,15 +4471,24 @@ def api_cabecera_medicion_archivos():
         from core.common import load_json
         global_s = load_json("config/settings.json")
         files = list_medicioncabecera_files(global_s)
+        alimentadores = []
+        map_err = None
+        try:
+            alimentadores = list_map_alimentadores(global_s, only_feeders=True)
+        except Exception as ex_map:
+            map_err = str(ex_map)
         return jsonify({
             "ok": True,
             "files": files,
+            "alimentadores": alimentadores,
+            "n_alimentadores": len(alimentadores),
             "medicioncabecera_dir": medicioncabecera_dir(global_s),
             "medidoralimentador": medidoralimentador_path(global_s),
             "n_files": len(files),
+            "map_error": map_err,
         })
     except Exception as ex:
-        return jsonify({"ok": False, "error": str(ex), "files": []})
+        return jsonify({"ok": False, "error": str(ex), "files": [], "alimentadores": []})
 
 
 @app.route("/api/cabecera/medicion/resolver", methods=["GET", "POST"])
@@ -4351,6 +4563,23 @@ def api_cabecera():
     """GET: últimos P/Q/Vll/fases/fecha del alimentador.
     POST: guarda sesión + escribe SetDemand/OperatingVoltage en CYMDIST.
     """
+    try:
+        return _api_cabecera_impl()
+    except Exception as ex:
+        # Nunca devolver HTML 500 a la SPA (BrokenPipe/COM/etc.)
+        import traceback as _tb
+        try:
+            _tb.print_exc()
+        except Exception:
+            pass
+        return jsonify({
+            "ok": False,
+            "error": str(ex) or ex.__class__.__name__,
+            "session_saved": False,
+        }), 200
+
+
+def _api_cabecera_impl():
     if request.method == "GET":
         feeder = (
             (request.headers.get("X-Feeder") or "").strip()
@@ -4369,17 +4598,13 @@ def api_cabecera():
 
     body = request.get_json(force=True) or {}
     # Aplicar BD/estudio del numeral 1 antes de escribir.
-    # El alimentador lo define el estudio (PA217.zxst → PA217), no un X-Feeder viejo (IN112).
+    # El alimentador lo define la red BD (PA217), no el stem de variante
+    # (PA217v2.xst → familia PA217). apply_context_selection resuelve familia + .zxst.
     ctx = None
     try:
         db = (body.get("database_mdb") or "").strip() or None
         st = (body.get("study_path") or "").strip() or None
         fid_body = (body.get("feeder") or "").strip() or None
-        # Si hay estudio, el stem manda sobre feeder/header obsoleto
-        if st:
-            stem = os.path.splitext(os.path.basename(st))[0]
-            if stem and stem.upper() != "ELD":
-                fid_body = stem
         if db or st or fid_body:
             from core.feeder_context import apply_context_selection
             ctx = apply_context_selection(
@@ -4397,16 +4622,25 @@ def api_cabecera():
     if not feeder:
         feeder = (body.get("feeder") or "").strip() or None
     if not feeder and body.get("study_path"):
+        from core.feeder_context import feeder_family_code
         stem = os.path.splitext(os.path.basename(str(body.get("study_path"))))[0]
         if stem and stem.upper() != "ELD":
-            feeder = stem
+            feeder = feeder_family_code(stem) or stem
 
     if feeder:
         s = load_settings(feeder_id=feeder, synthesize=True)
     else:
         s = _settings()
-    if body.get("study_path"):
-        s["study_path"] = body.get("study_path")
+    # Preferir estudio writable resuelto por contexto (.zxst), no el .xst de la UI
+    if ctx and ctx.get("study_path"):
+        s["study_path"] = ctx.get("study_path")
+        if ctx.get("ui_study_path"):
+            s["ui_study_path"] = ctx.get("ui_study_path")
+    elif body.get("study_path"):
+        from core.feeder_context import resolve_writable_study_path
+        ui_sp = body.get("study_path")
+        s["ui_study_path"] = ui_sp
+        s["study_path"] = resolve_writable_study_path(ui_sp, s)
     if body.get("database_mdb"):
         s["database_mdb"] = body.get("database_mdb")
     # Alinear network_id con el feeder del estudio (nunca mezclar IN112 + PA217)
@@ -4414,8 +4648,11 @@ def api_cabecera():
         s["network_id"] = ctx.get("network_id")
     if feeder and s.get("feeder_id") and str(s.get("feeder_id")).upper() != str(feeder).upper():
         s = load_settings(feeder_id=feeder, synthesize=True)
-        if body.get("study_path"):
-            s["study_path"] = body.get("study_path")
+        if ctx and ctx.get("study_path"):
+            s["study_path"] = ctx.get("study_path")
+        elif body.get("study_path"):
+            from core.feeder_context import resolve_writable_study_path
+            s["study_path"] = resolve_writable_study_path(body.get("study_path"), s)
 
     preview_only = bool(body.get("preview_only") or body.get("preview") or body.get("recalc_only"))
     try:
@@ -4516,7 +4753,9 @@ def api_cabecera():
             "feeder_id": s.get("feeder_id"),
             "network_id": s.get("network_id"),
             "study_path": s.get("study_path"),
+            "ui_study_path": s.get("ui_study_path") or body.get("study_path"),
             "database_mdb": s.get("database_mdb"),
+            "database_connection_name": s.get("database_connection_name"),
             "P_kW": p,
             "Q_kvar": q,
             "Vll_kV": sess.get("Vll_kV"),
@@ -4525,13 +4764,23 @@ def api_cabecera():
             "Vc_kV": sess.get("Vc_kV"),
         },
         settings=s,
-        timeout_sec=int(os.environ.get("RECYM_CABECERA_TIMEOUT") or "90"),
+        timeout_sec=int(os.environ.get("RECYM_CABECERA_TIMEOUT") or "180"),
     )
     cymdist_ok = bool(job.get("ok"))
     if cymdist_ok:
         sess["status"] = "cabecera_ok"
         save_session(s, sess)
 
+    ui_sp = (
+        (ctx or {}).get("ui_study_path")
+        or s.get("ui_study_path")
+        or body.get("study_path")
+        or ""
+    )
+    open_sp = s.get("study_path") or ""
+    study_saved = bool(job.get("study_saved") or (job.get("cymdist") or {}).get("saved"))
+    db_updated = bool(job.get("db_updated") or (job.get("cymdist") or {}).get("db_updated"))
+    project_saved = bool(job.get("project_saved") or (job.get("cymdist") or {}).get("project_saved"))
     return jsonify({
         "ok": cymdist_ok,
         "P_kW": p,
@@ -4549,29 +4798,53 @@ def api_cabecera():
         "mode": sess.get("mode"),
         "feeder_id": s.get("feeder_id"),
         "network_id": s.get("network_id"),
-        "study_path": s.get("study_path"),
-        "study_file": os.path.basename(s.get("study_path") or "") or s.get("study_file"),
+        "study_path": open_sp,
+        "ui_study_path": ui_sp,
+        "study_file": os.path.basename(ui_sp or open_sp) or s.get("study_file"),
         "database_mdb": s.get("database_mdb"),
         "cymdist": job.get("cymdist") or job,
         "cymdist_ok": cymdist_ok,
+        "study_saved": study_saved,
+        "db_updated": db_updated,
+        "project_saved": project_saved,
         "session_saved": True,
         "excel": excel_path,
         "reset_downstream": reset_info,
         "elapsed_sec": job.get("elapsed_sec"),
         "error": None if cymdist_ok else (job.get("error") or "Fallo SetDemand CYMDIST"),
-        "msg": (
-            ("Cabecera OK en %s · SetDemand + Vph fuente · §§2-4 restablecidos" % (s.get("feeder_id") or ""))
-            if cymdist_ok and reset_info is not None
-            else (
-                "Cabecera OK en CYMDIST (Demanda Total kW/kvar + tensiones fuente)"
-                if cymdist_ok
-                else (
-                    "Sesion/Excel guardados, pero CYMDIST fallo: %s. Cierre Cyme.exe y reintente Guardar."
-                    % (job.get("error") or "error")
-                )
-            )
+        "msg": _cabecera_status_msg(
+            cymdist_ok=cymdist_ok,
+            feeder_id=s.get("feeder_id") or "",
+            reset_info=reset_info,
+            study_saved=study_saved,
+            db_updated=db_updated,
+            job_error=job.get("error"),
         ),
     })
+
+
+def _cabecera_status_msg(cymdist_ok, feeder_id, reset_info, study_saved, db_updated, job_error=None):
+    """Mensaje UI tras guardar cabecera (estudio + BD)."""
+    fid = feeder_id or ""
+    if not cymdist_ok:
+        return (
+            "Sesion/Excel guardados, pero CYMDIST fallo: %s. Cierre Cyme.exe y reintente Guardar."
+            % (job_error or "error")
+        )
+    if study_saved and db_updated:
+        base = (
+            "Cabecera OK en %s · estudio + BD · al abrir CYMDIST ya están P/Q/Vph"
+            % fid
+        )
+    else:
+        base = (
+            "Cabecera OK en %s · SetDemand + Vph · estudio/proyecto guardados"
+            % fid
+        )
+    if reset_info is not None:
+        return base + " · §§2-4 restablecidos"
+    return base
+
 
 @app.route("/api/clientes/archivos")
 def api_clientes_archivos():
@@ -4650,6 +4923,7 @@ def _settings_for_clientes(body, fallback=None):
     """Settings del alimentador seleccionado en el body (no el default de sesión).
 
     SED↔ / LoadID deben resolverse contra el inventario CYMDIST de ese radial.
+    Incluye estudio/BD de §1 (body o headers).
     """
     base = fallback or _settings()
     feeder, feeders, all_feeders = _parse_feeders_body(body, base)
@@ -4661,8 +4935,33 @@ def _settings_for_clientes(body, fallback=None):
     elif feeders:
         primary = feeders[0]
     if primary:
-        return load_settings(feeder_id=primary, synthesize=True), feeder, feeders, all_feeders
-    return base, feeder, feeders, all_feeders
+        s = load_settings(feeder_id=primary, synthesize=True)
+    else:
+        s = base
+    # Overlay estudio/BD §1
+    db = (body.get("database_mdb") or request.headers.get("X-Database-Mdb") or "").strip()
+    st = (
+        body.get("study_path")
+        or body.get("ui_study_path")
+        or request.headers.get("X-Study-Path")
+        or ""
+    ).strip()
+    if st:
+        from core.feeder_context import resolve_writable_study_path
+        s["ui_study_path"] = st
+        s["study_path"] = resolve_writable_study_path(st, s)
+    if db:
+        s["database_mdb"] = db
+    try:
+        from core.feeder_context import resolve_cymdist_binding
+        bind = resolve_cymdist_binding(s)
+        s["study_path"] = bind["study_path"]
+        s["database_mdb"] = bind["database_mdb"]
+        s["database_connection_name"] = bind["database_connection_name"]
+        s["_cymdist_binding"] = bind
+    except Exception as ex:
+        s["_cymdist_binding_error"] = str(ex)
+    return s, feeder, feeders, all_feeders
 
 
 @app.route("/api/clientes/tabla", methods=["POST"])
@@ -5272,7 +5571,7 @@ def api_clientes_aplicar():
             print("AVISO report EA/Pot:", ex_rep)
             report_path = None
 
-        # Reabrir GUI con calma (sin kill agresivo: pause ya cerró Cyme)
+        # Reabrir GUI limpia tras CymPy (anti AV 0xc0000005: no Save/CymPy+COM juntos)
         open_gui = True if body.get("open_gui") is None else bool(body.get("open_gui"))
         com = {"ok": True, "cymdist_open": False, "deferred": True}
         if open_gui:
@@ -5283,9 +5582,14 @@ def api_clientes_aplicar():
 
                 def _open_gui():
                     try:
-                        _time.sleep(1.5)
-                        # kill_existing=False: Cyme ya no debe estar; evita doble kill+OpenStudy
-                        open_cymdist_gui(s, kill_existing=False, reason="cargar_ea_pot")
+                        # Esperar a que CymPy suelte el proceso Cyme del todo
+                        _time.sleep(2.5)
+                        open_cymdist_gui(
+                            s,
+                            kill_existing=True,
+                            fresh=True,
+                            reason="cargar_ea_pot",
+                        )
                     except Exception as ex_gui:
                         print("AVISO open_cymdist_gui diferido:", ex_gui)
                 threading.Thread(target=_open_gui, name="open_cyme_ea_pot", daemon=True).start()
@@ -5293,6 +5597,7 @@ def api_clientes_aplicar():
                     "ok": True,
                     "cymdist_open": True,
                     "deferred": True,
+                    "fresh": True,
                     "was_open": was_open,
                 }
             except Exception as ex_th:

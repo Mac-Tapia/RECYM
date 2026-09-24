@@ -270,8 +270,20 @@ async def bridge_flask_api(path: str, request: Request):
     def start_response(status, headers, exc_info=None):
         status_headers[:] = [status, headers]
 
-    result = flask_app(environ, start_response)
-    raw = b"".join(result)
+    try:
+        result = flask_app(environ, start_response)
+        raw = b"".join(result)
+    except Exception as ex:
+        import traceback as _tb
+
+        try:
+            _tb.print_exc()
+        except Exception:
+            pass
+        return JSONResponse(
+            {"ok": False, "error": str(ex) or ex.__class__.__name__},
+            status_code=200,
+        )
     status = int(status_headers[0].split()[0]) if status_headers else 500
     headers = status_headers[1] if len(status_headers) > 1 else []
     media = "application/json"
@@ -282,6 +294,16 @@ async def bridge_flask_api(path: str, request: Request):
             media = hv
         elif low in ("content-disposition", "cache-control", "content-length"):
             out_headers[hk] = hv
+    # Si Flask/Werkzeug devolvió HTML 500, convertir a JSON para la SPA
+    if status >= 500 and (not media or "json" not in media.lower() or raw.lstrip()[:1] == b"<"):
+        err = "Error interno del servidor"
+        try:
+            text = raw.decode("utf-8", "replace")
+            if "<title>" in text.lower():
+                err = "Error interno (500). Revise log API o reinicie el servidor."
+        except Exception:
+            pass
+        return JSONResponse({"ok": False, "error": err, "http_status": status}, status_code=200)
     return Response(content=raw, status_code=status, media_type=media, headers=out_headers)
 
 

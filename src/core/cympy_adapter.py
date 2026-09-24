@@ -1,10 +1,115 @@
 from __future__ import print_function
 import os
+import re
 from core.common import backup_file
 
 # Estado de proceso CymPy (los adapters se recrean; el estudio permanece abierto).
 _PROCESS_STUDY_PATH = None
 _PROCESS_DB_NAME = None
+_PROCESS_DB_PATH = None
+
+
+def _norm_file_path(path):
+    """Ruta absoluta normalizada (case-insensitive en Windows)."""
+    if not path:
+        return ""
+    try:
+        return os.path.normcase(os.path.abspath(str(path).strip()))
+    except Exception:
+        return str(path).strip()
+
+
+def _extract_mdb_path(obj):
+    """Extrae ruta .mdb desde str / MDBDataSource (CymPy a veces mete comillas)."""
+    if obj is None:
+        return ""
+    raw = ""
+    try:
+        if hasattr(obj, "Path") and obj.Path is not None:
+            raw = str(obj.Path)
+        else:
+            raw = str(obj)
+    except Exception:
+        raw = str(obj)
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    # str(MDBDataSource) → "'D:\\...\\file.mdb'" o "…; 'D:\\…'"
+    if ";" in s and "'" in s:
+        m = re.search(r"'([^']+\.mdb)'", s, flags=re.IGNORECASE)
+        if m:
+            s = m.group(1)
+    s = s.strip().strip("'\"")
+    return s
+
+
+def list_cymdist_database_connections():
+    """Conexiones BD registradas en CYMDIST: [{name, path, network, equipment, project}]."""
+    import cympy.db as db
+
+    out = []
+    try:
+        items = list(db.ListDatabaseConnections() or [])
+    except Exception:
+        return out
+    for info in items:
+        try:
+            name = str(getattr(info, "Name", "") or "").strip()
+        except Exception:
+            name = ""
+        net = _extract_mdb_path(getattr(info, "Network", None))
+        eq = _extract_mdb_path(getattr(info, "Equipment", None))
+        proj = _extract_mdb_path(getattr(info, "Project", None))
+        path = net or eq or proj
+        out.append({
+            "name": name,
+            "path": path,
+            "network": net,
+            "equipment": eq,
+            "project": proj,
+        })
+    return out
+
+
+def find_cymdist_connection_for_mdb(mdb_path):
+    """Busca conexión CYMDIST cuya ruta .mdb coincida exactamente (no solo el nombre).
+
+    Evita el caso 'BASE JUL25 1' → otra carpeta (p.ej. anggelo\\…) mientras
+    la UI seleccionó …\\260919BaseDatos\\202603\\BASE JUL25 1.mdb.
+    """
+    want = _norm_file_path(mdb_path)
+    if not want:
+        return None
+    for conn in list_cymdist_database_connections():
+        for key in ("path", "network", "equipment", "project"):
+            p = conn.get(key) or ""
+            if p and _norm_file_path(p) == want:
+                return conn
+    return None
+
+
+def unique_connection_name(preferred, mdb_path=None):
+    """Nombre libre en CYMDIST; si preferred apunta a otra ruta, usa preferred_1, _2…"""
+    preferred = (preferred or "").strip() or (
+        os.path.splitext(os.path.basename(mdb_path or ""))[0] or "RECYM"
+    )
+    existing = {c["name"]: c for c in list_cymdist_database_connections() if c.get("name")}
+    want = _norm_file_path(mdb_path) if mdb_path else ""
+    if preferred not in existing:
+        return preferred
+    hit = existing[preferred]
+    if want and _norm_file_path(hit.get("path")) == want:
+        return preferred
+    # Nombre ocupado por otra ruta → sufijo
+    i = 1
+    while True:
+        cand = "%s_%d" % (preferred, i)
+        if cand not in existing:
+            return cand
+        other = existing[cand]
+        if want and _norm_file_path(other.get("path")) == want:
+            return cand
+        i += 1
 
 
 class CymPyAdapter(object):
@@ -938,7 +1043,7 @@ class CymPyAdapter(object):
         return "To"
 
     def save_study(self, path=""):
-        path = path or self.settings.get("study_path") or ""
+        path = path or self._study_path_open or _PROCESS_STUDY_PATH or self.settings.get("study_path") or ""
         try:
             from cympy.enums import SaveStudyEquipmentOption
             if path:
@@ -950,6 +1055,7 @@ class CymPyAdapter(object):
                 self.cympy.study.Save(path)
             else:
                 self.cympy.study.Save()
+        print("Estudio guardado:", path or "(actual)")
         # skip_db_project_save / isolated: NO tocar BD (db.Update/SaveProject cuelgan
         # en MDB grandes ~450MB y estudios multi-red). El .zxst ya quedó guardado.
         # La BD se usa conectada en open_study; Sync explícito = suite/conexion.
@@ -960,10 +1066,89 @@ class CymPyAdapter(object):
             db.Update()
             try:
                 db.SaveProject()
-            except Exception:
-                pass
+                print("Proyecto BD guardado (SaveProject)")
+            except Exception as ex_sp:
+                print("AVISO db.SaveProject:", ex_sp)
         except Exception as ex:
             print("AVISO db.Update/SaveProject: %s" % ex)
+
+    def persist_study_and_database(self, path="", force_db=False):
+        """Guarda estudio (.zxst) y sincroniza BD (Update + SaveProject).
+
+        force_db=True: usa cabecera §1 — debe quedar en MDB para que al abrir
+        CYMDIST/GUI los datos (demanda + Vph) ya estén.
+        """
+        target = path or self._study_path_open or _PROCESS_STUDY_PATH or self.settings.get("study_path") or ""
+        out = {
+            "study_path": target,
+            "study_saved": False,
+            "db_updated": False,
+            "project_saved": False,
+            "database_mdb": self.settings.get("database_mdb") or "",
+        }
+        # 1) Estudio siempre
+        try:
+            from cympy.enums import SaveStudyEquipmentOption
+            if target:
+                self.cympy.study.Save(target, True, True, SaveStudyEquipmentOption.AllEquipments)
+            else:
+                self.cympy.study.Save("", True, True, SaveStudyEquipmentOption.AllEquipments)
+            out["study_saved"] = True
+            print("Estudio persistido:", target or "(actual)")
+        except Exception as ex1:
+            try:
+                if target:
+                    self.cympy.study.Save(target)
+                else:
+                    self.cympy.study.Save()
+                out["study_saved"] = True
+                print("Estudio persistido (Save simple):", target or "(actual)")
+            except Exception as ex2:
+                out["study_error"] = "%s | %s" % (ex1, ex2)
+                print("ERROR Save estudio:", out["study_error"])
+                return out
+
+        # 2) BD / proyecto
+        skip = (
+            (not force_db)
+            and (
+                self.settings.get("skip_db_project_save")
+                or self.settings.get("isolated_work_study")
+            )
+        )
+        if skip:
+            out["db_skipped"] = True
+            print("BD no actualizada (skip_db_project_save / isolated)")
+            return out
+        try:
+            import cympy.db as db
+            db.Update()
+            out["db_updated"] = True
+            print("BD actualizada (db.Update)")
+            try:
+                db.SaveProject()
+                out["project_saved"] = True
+                print("Proyecto BD guardado (SaveProject)")
+            except Exception as ex_sp:
+                out["project_error"] = str(ex_sp)
+                print("AVISO db.SaveProject:", ex_sp)
+        except Exception as ex:
+            out["db_error"] = str(ex)
+            print("AVISO db.Update/SaveProject:", ex)
+        return out
+
+    def _save_before_close(self, path=""):
+        """Persiste estudio abierto (+ proyecto BD) antes de Close / cambio de estudio."""
+        if not self.settings.get("save_after_fix", True):
+            return False
+        target = path or self._study_path_open or _PROCESS_STUDY_PATH or self.settings.get("study_path") or ""
+        try:
+            force_db = bool(self.settings.get("persist_cabecera_to_db"))
+            self.persist_study_and_database(target, force_db=force_db)
+            return True
+        except Exception as ex:
+            print("AVISO Save antes de Close:", ex)
+            return False
 
     def set_node_base_voltage(self, node_id, kv):
         cfg = self.obj_cfg("Node")
@@ -1482,51 +1667,114 @@ class CymPyAdapter(object):
                 )
 
     def connect_database(self, mdb_path=None, connection_name=None):
-        """Conecta la BD Access compartida Electro Dunas (.mdb)."""
-        global _PROCESS_DB_NAME
-        import cympy.db as db
-        name = connection_name or self.settings.get("database_connection_name") or ""
-        if name and _PROCESS_DB_NAME and str(_PROCESS_DB_NAME) == str(name):
-            self._db_connected = True
-            print("BD ya conectada (reuse):", name)
-            return name
-        if name:
-            try:
-                db.ConnectDatabaseByName(str(name))
-                self._db_connected = True
-                _PROCESS_DB_NAME = str(name)
-                print("BD conectada por nombre:", name)
-                return name
-            except Exception as ex:
-                # Si ya estaba conectada, reutilizar
-                if _PROCESS_DB_NAME == str(name) or "conect" in str(ex).lower():
-                    try:
-                        # Confirmar que el estudio/BD responden
-                        self._db_connected = True
-                        _PROCESS_DB_NAME = str(name)
-                        print("BD ya conectada (tras aviso):", name)
-                        return name
-                    except Exception:
-                        pass
-                print("AVISO ConnectDatabaseByName(%s): %s" % (name, ex))
+        """Asegura la BD seleccionada en CYMDIST (por ruta, no por nombre ambiguo).
 
-        path = mdb_path or self.settings.get("database_mdb") or ""
+        Flujo §1:
+          1) Si la .mdb ya está registrada en CYMDIST con la misma ruta → activar
+             esa conexión (ConnectDatabaseByName del nombre real, p.ej. BASE JUL25 1_1).
+          2) Si no está → importar/activar por ruta (MDBDataSource + ConnectDatabase).
+          3) Nunca ConnectDatabaseByName con un nombre que apunte a otra carpeta
+             (p.ej. 'BASE JUL25 1' → anggelo\\… mientras UI eligió 260919\\…).
+        """
+        global _PROCESS_DB_NAME, _PROCESS_DB_PATH
+        import cympy.db as db
+
+        path = (mdb_path or self.settings.get("database_mdb") or "").strip()
         if not path:
             raise RuntimeError("Falta database_mdb en config/settings.json")
         if not os.path.isfile(path):
             raise RuntimeError("No existe la BD: " + path)
+        path_abs = os.path.abspath(path)
+        path_norm = _norm_file_path(path_abs)
+        preferred = (
+            (connection_name or "").strip()
+            or (self.settings.get("database_connection_name") or "").strip()
+            or os.path.splitext(os.path.basename(path_abs))[0]
+        )
 
-        mdb = db.MDBDataSource(path)
+        # Reuse si ya estamos en la misma ruta
+        if _PROCESS_DB_PATH and _PROCESS_DB_PATH == path_norm:
+            try:
+                if db.IsConnected():
+                    cur = db.GetCurrentConnection()
+                    cur_path = _extract_mdb_path(getattr(cur, "Network", None)) or _extract_mdb_path(
+                        getattr(cur, "Equipment", None)
+                    )
+                    if cur_path and _norm_file_path(cur_path) == path_norm:
+                        self._db_connected = True
+                        print("BD ya conectada (reuse ruta):", _PROCESS_DB_NAME or preferred)
+                        return _PROCESS_DB_NAME or preferred
+            except Exception:
+                pass
+
+        # 1) ¿Existe en el catálogo CYMDIST con la misma ruta?
+        found = find_cymdist_connection_for_mdb(path_abs)
+        if found and found.get("name"):
+            cname = found["name"]
+            try:
+                # Si hay otra BD activa distinta, desconectar antes
+                try:
+                    if db.IsConnected():
+                        cur = db.GetCurrentConnection()
+                        cur_path = _extract_mdb_path(getattr(cur, "Network", None))
+                        if cur_path and _norm_file_path(cur_path) != path_norm:
+                            print(
+                                "BD activa distinta (%s) -> DisconnectDatabase antes de %s"
+                                % (_extract_mdb_path(getattr(cur, "Network", None)), cname)
+                            )
+                            db.DisconnectDatabase()
+                except Exception as ex_disc:
+                    print("AVISO DisconnectDatabase:", ex_disc)
+                db.ConnectDatabaseByName(str(cname))
+                self._db_connected = True
+                _PROCESS_DB_NAME = str(cname)
+                _PROCESS_DB_PATH = path_norm
+                self.settings["database_connection_name"] = cname
+                self.settings["database_mdb"] = path_abs
+                print("BD activada (registrada en CYMDIST): %s -> %s" % (cname, path_abs))
+                return cname
+            except Exception as ex:
+                print("AVISO ConnectDatabaseByName(%s) ruta OK pero fallo: %s" % (cname, ex))
+
+        # 2) No registrada (o fallo activar) -> importar/activar por ruta
+        cname = unique_connection_name(preferred, path_abs)
+        try:
+            if db.IsConnected():
+                try:
+                    cur = db.GetCurrentConnection()
+                    cur_path = _extract_mdb_path(getattr(cur, "Network", None))
+                    if cur_path and _norm_file_path(cur_path) != path_norm:
+                        db.DisconnectDatabase()
+                except Exception:
+                    try:
+                        db.DisconnectDatabase()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        mdb = db.MDBDataSource(path_abs)
         ci = db.ConnectionInformation()
-        ci.Name = name or os.path.splitext(os.path.basename(path))[0]
+        ci.Name = cname
         ci.Network = mdb
         ci.Equipment = mdb
         ci.Project = mdb
-        db.Connect(ci)
+        # ConnectDatabase = “importar/activar” para la sesión CymPy
+        try:
+            db.ConnectDatabase(ci)
+        except Exception:
+            # Fallback API genérica Connect
+            db.Connect(ci)
         self._db_connected = True
-        _PROCESS_DB_NAME = str(ci.Name)
-        print("BD conectada:", path)
-        return path
+        _PROCESS_DB_NAME = str(cname)
+        _PROCESS_DB_PATH = path_norm
+        self.settings["database_connection_name"] = cname
+        self.settings["database_mdb"] = path_abs
+        print(
+            "BD importada/activada por ruta (%s): %s"
+            % (cname, path_abs)
+        )
+        return cname
 
     def open_study(self, study_path=None, force_backup=None, connect_db=True):
         global _PROCESS_STUDY_PATH
@@ -1551,28 +1799,57 @@ class CymPyAdapter(object):
 
         path_abs = os.path.normcase(os.path.abspath(path))
 
-        # Reuso en el mismo proceso CymPy (3.3 / §5 consecutivos)
+        # Reuso en el mismo proceso CymPy (3.3 / §5 consecutivos) solo si misma BD+estudio
         if _PROCESS_STUDY_PATH == path_abs:
             try:
                 nets = list(self.cympy.study.ListNetworks())
                 if nets:
-                    self._study_open = True
-                    self._study_path_open = path_abs
+                    same_db = True
                     if connect_db and self.settings.get("database_mdb"):
                         try:
-                            self.connect_database()
+                            import cympy.db as db
+                            if db.IsConnected():
+                                cur = db.GetCurrentConnection()
+                                cur_path = _extract_mdb_path(getattr(cur, "Network", None))
+                                want = _norm_file_path(self.settings.get("database_mdb"))
+                                if cur_path and want and _norm_file_path(cur_path) != want:
+                                    same_db = False
                         except Exception:
                             pass
-                    print("Estudio ya abierto (reuse):", path)
-                    return path
+                    if same_db:
+                        self._study_open = True
+                        self._study_path_open = path_abs
+                        print("Estudio ya abierto (reuse):", path)
+                        return path
             except Exception:
                 _PROCESS_STUDY_PATH = None
+
+        # Cambio de estudio: guardar + cerrar el anterior (no perder cabecera / edits)
+        if _PROCESS_STUDY_PATH and _PROCESS_STUDY_PATH != path_abs:
+            prev = _PROCESS_STUDY_PATH
+            print(
+                "Cambio de estudio: guardar y cerrar %s antes de abrir %s"
+                % (prev, path)
+            )
+            self._save_before_close(prev)
+            try:
+                close_fn = getattr(self.cympy.study, "Close", None)
+                if callable(close_fn):
+                    close_fn()
+            except Exception as ex_cl:
+                print("AVISO Close estudio previo:", ex_cl)
+            _PROCESS_STUDY_PATH = None
+            self._study_open = False
+            self._study_path_open = ""
 
         if connect_db and self.settings.get("database_mdb"):
             try:
                 self.connect_database()
             except Exception as ex:
-                print("AVISO conexión BD (se continúa con study.Open):", ex)
+                raise RuntimeError(
+                    "No se pudo activar la BD seleccionada antes de abrir el estudio: %s"
+                    % ex
+                )
 
         do_backup = self.settings.get("auto_backup", True) if force_backup is None else force_backup
         if do_backup:
@@ -1580,11 +1857,49 @@ class CymPyAdapter(object):
             if b:
                 print("Backup estudio:", b)
 
-        self.cympy.study.Open(path)
+        # Intentar path pedido y alternativas (.zxst de la familia si .xst falla)
+        try:
+            from core.feeder_context import list_study_open_candidates
+            candidates = list_study_open_candidates(path, self.settings)
+        except Exception:
+            candidates = [path]
+        if path not in candidates:
+            candidates = [path] + list(candidates)
+
+        last_err = None
+        opened = None
+        for cand in candidates:
+            try:
+                self.cympy.study.Open(cand)
+                opened = cand
+                if os.path.normcase(os.path.abspath(cand)) != path_abs:
+                    print(
+                        "AVISO: no se abrió '%s'; usando '%s'"
+                        % (path, cand)
+                    )
+                    self.settings["study_path"] = cand
+                    self.settings["study_file"] = os.path.basename(cand)
+                break
+            except Exception as ex:
+                last_err = ex
+                print("AVISO study.Open(%s): %s" % (cand, ex))
+
+        if not opened:
+            tried = ", ".join(os.path.basename(c) for c in candidates) or os.path.basename(path)
+            raise RuntimeError(
+                "No pudo abrir el estudio '%s' (probados: %s)%s"
+                % (
+                    path,
+                    tried,
+                    (". %s" % last_err) if last_err else "",
+                )
+            )
+
+        path_abs = os.path.normcase(os.path.abspath(opened))
         self._study_open = True
         self._study_path_open = path_abs
         _PROCESS_STUDY_PATH = path_abs
-        print("Estudio abierto:", path)
+        print("Estudio abierto:", opened)
 
         net = self.settings.get("network_id")
         try:
@@ -1626,17 +1941,17 @@ class CymPyAdapter(object):
         net = network_id or self.settings.get("network_id")
         return self.cympy.study.QueryInfoTopo(str(keyword), str(net), int(precision))
 
-    def close_study(self, save=False):
-        """Cierra el estudio si la API lo permite (evita crash al destruir CymPy)."""
+    def close_study(self, save=True):
+        """Cierra el estudio. Por defecto guarda estudio + proyecto BD antes de Close.
+
+        Pasar save=False solo en lecturas / estudios temporales (isolated_work_study).
+        """
         global _PROCESS_STUDY_PATH
         if not self._study_open and not _PROCESS_STUDY_PATH:
             return
         try:
-            if save and self.settings.get("save_after_fix", True):
-                try:
-                    self.save_study()
-                except Exception as ex:
-                    print("AVISO Save antes de Close:", ex)
+            if save:
+                self._save_before_close()
             close_fn = getattr(self.cympy.study, "Close", None)
             if callable(close_fn):
                 close_fn()
@@ -1646,8 +1961,8 @@ class CymPyAdapter(object):
         except Exception as ex:
             print("AVISO close_study:", ex)
 
-    def shutdown(self, save=False, ok=True, code=0):
-        """Cierre controlado + os._exit para evitar ACCESS_VIOLATION de CymPy al teardown."""
+    def shutdown(self, save=True, ok=True, code=0):
+        """Cierre controlado: guarda estudio/proyecto y sale (evita AV de CymPy al teardown)."""
         import os as _os
         try:
             self.close_study(save=save)

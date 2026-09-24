@@ -15,6 +15,7 @@ Rutas Electro Dunas:
 import os
 import sys
 import copy
+import re
 from core.common import load_json, save_json, p, mkdir
 
 # Estudio .zxst vacío o corrupto (p.ej. 0 bytes) no es usable por CYMDIST.
@@ -31,6 +32,111 @@ def is_usable_study_file(path, min_bytes=None):
         return False
     need = _MIN_STUDY_BYTES if min_bytes is None else int(min_bytes)
     return sz >= need
+
+
+def feeder_family_code(fid):
+    """PA217V2 / PA217_ALT → PA217."""
+    u = str(fid or "").strip().upper()
+    if not u:
+        return ""
+    m = re.match(r"^([A-Z]{1,3}\d{2,4})", u)
+    return m.group(1) if m else u
+
+
+def list_study_open_candidates(path, settings=None):
+    """Candidatos para study.Open: path pedido y .zxst de la misma familia.
+
+    CYMDIST/CymPy a menudo no abre .xst legacy; se prueba .zxst hermano.
+    """
+    settings = settings or {}
+    projects = (
+        (settings.get("projects_dir") or "").strip()
+        or (os.path.dirname(path) if path else "")
+    )
+    out = []
+    seen = set()
+
+    def _add(p):
+        if not p:
+            return
+        try:
+            ap = os.path.normcase(os.path.abspath(p))
+        except Exception:
+            ap = p
+        if ap in seen:
+            return
+        if is_usable_study_file(p):
+            seen.add(ap)
+            out.append(os.path.abspath(p))
+
+    _add(path)
+    if not path:
+        return out
+    stem = os.path.splitext(os.path.basename(path))[0]
+    fam = feeder_family_code(stem) or stem
+    names = []
+    for st in (stem, fam):
+        if not st:
+            continue
+        for ext in (".zxst", ".sxst", ".zsxst", ".xst"):
+            names.append(st + ext)
+    for name in names:
+        if projects:
+            _add(os.path.join(projects, name))
+        parent = os.path.dirname(path)
+        if parent:
+            _add(os.path.join(parent, name))
+    return out
+
+
+def resolve_writable_study_path(path, settings=None, prefer_exact=True):
+    """Estudio a abrir/guardar: preferir el archivo exacto elegido en la UI.
+
+    Si el usuario seleccionó PA217v2.xst y existe, se usa ese (no redirigir en
+    silencio a PA217.zxst). Solo si el path no es usable se prueba .zxst hermano.
+    CymPy Open puede fallar con .xst: open_study usa list_study_open_candidates.
+    """
+    if prefer_exact and is_usable_study_file(path):
+        try:
+            return os.path.abspath(path)
+        except Exception:
+            return path
+    cands = list_study_open_candidates(path, settings=settings)
+    if not cands:
+        return path
+    # Preferir .zxst de la familia solo como fallback
+    for c in cands:
+        if c.lower().endswith(".zxst"):
+            return c
+    for c in cands:
+        if c.lower().endswith((".sxst", ".zsxst")):
+            return c
+    return cands[0]
+
+
+def resolve_com_engine_study_path(path, settings=None):
+    """Estudio para motor COM (LoadAllocation / GetFeederDemand / SetKW).
+
+    En Cyme 9.2 los .xst/.zsxst legacy suelen devolver GetFeederDemand=None
+    (luego SetKW explota). El .zxst de la misma familia sí expone la demanda.
+    Conservar ui_study_path aparte; este path es solo para el motor.
+    """
+    settings = settings or {}
+    cands = list_study_open_candidates(path, settings=settings)
+    if not cands and path and is_usable_study_file(path):
+        try:
+            return os.path.abspath(path)
+        except Exception:
+            return path
+    for c in cands:
+        if str(c).lower().endswith(".zxst"):
+            return c
+    for c in cands:
+        if str(c).lower().endswith((".sxst", ".zsxst")):
+            return c
+    if cands:
+        return cands[0]
+    return path
 
 
 def resolve_eld_study_path(settings=None):
@@ -66,10 +172,14 @@ def list_feeders():
             out.append(name[:-5])
     return out
 
-def list_study_files(settings=None):
-    """Lista estudios (.zxst/.sxst/.zsxst) en projects_dir.
+def list_study_files(settings=None, all_files=False):
+    """Lista estudios en projects_dir / studies_root.
 
-    Un archivo por alimentador (stem): prioriza .zxst > .sxst > .zsxst.
+    Extensiones: .zxst, .sxst, .zsxst, .xst (CYMDIST legacy).
+
+    all_files=False (default): un archivo por stem (alimentador), prioriza
+      .zxst > .sxst > .zsxst > .xst  (para enlazar feeder→estudio).
+    all_files=True: todos los archivos usables (para el desplegable §1).
     """
     if settings is None:
         settings = load_json("config/settings.json")
@@ -78,8 +188,28 @@ def list_study_files(settings=None):
         d = (settings.get(key) or "").strip()
         if d and os.path.isdir(d) and d not in dirs:
             dirs.append(d)
+    # Preferir projects_dir; studies_root a veces es el padre y no debe
+    # listar .mdb como estudio. Solo escanear projects_dir si existe.
+    if settings.get("projects_dir") and os.path.isdir(settings.get("projects_dir")):
+        dirs = [settings.get("projects_dir").strip()]
+        # studies_root solo si es distinto y es carpeta de proyectos
+        sr = (settings.get("studies_root") or "").strip()
+        pd = settings.get("projects_dir").strip()
+        if sr and sr != pd and os.path.isdir(sr):
+            # No añadir studies_root si es el padre de proyectos (contaminación)
+            try:
+                if os.path.normcase(os.path.abspath(sr)) != os.path.normcase(
+                    os.path.abspath(os.path.dirname(pd))
+                ):
+                    dirs.append(sr)
+            except Exception:
+                pass
+
+    rank = {".zxst": 0, ".sxst": 1, ".zsxst": 2, ".xst": 3}
+    exts = (".zxst", ".sxst", ".zsxst", ".xst")
     by_stem = {}
-    rank = {".zxst": 0, ".sxst": 1, ".zsxst": 2}
+    all_items = []
+    seen_paths = set()
     for root in dirs:
         try:
             names = os.listdir(root)
@@ -88,17 +218,23 @@ def list_study_files(settings=None):
         for name in names:
             low = name.lower()
             ext = None
-            for e in (".zxst", ".sxst", ".zsxst"):
+            for e in exts:
                 if low.endswith(e):
                     ext = e
                     break
             if not ext:
                 continue
             full = os.path.join(root, name)
+            try:
+                key_path = os.path.normcase(os.path.abspath(full))
+            except Exception:
+                key_path = full
+            if key_path in seen_paths:
+                continue
             if not is_usable_study_file(full):
                 continue
+            seen_paths.add(key_path)
             stem = name[: -len(ext)]
-            key = stem.upper()
             item = {
                 "name": name,
                 "path": full,
@@ -107,9 +243,14 @@ def list_study_files(settings=None):
                 "ext": ext,
                 "size": os.path.getsize(full),
             }
+            all_items.append(item)
+            key = stem.upper()
             prev = by_stem.get(key)
             if prev is None or rank.get(ext, 9) < rank.get(prev.get("ext"), 9):
                 by_stem[key] = item
+    if all_files:
+        all_items.sort(key=lambda x: str(x.get("name") or "").upper())
+        return all_items
     out = [by_stem[k] for k in sorted(by_stem.keys())]
     return out
 
@@ -142,22 +283,44 @@ def lookup_bd_network_id(feeder_id, settings=None):
     return ""
 
 
-def list_bd_feeder_catalog(settings=None):
-    """Catálogo de alimentadores de la BD (96) + estudio local si existe."""
+def list_bd_feeder_catalog(settings=None, networks=None, include_orphan_studies=True):
+    """Catálogo de alimentadores de la BD + estudio local si existe.
+
+    networks: lista opcional [{network_id, feeder_id, ...}] ya resuelta para
+    una BD concreta (p.ej. tras refresh). Si None, lee bd_networks*.json.
+    include_orphan_studies: si True, añade .zxst locales sin red en la BD.
+    """
     settings = settings or load_json("config/settings.json")
     studies = {str(s.get("feeder_id") or "").upper(): s for s in list_study_files(settings)}
-    path = p("data", "output", "system", "bd_networks.json")
-    networks = []
-    if os.path.isfile(path):
+    if networks is None:
+        path = None
+        conn = (
+            settings.get("database_connection_name")
+            or (
+                os.path.splitext(os.path.basename(settings.get("database_mdb") or ""))[0]
+                if settings.get("database_mdb")
+                else ""
+            )
+        )
+        # Preferir catálogo de esa BD
         try:
-            import json as _json
-            with open(path, "r", encoding="utf-8") as f:
-                networks = (_json.load(f) or {}).get("networks") or []
+            from pipeline.model_quality_gate import _load_networks_disk
+            disk_items, _disk_conn = _load_networks_disk(conn)
+            networks = disk_items or []
         except Exception:
             networks = []
+        if not networks:
+            path = p("data", "output", "system", "bd_networks.json")
+            if os.path.isfile(path):
+                try:
+                    import json as _json
+                    with open(path, "r", encoding="utf-8") as f:
+                        networks = (_json.load(f) or {}).get("networks") or []
+                except Exception:
+                    networks = []
     out = []
     seen = set()
-    for it in networks:
+    for it in networks or []:
         fid = str(it.get("feeder_id") or "").strip()
         nid = str(it.get("network_id") or "").strip()
         if not fid or fid.upper() in seen:
@@ -171,21 +334,32 @@ def list_bd_feeder_catalog(settings=None):
             "study_path": (st or {}).get("path") or "",
             "study_file": (st or {}).get("name") or "",
             "has_config": os.path.isfile(feeder_config_path(fid)),
-            "label": "%s · %s" % (fid, nid),
+            "label": "%s · %s" % (fid, nid) if nid else fid,
         })
     # Estudios locales sin entrada en BD aún
-    for key, st in studies.items():
-        if key in seen or key == "ELD":
-            continue
-        out.append({
-            "feeder_id": st.get("feeder_id") or key,
-            "network_id": lookup_bd_network_id(key, settings) or "",
-            "has_study": True,
-            "study_path": st.get("path") or "",
-            "study_file": st.get("name") or "",
-            "has_config": os.path.isfile(feeder_config_path(key)),
-            "label": "%s · (solo estudio)" % key,
-        })
+    if include_orphan_studies:
+        for key, st in studies.items():
+            if key in seen or key == "ELD":
+                continue
+            nid = lookup_bd_network_id(key, settings) or ""
+            # Si la familia ya tiene red BD (PA217), no duplicar como PA217V2 huérfano
+            fam = key
+            m = re.match(r"^([A-Z]{1,3}\d{2,4})", key)
+            if m:
+                fam = m.group(1)
+            if fam in seen and fam != key:
+                # Variante de estudio: no añadir alimentador fantasma; el estudio
+                # sigue listado en studies y se vincula a la red BD de la familia.
+                continue
+            out.append({
+                "feeder_id": st.get("feeder_id") or key,
+                "network_id": nid,
+                "has_study": True,
+                "study_path": st.get("path") or "",
+                "study_file": st.get("name") or "",
+                "has_config": os.path.isfile(feeder_config_path(key)),
+                "label": ("%s · %s" % (key, nid)) if nid else key,
+            })
     out.sort(key=lambda x: str(x.get("feeder_id") or ""))
     return out
 
@@ -243,8 +417,25 @@ def apply_context_selection(database_mdb=None, study_path=None, feeder_id=None, 
             raise RuntimeError("Base de datos no encontrada: %s" % mdb)
         global_s["database_mdb"] = mdb
         global_s["database_dir"] = os.path.dirname(mdb)
-        global_s["database_connection_name"] = os.path.splitext(os.path.basename(mdb))[0]
+        preferred = os.path.splitext(os.path.basename(mdb))[0]
+        # Resolver nombre real en CYMDIST por ruta (evitar homónimos en otra carpeta)
+        conn_name = preferred
+        try:
+            from core.cympy_adapter import (
+                find_cymdist_connection_for_mdb,
+                unique_connection_name,
+            )
+            found = find_cymdist_connection_for_mdb(mdb)
+            if found and found.get("name"):
+                conn_name = found["name"]
+            else:
+                conn_name = unique_connection_name(preferred, mdb)
+        except Exception:
+            conn_name = preferred
+        global_s["database_connection_name"] = conn_name
         changed.append("database_mdb")
+        if conn_name != preferred:
+            changed.append("database_connection:%s" % conn_name)
 
     if study_path:
         sp = str(study_path).strip()
@@ -256,14 +447,30 @@ def apply_context_selection(database_mdb=None, study_path=None, feeder_id=None, 
                 "Use ELD.zxst + alimentador de BD, o un .zxst propio válido."
                 % sp
             )
+        # Conservar elección UI; estudio de escritura = el mismo archivo si es usable
         global_s["ui_study_path"] = sp
         global_s["ui_study_file"] = os.path.basename(sp)
+        sp_write = resolve_writable_study_path(sp, global_s)  # exacto si existe
         stem = os.path.splitext(os.path.basename(sp))[0]
-        # El alimentador lo define el estudio (IN112.zxst → IN112), no un default fijo.
+        explicit = (feeder_id or "").strip() or None
+        # Alimentador: si UI envió red BD de la misma familia, conservarla
+        # (PA217v2.xst + feeder PA217 → active_feeder=PA217, no PA217v2)
         if stem and stem.upper() != "ELD":
-            resolved_feeder = stem
-            global_s["active_feeder"] = stem
-            changed.append("active_feeder:%s" % stem)
+            if explicit and (
+                explicit.upper() == stem.upper()
+                or feeder_family_code(explicit) == feeder_family_code(stem)
+            ):
+                resolved_feeder = explicit
+            else:
+                # Preferir red BD de la familia si existe en catálogo
+                fam = feeder_family_code(stem)
+                nid_fam = lookup_bd_network_id(fam, global_s) if fam else ""
+                if nid_fam and fam:
+                    resolved_feeder = fam
+                else:
+                    resolved_feeder = stem
+            global_s["active_feeder"] = resolved_feeder
+            changed.append("active_feeder:%s" % resolved_feeder)
         elif stem.upper() == "ELD":
             global_s["eld_study_path"] = sp
             changed.append("eld_study_path")
@@ -272,7 +479,6 @@ def apply_context_selection(database_mdb=None, study_path=None, feeder_id=None, 
 
         fid = (resolved_feeder or global_s.get("active_feeder") or stem or "").strip()
         if fid and fid.upper() != "ELD":
-            # Crear/actualizar config del alimentador con este estudio
             nid = lookup_bd_network_id(fid, global_s)
             if os.path.isfile(feeder_config_path(fid)):
                 fc = load_feeder_config(fid)
@@ -280,8 +486,17 @@ def apply_context_selection(database_mdb=None, study_path=None, feeder_id=None, 
                 fc = synthesize_feeder_config(
                     fid, network_id=nid or None, persist=False, global_s=global_s
                 )
-            fc["study_file"] = os.path.basename(sp)
-            fc["study_path"] = sp
+            # Escritura CYMDIST: path usable (.zxst si .xst no abre)
+            fc["study_file"] = os.path.basename(sp_write)
+            fc["study_path"] = sp_write
+            fc["ui_study_path"] = sp
+            fc["ui_study_file"] = os.path.basename(sp)
+            if sp_write != sp:
+                fc["study_open_fallback"] = True
+                changed.append(
+                    "study_fallback:%s->%s"
+                    % (os.path.basename(sp), os.path.basename(sp_write))
+                )
             if nid:
                 fc["network_id"] = nid
             if persist:
@@ -351,8 +566,12 @@ def apply_context_selection(database_mdb=None, study_path=None, feeder_id=None, 
         "changed": changed,
         "database_mdb": global_s.get("database_mdb"),
         "database_connection_name": global_s.get("database_connection_name"),
+        # study_path = archivo que CYMDIST abre (.zxst); ui_study_path = elección UI
         "study_path": effective.get("study_path") or global_s.get("ui_study_path"),
-        "study_file": global_s.get("ui_study_file") or os.path.basename(effective.get("study_path") or ""),
+        "ui_study_path": global_s.get("ui_study_path") or effective.get("study_path"),
+        "study_file": global_s.get("ui_study_file") or os.path.basename(
+            global_s.get("ui_study_path") or effective.get("study_path") or ""
+        ),
         "active_feeder": fid_out or global_s.get("active_feeder"),
         "feeder_id": effective.get("feeder_id") or fid_out,
         "network_id": effective.get("network_id"),
@@ -489,51 +708,94 @@ def resolve_study_path(merged, feeder):
 
 
 def resolve_cymdist_binding(settings):
-    """Enlace obligatorio por alimentador: su estudio .zxst + BD compartida (20260919).
+    """Enlace obligatorio: estudio usable + BD por ruta (importar/activar en CYMDIST).
 
-    Universal: no hardcodea PA217. Usa settings del alimentador activo (§1):
+    Universal: no hardcodea un alimentador. Usa settings del §1:
       - feeder_id / network_id
-      - study_path  → estudio propio (p.ej. PA217.zxst) o ELD.zxst + network_id
-      - database_mdb / database_connection_name → siempre la BD del proyecto
+      - study_path / ui_study_path → .zxst usable (fallback familia)
+      - database_mdb → conexión CYMDIST por ruta exacta (no homónimo en otra carpeta)
 
     Retorna dict listo para logs/jobs; lanza RuntimeError si falta estudio o BD.
     """
     s = settings or {}
     fid = str(s.get("feeder_id") or "").strip()
     nid = str(s.get("network_id") or "").strip()
-    study = str(s.get("study_path") or "").strip()
+    ui_study = str(s.get("ui_study_path") or "").strip()
+    study = str(s.get("study_path") or ui_study or "").strip()
     mdb = str(s.get("database_mdb") or "").strip()
     conn = str(s.get("database_connection_name") or "").strip()
+
+    if study:
+        try:
+            # Si hay ui_study_path distinto y usable, ese es el que el usuario ve
+            if ui_study and is_usable_study_file(ui_study):
+                study = os.path.abspath(ui_study)
+            else:
+                study = resolve_writable_study_path(study, s) or study
+        except Exception:
+            pass
     if not study:
         raise RuntimeError(
             "Falta study_path para alimentador %s. Elija estudio en §1." % (fid or "?")
         )
     if not is_usable_study_file(study):
-        raise RuntimeError(
-            "Estudio inválido/vacío para alimentador %s: %s. "
-            "Use ELD.zxst (96 redes) o un .zxst propio con contenido."
-            % (fid or "?", study)
-        )
+        # Fallback familia (.zxst) si el elegido no abre
+        alt = resolve_writable_study_path(study, s, prefer_exact=False)
+        if alt and is_usable_study_file(alt):
+            study = alt
+        else:
+            raise RuntimeError(
+                "Estudio inválido/vacío para alimentador %s: %s. "
+                "Use ELD.zxst (96 redes) o un .zxst/.xst propio con contenido."
+                % (fid or "?", study)
+            )
     if not mdb:
         raise RuntimeError(
-            "Falta database_mdb en config/settings.json (BD compartida, p.ej. 20260919)."
+            "Falta database_mdb. Elija la base .mdb en §1 y pulse 1.1 Aplicar."
         )
     if not os.path.isfile(mdb):
-        raise RuntimeError("No existe la BD del proyecto: %s" % mdb)
-    if not conn:
-        conn = os.path.splitext(os.path.basename(mdb))[0]
+        raise RuntimeError("No existe la BD seleccionada: %s" % mdb)
+
+    # Nombre real en CYMDIST por ruta (evitar 'BASE JUL25 1' → otra carpeta)
+    try:
+        from core.cympy_adapter import (
+            find_cymdist_connection_for_mdb,
+            unique_connection_name,
+        )
+        found = find_cymdist_connection_for_mdb(mdb)
+        if found and found.get("name"):
+            conn = found["name"]
+        else:
+            preferred = conn or os.path.splitext(os.path.basename(mdb))[0]
+            conn = unique_connection_name(preferred, mdb)
+    except Exception:
+        if not conn:
+            conn = os.path.splitext(os.path.basename(mdb))[0]
+
+    open_name = os.path.basename(study)
+    ui_name = os.path.basename(ui_study or study)
+    bind_label = "%s · estudio=%s · BD=%s(%s)" % (
+        fid or "?",
+        open_name,
+        conn,
+        os.path.basename(mdb),
+    )
+    if ui_study and os.path.normcase(os.path.abspath(ui_study)) != os.path.normcase(
+        os.path.abspath(study)
+    ):
+        bind_label += " · UI=%s" % ui_name
+
     return {
         "ok": True,
         "feeder_id": fid,
         "network_id": nid,
         "study_path": study,
-        "study_file": os.path.basename(study),
+        "ui_study_path": ui_study or study,
+        "study_file": open_name,
         "database_mdb": mdb,
         "database_file": os.path.basename(mdb),
         "database_connection_name": conn,
-        "binding": "%s · estudio=%s · BD=%s(%s)" % (
-            fid or "?", os.path.basename(study), conn, os.path.basename(mdb),
-        ),
+        "binding": bind_label,
     }
 
 

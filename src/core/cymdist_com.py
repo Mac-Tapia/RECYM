@@ -289,46 +289,534 @@ def cyme_is_running():
         return False
 
 
-def open_cymdist_gui(settings, kill_existing=True, reason="session"):
+def _resolve_com_paths(settings):
+    """Rutas BD + estudio motor COM (§1).
+
+    UI puede elegir .xst/.zsxst; el motor COM (GetFeederDemand/SetKW) requiere
+    .zxst de la familia o falla con NoneType.SetKW.
     """
-    Abre CYMDIST visible con el mismo .zxst (API COM real).
-    Desde «Cargar EA/Pot» en adelante la sesion queda abierta para §§2–5.
+    mdb = (settings.get("database_mdb") or "").strip()
+    ui = (settings.get("ui_study_path") or settings.get("study_path") or "").strip()
+    study_hint = ui or (settings.get("study_path") or "").strip()
+    study = study_hint
+    try:
+        from core.feeder_context import resolve_com_engine_study_path
+        engine = resolve_com_engine_study_path(study_hint, settings)
+        if engine and os.path.isfile(engine):
+            study = engine
+    except Exception as ex:
+        print("AVISO resolve_com_engine_study_path:", ex)
+    return mdb, study
+
+
+def acquire_cymdist_app(settings, show_window=True, kill_existing=False):
     """
-    _ensure_comtypes(settings.get("cyme_root"))
+    Obtiene Cymdist.Application ligado al Cyme de la GUI.
+
+    En esta instalacion GetActiveObject falla, pero CreateObject reutiliza el
+    mismo Cyme.exe ya abierto (mismo PID). Matar Cyme rompe la sesion visible
+    del usuario: por defecto NO se mata.
+    """
+    _ensure_comtypes(settings.get("cyme_root") if settings else None)
     import comtypes.client
     import time
-
-    mdb = settings.get("database_mdb") or ""
-    study = settings.get("study_path") or ""
-    if not mdb or not os.path.isfile(mdb):
-        return {"ok": False, "error": "database_mdb no existe: %s" % mdb, "engine": "COM"}
-    if not study or not os.path.isfile(study):
-        return {"ok": False, "error": "study_path no existe: %s" % study, "engine": "COM"}
 
     if kill_existing:
         _kill_cyme()
         time.sleep(0.8)
 
     app = None
+    mode = "create"
     try:
+        app = comtypes.client.GetActiveObject("Cymdist.Application")
+        mode = "attach_active"
+    except Exception:
         app = comtypes.client.CreateObject("Cymdist.Application")
+        mode = "create_or_reuse"
+
+    if show_window and app is not None:
         try:
             app.ShowWindow(1)
         except Exception:
             pass
-        app.SelectUniqueDatabaseAccess(mdb, 0, _access_version())
-        study_obj = app.OpenStudy(study)
-        # No forzar Save inmediato tras OpenStudy: tras escrituras CymPy puede
-        # disparar Access Violation 0xc0000005 en Cyme 9.2.
+    return app, mode
+
+
+def _norm_mdb_path(path):
+    if not path:
+        return ""
+    try:
+        return os.path.normcase(os.path.abspath(str(path).strip()))
+    except Exception:
+        return str(path).strip()
+
+
+def ensure_database_in_cymdist(settings):
+    """
+    Asegura que la .mdb del §1 exista en el catálogo CYMDIST y quede lista.
+
+    - Si ya hay conexión con la misma ruta → no crear; devolver su nombre real
+      (p.ej. BASE JUL25 1_1).
+    - Si no está → importar/crear conexión (nombre único) y vincular Network/
+      Equipment/Project a esa .mdb.
+
+    No abre estudio; eso lo hace sync_cymdist_binding / open_cymdist_gui.
+    """
+    mdb = (settings.get("database_mdb") or "").strip()
+    if not mdb or not os.path.isfile(mdb):
+        raise RuntimeError("database_mdb no existe: %s" % mdb)
+    path_abs = os.path.abspath(mdb)
+    preferred = (
+        (settings.get("database_connection_name") or "").strip()
+        or os.path.splitext(os.path.basename(path_abs))[0]
+        or "RECYM"
+    )
+
+    # 1) ¿Ya registrada por ruta exacta?
+    try:
+        from core.cympy_adapter import (
+            find_cymdist_connection_for_mdb,
+            unique_connection_name,
+        )
+    except Exception as ex:
+        return {
+            "ok": True,
+            "existed": None,
+            "created": False,
+            "activated_via": "com_path_only",
+            "database_mdb": path_abs,
+            "connection_name": preferred,
+            "warning": "Sin catálogo CymPy (%s); se activará por ruta COM" % ex,
+        }
+
+    found = find_cymdist_connection_for_mdb(path_abs)
+    if found and found.get("name"):
+        cname = str(found["name"])
+        if settings is not None:
+            settings["database_connection_name"] = cname
+            settings["database_mdb"] = path_abs
+        return {
+            "ok": True,
+            "existed": True,
+            "created": False,
+            "database_mdb": path_abs,
+            "connection_name": cname,
+            "path": found.get("path") or path_abs,
+            "action": "use_existing",
+            "msg": "BD ya en CYMDIST: %s -> %s" % (cname, path_abs),
+        }
+
+    # 2) No está → crear/importar conexión nombrada y vincular a la .mdb
+    cname = unique_connection_name(preferred, path_abs)
+    try:
+        import cympy.db as db
+
+        try:
+            if db.IsConnected():
+                try:
+                    cur = db.GetCurrentConnection()
+                    cur_path = ""
+                    try:
+                        from core.cympy_adapter import _extract_mdb_path
+                        cur_path = _extract_mdb_path(getattr(cur, "Network", None))
+                    except Exception:
+                        cur_path = ""
+                    if cur_path and _norm_mdb_path(cur_path) != _norm_mdb_path(path_abs):
+                        db.DisconnectDatabase()
+                except Exception:
+                    try:
+                        db.DisconnectDatabase()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        mdb_src = db.MDBDataSource(path_abs)
+        ci = db.ConnectionInformation()
+        ci.Name = cname
+        ci.Network = mdb_src
+        ci.Equipment = mdb_src
+        ci.Project = mdb_src
+        try:
+            db.ConnectDatabase(ci)
+        except Exception:
+            db.Connect(ci)
+
+        if settings is not None:
+            settings["database_connection_name"] = cname
+            settings["database_mdb"] = path_abs
+
+        # Verificar que quedó en catálogo
+        found2 = find_cymdist_connection_for_mdb(path_abs)
+        real_name = (found2 or {}).get("name") or cname
+        return {
+            "ok": True,
+            "existed": False,
+            "created": True,
+            "database_mdb": path_abs,
+            "connection_name": real_name,
+            "path": path_abs,
+            "action": "created_and_linked",
+            "msg": "BD creada en CYMDIST: %s -> %s" % (real_name, path_abs),
+        }
+    except Exception as ex:
+        # Fallback: COM puede trabajar por ruta aunque el catálogo no se actualice
+        return {
+            "ok": True,
+            "existed": False,
+            "created": False,
+            "database_mdb": path_abs,
+            "connection_name": preferred,
+            "action": "com_path_fallback",
+            "warning": "No se pudo registrar BD en catálogo: %s" % ex,
+            "msg": "Activación por ruta COM (sin registro nombrado): %s" % path_abs,
+        }
+
+
+def activate_database_com(app, mdb_path, access_version=None):
+    """Activa la .mdb en la sesión COM (GUI). Prefiere Unique por ruta."""
+    ver = access_version if access_version is not None else _access_version()
+    path = os.path.abspath(mdb_path)
+    errors = []
+    # 1) Unique por ruta (activa o crea acceso único a esa .mdb)
+    try:
+        ret = app.SelectUniqueDatabaseAccess(path, 0, ver)
+        return {"ok": True, "method": "SelectUniqueDatabaseAccess", "ret": ret, "path": path}
+    except Exception as ex:
+        errors.append("SelectUniqueDatabaseAccess: %s" % ex)
+    # 2) Access con Network=Equipment=path
+    try:
+        ret = app.SelectDatabaseAccess(path, path, ver)
+        return {"ok": True, "method": "SelectDatabaseAccess", "ret": ret, "path": path}
+    except Exception as ex:
+        errors.append("SelectDatabaseAccess: %s" % ex)
+    raise RuntimeError("No se pudo activar BD en CYMDIST: " + " | ".join(errors))
+
+
+def _save_current_study_com(app=None):
+    """Guarda el estudio activo en Cyme para evitar diálogos al cambiar BD/estudio."""
+    import comtypes.client
+    try:
+        st = comtypes.client.CreateObject("Cymdist.Study")
+        st.Save()
+        return True
+    except Exception as ex:
+        print("AVISO Save estudio activo antes de sync:", ex)
+        return False
+
+
+def sync_cymdist_binding(app, settings, save_before=True, register_db=True):
+    """
+    Fuerza en Cyme la misma BD + estudio del numeral 1.
+
+    Flujo:
+      0) Guardar estudio activo (evita modal * sin guardar al cambiar).
+         Omitir si Cyme acaba de arrancar (Save sin estudio → AV 0xc0000005).
+      1) Si la BD no está en el catálogo CYMDIST → crearla/vincularla
+         (omitible: register_db=False evita CymPy+COM a la vez).
+      2) Activar BD por ruta COM.
+      3) Abrir el estudio motor (.zxst de la familia).
+    """
+    mdb, study = _resolve_com_paths(settings or {})
+    if not mdb or not os.path.isfile(mdb):
+        raise RuntimeError("database_mdb no existe: %s" % mdb)
+    if not study or not os.path.isfile(study):
+        raise RuntimeError("study_path no existe: %s" % study)
+
+    saved_before = False
+    if save_before:
+        # Solo si ya hay Cyme con estudio; Save en Cyme recien creado provoca AV
+        saved_before = _save_current_study_com(app)
+
+    db_info = {"connection_name": (settings or {}).get("database_connection_name"),
+               "database_mdb": mdb, "existed": True, "created": False,
+               "action": "skipped_register", "msg": "BD por ruta COM"}
+    if register_db:
+        try:
+            db_info = ensure_database_in_cymdist(settings or {})
+        except Exception as ex_reg:
+            print("AVISO ensure_database (sigo por ruta COM):", ex_reg)
+            db_info["warning"] = str(ex_reg)
+
+    conn_name = db_info.get("connection_name") or (settings or {}).get("database_connection_name")
+    if settings is not None and conn_name:
+        settings["database_connection_name"] = conn_name
+        settings["database_mdb"] = db_info.get("database_mdb") or mdb
+
+    act = activate_database_com(app, db_info.get("database_mdb") or mdb)
+    study_obj = app.OpenStudy(study)
+
+    if db_info.get("created"):
+        db_action = "created_and_linked"
+    elif db_info.get("existed"):
+        db_action = "activated_existing"
+    else:
+        db_action = db_info.get("action") or "activated_by_path"
+
+    return {
+        "database_mdb": db_info.get("database_mdb") or mdb,
+        "study_path": study,
+        "study_obj": study_obj,
+        "database_connection_name": conn_name,
+        "network_id": (settings or {}).get("network_id"),
+        "db_existed": db_info.get("existed"),
+        "db_created": bool(db_info.get("created")),
+        "db_action": db_action,
+        "db_activate_method": act.get("method"),
+        "db_msg": db_info.get("msg"),
+        "db_warning": db_info.get("warning"),
+        "saved_before_switch": saved_before,
+    }
+
+
+def set_feeder_demand_phases(la, network_id, p_kw, q_kvar, lib=None, app=None):
+    """
+    Escribe demanda de red = Propiedades > Demanda (casilleros P/Q).
+
+    En Cyme 9.2 la GUI muestra la suma de fases A/B/C. SetKW(Total) «acepta»
+    pero NO actualiza esos casilleros; hay que setear fases (y Total).
+
+    Si GetFeederDemand es None (tipico en .xst/.zsxst), intenta LoadFeeder y
+    falla con mensaje accionable — nunca SetKW sobre None.
+    """
+    if lib is None:
+        import comtypes.gen.CYMDISTLib as lib
+
+    net = str(network_id or "").strip()
+    if not net:
+        raise RuntimeError("Falta network_id para SetFeederDemand")
+    p_kw = float(p_kw)
+    q_kvar = float(q_kvar or 0.0)
+
+    dem = None
+    get_err = None
+    try:
+        dem = la.GetFeederDemand(net, "")
+    except Exception as ex:
+        get_err = ex
+        dem = None
+
+    if dem is None:
+        # Asegurar red cargada en el estudio activo
+        try:
+            import comtypes.client
+            st = comtypes.client.CreateObject("Cymdist.Study")
+            try:
+                st.LoadFeederFromID(net)
+            except Exception:
+                try:
+                    st.LoadNetworkFromID(net, 0)
+                except Exception:
+                    pass
+            dem = la.GetFeederDemand(net, "")
+        except Exception as ex2:
+            get_err = get_err or ex2
+
+    if dem is None:
+        raise RuntimeError(
+            "GetFeederDemand=None para red %s (estudio sin demanda COM). "
+            "Use el .zxst de la familia del alimentador (no .xst/.zsxst). "
+            "Detalle: %s" % (net, get_err or "sin objeto ILoadValue")
+        )
+
+    pa = p_kw / 3.0
+    qa = q_kvar / 3.0
+    for phase in (
+        lib.CymPhase.cymPhaseA,
+        lib.CymPhase.cymPhaseB,
+        lib.CymPhase.cymPhaseC,
+    ):
+        dem.SetKW(int(phase), pa)
+        dem.SetKVAR(int(phase), qa)
+    try:
+        dem.SetKW(int(lib.cymTotal), p_kw)
+        dem.SetKVAR(int(lib.cymTotal), q_kvar)
+    except Exception:
+        pass
+    la.SetFeederDemand(net, "", dem, 0)
+    # Verificar lectura inmediata
+    dem2 = la.GetFeederDemand(net, "")
+    phases = []
+    for phase in (
+        lib.CymPhase.cymPhaseA,
+        lib.CymPhase.cymPhaseB,
+        lib.CymPhase.cymPhaseC,
+    ):
+        try:
+            phases.append(float(dem2.GetKW(int(phase))) if dem2 is not None else None)
+        except Exception:
+            phases.append(None)
+    return {
+        "P_kW": p_kw,
+        "Q_kvar": q_kvar,
+        "P_phase_kW": phases,
+        "P_sum_kW": sum(x for x in phases if isinstance(x, float)),
+        "mode": "per_phase_balanced",
+    }
+
+
+def set_network_demand_com(settings, p_kw, q_kvar, leave_open=True, kill_existing=False):
+    """
+    SetDemand en la sesion Cyme viva (misma GUI): sync §1 + fases + Save.
+    """
+    _ensure_comtypes(settings.get("cyme_root"))
+    import comtypes.client
+
+    net = str(settings.get("network_id") or "").strip()
+    if not net:
+        return {"ok": False, "error": "Falta network_id", "engine": "COM"}
+
+    app = None
+    try:
+        app, mode = acquire_cymdist_app(
+            settings, show_window=True, kill_existing=bool(kill_existing)
+        )
+        binding = sync_cymdist_binding(app, settings)
+        la = comtypes.client.CreateObject("Cymdist.LoadAllocation")
+        demand = set_feeder_demand_phases(la, net, p_kw, q_kvar)
+        saved = False
+        study_obj = binding.get("study_obj")
+        try:
+            if study_obj is not None:
+                study_obj.Save()
+                saved = True
+            else:
+                st = comtypes.client.CreateObject("Cymdist.Study")
+                st.Save()
+                saved = True
+        except Exception as ex_save:
+            return {
+                "ok": False,
+                "engine": "COM",
+                "error": "SetDemand OK pero Save fallo: %s" % ex_save,
+                "attach_mode": mode,
+                "demand": demand,
+                "study_path": binding.get("study_path"),
+                "database_mdb": binding.get("database_mdb"),
+            }
+        if leave_open:
+            set_keep_open(settings, True, reason="set_demand_com")
+        return {
+            "ok": True,
+            "engine": "COM",
+            "api": "LoadAllocation.SetFeederDemand(phases)+Save",
+            "attach_mode": mode,
+            "saved": saved,
+            "cymdist_open": bool(leave_open),
+            "network_id": net,
+            "study_path": binding.get("study_path"),
+            "database_mdb": binding.get("database_mdb"),
+            "database_connection_name": binding.get("database_connection_name"),
+            "P_kW": demand["P_kW"],
+            "Q_kvar": demand["Q_kvar"],
+            "P_sum_kW": demand.get("P_sum_kW"),
+            "msg": (
+                "Demanda en Cyme vivo · %s · P=%.2f (fases) · BD %s"
+                % (
+                    os.path.basename(binding.get("study_path") or ""),
+                    float(demand["P_kW"]),
+                    os.path.basename(binding.get("database_mdb") or ""),
+                )
+            ),
+        }
+    except Exception as ex:
+        return {"ok": False, "engine": "COM", "error": str(ex)}
+    finally:
+        # Nunca cerrar/matar: la GUI debe seguir mostrando el estudio §1
+        pass
+
+
+def open_cymdist_gui(settings, kill_existing=False, reason="session", fresh=False):
+    """
+    Abre o reutiliza CYMDIST visible con la BD + estudio del numeral 1.
+
+    fresh=True: mata Cyme, espera, arranca limpio (post CymPy / anti AV 0xc0000005).
+      No Save previo ni registro CymPy concurrente.
+    """
+    import time
+
+    mdb, study = _resolve_com_paths(settings or {})
+    if not mdb or not os.path.isfile(mdb):
+        return {"ok": False, "error": "database_mdb no existe: %s" % mdb, "engine": "COM"}
+    if not study or not os.path.isfile(study):
+        return {"ok": False, "error": "study_path no existe: %s" % study, "engine": "COM"}
+
+    do_kill = bool(kill_existing or fresh)
+    if do_kill:
+        _kill_cyme()
+        time.sleep(1.5)
+        for _ in range(12):
+            if not cyme_is_running():
+                break
+            time.sleep(0.25)
+
+    try:
+        app, mode = acquire_cymdist_app(
+            settings, show_window=True, kill_existing=False
+        )
+        # Tras kill/fresh: no Save (no hay estudio) ni CymPy register (evita AV)
+        binding = sync_cymdist_binding(
+            app,
+            settings,
+            save_before=not do_kill,
+            register_db=not do_kill,
+        )
         set_keep_open(settings, True, reason=reason)
+
+        # Persistir nombre real de conexión si se creó/resolvió
+        try:
+            from core.common import load_json, save_json
+            if binding.get("database_connection_name"):
+                gs = load_json("config/settings.json")
+                gs["database_connection_name"] = binding["database_connection_name"]
+                gs["database_mdb"] = binding.get("database_mdb") or mdb
+                save_json("config/settings.json", gs)
+        except Exception as ex_p:
+            print("AVISO persist connection_name:", ex_p)
+
+        db_action = binding.get("db_action") or "activated"
+        if db_action == "created_and_linked":
+            db_txt = "BD creada y vinculada"
+        elif db_action == "activated_existing":
+            db_txt = "BD existente activada"
+        else:
+            db_txt = "BD activada"
+
+        ui_study = (settings or {}).get("ui_study_path") or ""
+        engine_study = binding.get("study_path") or study
+        study_note = os.path.basename(engine_study)
+        if ui_study and os.path.normcase(os.path.abspath(ui_study)) != os.path.normcase(
+            os.path.abspath(engine_study)
+        ):
+            study_note = "%s (motor; UI %s)" % (
+                os.path.basename(engine_study),
+                os.path.basename(ui_study),
+            )
+
         return {
             "ok": True,
             "engine": "COM",
             "cymdist_open": True,
-            "study_path": study,
+            "attach_mode": mode,
+            "fresh": bool(fresh or do_kill),
+            "study_path": engine_study,
+            "ui_study_path": ui_study or engine_study,
+            "database_mdb": binding.get("database_mdb") or mdb,
+            "database_connection_name": binding.get("database_connection_name"),
+            "db_action": db_action,
+            "db_created": bool(binding.get("db_created")),
+            "db_existed": binding.get("db_existed"),
+            "db_msg": binding.get("db_msg"),
             "reason": reason,
-            "msg": "CYMDIST abierto · estudio %s · sesion API activa (§§2–5)" % (
-                os.path.basename(study),
+            "msg": (
+                "CYMDIST sync §1 · %s «%s» · estudio %s · modo %s"
+                % (
+                    db_txt,
+                    binding.get("database_connection_name")
+                    or os.path.basename(mdb),
+                    study_note,
+                    mode,
+                )
             ),
         }
     except Exception as ex:
@@ -477,29 +965,148 @@ def add_spot_load_com(settings, load_id, section_id, location="From",
             _kill_cyme()
 
 
-def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=None):
-    """
-    Ejecuta LoadFlow por COM.
+def _find_spotload_com(app, load_id):
+    """Localiza SpotLoad por DeviceNumber/ID (FindDevice* o seccion.objSpotLoad)."""
+    lid = str(load_id or "").strip()
+    if not lid or app is None:
+        return None
+    for getter in ("FindDeviceFromID", "FindDevice", "GetDevice"):
+        fn = getattr(app, getter, None)
+        if not callable(fn):
+            continue
+        try:
+            spot = fn(lid)
+        except TypeError:
+            try:
+                spot = fn(lid, 0)
+            except Exception:
+                spot = None
+        except Exception:
+            spot = None
+        if spot is not None:
+            return spot
+    try:
+        sec = app.FindSectionFromID(lid)
+        if sec is not None:
+            return getattr(sec, "objSpotLoad", None)
+    except Exception:
+        pass
+    return None
 
-    leave_open: si True (o sesion cymdist_keep_open), no cierra Cyme al terminar
-    — tipico tras conectar carga nueva (§3) para seguir con §§4–5.
-    kill_existing: si False, no hace taskkill previo (reutiliza sesion abierta).
+
+def _set_spotload_connection_com(spot, connected):
+    """ConnectionStatus Connected/Disconnected en SpotLoad COM."""
+    if spot is None:
+        return False
+    primary = "Connected" if connected else "Disconnected"
+    for attr, val in (
+        ("ConnectionStatus", primary),
+        ("ConnectionStatus", 1 if connected else 0),
+        ("Status", primary),
+    ):
+        try:
+            setattr(spot, attr, val)
+            return True
+        except Exception:
+            try:
+                spot.SetValue(val, attr)
+                return True
+            except Exception:
+                pass
+    return False
+
+
+def apply_scenario_spot_loads_com(app, settings, scenario, spot_loads=None):
+    """
+    Conmuta SpotLoad §4 via COM (sin CymPy) para escenarios §5.
+
+    situacional → Disconnected; proyectado/general → Connected.
+    Devuelve (touched, notes).
+    """
+    scen = (scenario or "").strip().lower() or None
+    if spot_loads is None:
+        try:
+            from pipeline.add_spot_load import list_connected_spot_loads
+            spot_loads = list_connected_spot_loads(settings or {})
+        except Exception:
+            spot_loads = []
+    loads = list(spot_loads or [])
+    touched = [
+        {"LoadID": r.get("LoadID"), "P_kW": r.get("P_kW"), "Q_kvar": r.get("Q_kvar")}
+        for r in loads
+    ]
+    notes = []
+    if not loads:
+        return touched, notes
+    want_connected = scen != "situacional"
+    for r in loads:
+        lid = str(r.get("LoadID") or "").strip()
+        if not lid:
+            continue
+        row = {
+            "LoadID": lid,
+            "P_kW": r.get("P_kW"),
+            "Q_kvar": r.get("Q_kvar"),
+            "role": scen or "proyectado",
+            "Fuente": r.get("Fuente"),
+            "connected": want_connected,
+        }
+        try:
+            spot = _find_spotload_com(app, lid)
+            if spot is None and r.get("SectionID"):
+                try:
+                    sec = app.FindSectionFromID(str(r.get("SectionID")))
+                    if sec is not None:
+                        spot = getattr(sec, "objSpotLoad", None)
+                except Exception:
+                    pass
+            if spot is None:
+                row["error"] = "SIN_DEVICE"
+                notes.append(row)
+                print("[COM-LF] AVISO no hallo SpotLoad", lid)
+                continue
+            ok_set = _set_spotload_connection_com(spot, want_connected)
+            row["ConnectionStatus"] = "Connected" if want_connected else "Disconnected"
+            if not ok_set:
+                row["error"] = "NO_STATUS_FIELD"
+            notes.append(row)
+            print(
+                "[COM-LF]",
+                lid,
+                "->",
+                row["ConnectionStatus"],
+                ("OK" if ok_set else "FAIL"),
+            )
+        except Exception as ex:
+            row["error"] = str(ex)
+            notes.append(row)
+            print("[COM-LF] ERROR", lid, ex)
+    return touched, notes
+
+
+def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=None,
+                     scenario=None, spot_loads=None):
+    """
+    Ejecuta LoadFlow por COM (mismo patron anti-AV que §3.3 LoadAllocation).
+
+    leave_open: si True (o sesion cymdist_keep_open), no cierra Cyme al terminar.
+    kill_existing: False por defecto (reutiliza sesion GUI §1).
+    scenario: None | situacional | proyectado — conmuta SpotLoad §4 via COM.
     """
     _ensure_comtypes(settings.get("cyme_root"))
     import comtypes.client
+    import time as _time
 
-    # Flag de sesion: mantener CYMDIST abierto tras SpotLoad §3
     if leave_open is None:
         try:
             from pipeline.run_demand_allocation import load_session
             leave_open = bool(load_session(settings).get("cymdist_keep_open"))
         except Exception:
-            leave_open = False
+            leave_open = True
     if kill_existing is None:
-        kill_existing = not bool(leave_open)
+        kill_existing = False
 
-    mdb = settings.get("database_mdb") or ""
-    study = settings.get("study_path") or ""
+    mdb, study = _resolve_com_paths(settings or {})
     net = str(network_id or settings.get("network_id") or "")
     if not mdb or not os.path.isfile(mdb):
         return {"ok": False, "error": "database_mdb no existe: %s" % mdb, "engine": "COM"}
@@ -509,33 +1116,49 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
         return {"ok": False, "error": "Falta network_id", "engine": "COM"}
 
     if kill_existing:
+        _kill_cyme()
         try:
-            import subprocess
-            subprocess.call(
-                ["taskkill", "/F", "/IM", "Cyme.exe"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            _time.sleep(0.4)
         except Exception:
             pass
 
     app = None
+    attach_mode = None
+    scen = (scenario or "").strip().lower() or None
+    if scen and scen not in ("situacional", "proyectado"):
+        scen = None
+    scen_notes = []
+    touched = []
+    t0 = _time.time()
     try:
-        app = comtypes.client.CreateObject("Cymdist.Application")
-        try:
-            # Visible si se mantiene abierto (trabajo §§4–5 en GUI)
-            app.ShowWindow(1 if leave_open else 0)
-        except Exception:
-            pass
-        app.SelectUniqueDatabaseAccess(mdb, 0, _access_version())
-        app.OpenStudy(study)
+        app, attach_mode = acquire_cymdist_app(
+            settings, show_window=bool(leave_open), kill_existing=False
+        )
+        binding = sync_cymdist_binding(app, settings)
+        mdb = binding.get("database_mdb") or mdb
+        study = binding.get("study_path") or study
+
+        # Escenario §5: conmutar SpotLoad nuevas sin CymPy (anti AV 0xC0000005)
+        if scen in ("situacional", "proyectado") or spot_loads:
+            target = scen or "proyectado"
+            touched, scen_notes = apply_scenario_spot_loads_com(
+                app, settings, target, spot_loads=spot_loads
+            )
+            if touched:
+                print(
+                    "[COM-LF] Cargas §4 escenario %s: %d (%s)"
+                    % (
+                        target,
+                        len(touched),
+                        "DESCONECTADAS" if target == "situacional" else "CONECTADAS",
+                    )
+                )
 
         warn_path = None
         log_path = None
         try:
             out_dir = settings.get("output_dir") or os.path.dirname(study)
             feeder = settings.get("feeder_id") or "feeder"
-            # Prefer RECYM output tree when present
             cand = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                 "data", "output", "feeders", str(feeder),
@@ -685,6 +1308,16 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
             "cymdist_open": bool(leave_open),
             "calculation_method": method_used,
             "run_return": str(run_ret),
+            "attach_mode": attach_mode,
+            "elapsed_sec": round(_time.time() - t0, 2),
+            "scenario": scen or "general",
+            "new_loads_scenario": scen_notes,
+            "n_new_loads": len(touched),
+            "new_loads_connected": (
+                None if not scen else (scen != "situacional")
+            ),
+            "study_path": study,
+            "database_mdb": mdb,
         }
         if not ok:
             result["error"] = (
@@ -697,7 +1330,7 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
         return {"ok": False, "error": str(ex), "engine": "COM"}
     finally:
         if leave_open:
-            # Dejar Cyme abierto para §§4–5 (flujos / informes en el mismo estudio)
+            # Dejar Cyme abierto (misma sesion GUI §1 / post-3.3)
             pass
         else:
             if app is not None:
@@ -705,25 +1338,25 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
                     app.Close()
                 except Exception:
                     pass
-            try:
-                import subprocess
-                subprocess.call(
-                    ["taskkill", "/F", "/IM", "Cyme.exe"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-            except Exception:
-                pass
+            _kill_cyme()
 
 
 def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
-                           method="KWH", kill_existing=True):
+                           method="KWH", kill_existing=False,
+                           disconnect_load_ids=None, leave_open=True):
     """
     Distribucion de carga via COM (Cymdist.LoadAllocation).
 
     CymPy standalone en esta instalacion falla con 130013 (complementos de
     simulacion no autenticados). El motor COM de Cyme.exe si ejecuta
     LoadAllocation — mismo patron que run_loadflow_com.
+
+    sync §1: SelectUniqueDatabaseAccess + OpenStudy del contexto UI.
+    Demanda: siempre por fases (la GUI Propiedades>Demanda no refleja Total).
+    leave_open=True (default): no cierra ni mata Cyme — la GUI queda con el resultado.
+
+    disconnect_load_ids: SpotLoad a poner ConnectionStatus=Disconnected antes
+    del Run (cargas Incluir=off) para que no reciban demanda al repartir.
 
     method: KWH | KVA | ActualKVA | REA  (default Consumo kWh).
     Retorna dict ok/engine/ret/error/timing.
@@ -734,8 +1367,7 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
     import comtypes.client
     import comtypes.gen.CYMDISTLib as lib
 
-    mdb = settings.get("database_mdb") or ""
-    study = settings.get("study_path") or ""
+    mdb, study = _resolve_com_paths(settings or {})
     net = str(network_id or settings.get("network_id") or "")
     if not mdb or not os.path.isfile(mdb):
         return {"ok": False, "error": "database_mdb no existe: %s" % mdb, "engine": "COM"}
@@ -748,6 +1380,7 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
 
     p_kw = float(p_kw)
     q_kvar = float(q_kvar or 0.0)
+    disc_ids = [str(x).strip() for x in (disconnect_load_ids or []) if str(x).strip()]
 
     method_map = {
         "KWH": lib.CymLoadAllocationMethod.cymKWH,
@@ -759,6 +1392,7 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
     }
     method_enum = method_map.get(str(method or "KWH"), lib.CymLoadAllocationMethod.cymKWH)
 
+    # Solo matar si el caller lo pide explicitamente (rompe sync GUI)
     if kill_existing:
         _kill_cyme()
         try:
@@ -769,14 +1403,91 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
     t0 = _time.time()
     app = None
     study_obj = None
+    attach_mode = None
+    disconnected = {"n_ok": 0, "n_err": 0, "load_ids": [], "report": []}
     try:
-        app = comtypes.client.CreateObject("Cymdist.Application")
-        try:
-            app.ShowWindow(0)
-        except Exception:
-            pass
-        app.SelectUniqueDatabaseAccess(mdb, 0, _access_version())
-        study_obj = app.OpenStudy(study)
+        app, attach_mode = acquire_cymdist_app(
+            settings, show_window=bool(leave_open), kill_existing=False
+        )
+        binding = sync_cymdist_binding(app, settings)
+        study_obj = binding.get("study_obj")
+        mdb = binding.get("database_mdb") or mdb
+        study = binding.get("study_path") or study
+
+        # Desconectar no-Incluir antes del modulo (evita que les asignen carga)
+        for lid in disc_ids:
+            row = {"LoadID": lid, "Estado": "SKIP"}
+            try:
+                spot = None
+                for getter in ("FindDeviceFromID", "FindDevice", "GetDevice"):
+                    fn = getattr(app, getter, None)
+                    if not callable(fn):
+                        continue
+                    try:
+                        spot = fn(lid)
+                    except TypeError:
+                        try:
+                            spot = fn(lid, 0)
+                        except Exception:
+                            spot = None
+                    except Exception:
+                        spot = None
+                    if spot is not None:
+                        break
+                if spot is None:
+                    # Intento via seccion SpotLoad en red
+                    try:
+                        for sec_id in (lid,):
+                            sec = app.FindSectionFromID(sec_id)
+                            if sec is not None:
+                                spot = getattr(sec, "objSpotLoad", None)
+                                break
+                    except Exception:
+                        pass
+                if spot is None:
+                    row["Estado"] = "SIN_DEVICE"
+                    disconnected["n_err"] += 1
+                    disconnected["report"].append(row)
+                    print("[COM] AVISO no hallo SpotLoad", lid)
+                    continue
+                # ConnectionStatus / Status
+                ok_set = False
+                for attr, val in (
+                    ("ConnectionStatus", "Disconnected"),
+                    ("ConnectionStatus", 0),
+                    ("Status", "Disconnected"),
+                ):
+                    try:
+                        setattr(spot, attr, val)
+                        ok_set = True
+                        break
+                    except Exception:
+                        try:
+                            # algunos wrappers usan SetValue
+                            spot.SetValue(val, attr)
+                            ok_set = True
+                            break
+                        except Exception:
+                            pass
+                if ok_set:
+                    row["Estado"] = "DISCONNECTED"
+                    disconnected["n_ok"] += 1
+                    disconnected["load_ids"].append(lid)
+                    print("[COM] EXCLUIDO", lid, "-> Disconnected")
+                else:
+                    row["Estado"] = "NO_STATUS_FIELD"
+                    disconnected["n_err"] += 1
+                    print("[COM] AVISO no pudo set ConnectionStatus", lid)
+            except Exception as ex_d:
+                row["Estado"] = "ERROR"
+                row["Detalle"] = str(ex_d)
+                disconnected["n_err"] += 1
+                print("[COM] ERROR desconectar", lid, ex_d)
+            disconnected["report"].append(row)
+        disconnected["msg"] = (
+            "COM desconecto %d/%d excluidas" % (disconnected["n_ok"], len(disc_ids))
+            if disc_ids else "Sin excluidas a desconectar"
+        )
 
         la = comtypes.client.CreateObject("Cymdist.LoadAllocation")
         la.Method = int(method_enum)
@@ -792,12 +1503,10 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
         try:
             # Unlock residuales Locked de corridas previas para que KWH pueda
             # prorratear. Los fijos 3.2 se preservan con UnlockAllInitiallyFixedLoads=0.
-            # (Antes UnlockLoads=0 + Save CymPy de ~1000 clear → UI colgada.)
             la.UnlockLoads = 1
         except Exception:
             pass
         try:
-            # No tocar cargas que ya vienen Locked (clientes 3.2)
             la.UnlockAllInitiallyFixedLoads = 0
         except Exception:
             pass
@@ -811,25 +1520,9 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
             except Exception:
                 pass
 
-        dem = la.GetFeederDemand(net, "")
-        demand_mode = "per_phase_balanced"
-        # Preferir Total (cymTotal=0) = casillero «Total» de Propiedades de la red.
-        # Fallback: A/B/C = P/3 (misma suma, Total desmarcado en GUI).
-        try:
-            dem.SetKW(int(lib.cymTotal), p_kw)
-            dem.SetKVAR(int(lib.cymTotal), q_kvar)
-            demand_mode = "total"
-        except Exception:
-            for phase in (
-                lib.CymPhase.cymPhaseA,
-                lib.CymPhase.cymPhaseB,
-                lib.CymPhase.cymPhaseC,
-            ):
-                dem.SetKW(int(phase), p_kw / 3.0)
-                dem.SetKVAR(int(phase), q_kvar / 3.0)
-            demand_mode = "per_phase_balanced"
-        # pVal = ICustomerInfo (NULL=0): sin factores de cliente adicionales
-        la.SetFeederDemand(net, "", dem, 0)
+        # Siempre fases: SetKW(Total) no actualiza Propiedades>Demanda en Cyme 9.2
+        demand_info = set_feeder_demand_phases(la, net, p_kw, q_kvar, lib=lib)
+        demand_mode = demand_info.get("mode") or "per_phase_balanced"
 
         try:
             la.InitialLosses = 0.0
@@ -842,7 +1535,10 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
         run_sec = round(_time.time() - t_run, 2)
 
         try:
-            study_obj.Save()
+            if study_obj is not None:
+                study_obj.Save()
+            else:
+                comtypes.client.CreateObject("Cymdist.Study").Save()
             saved = True
         except Exception as ex_save:
             saved = False
@@ -852,9 +1548,17 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
                 "error": "LoadAllocation OK pero Save fallo: %s" % ex_save,
                 "ret": ret,
                 "demand_mode": demand_mode,
+                "P_sum_kW": demand_info.get("P_sum_kW"),
                 "InitialLosses": initial_losses,
+                "disconnected": disconnected,
+                "attach_mode": attach_mode,
+                "study_path": study,
+                "database_mdb": mdb,
                 "timing": {"total_sec": round(_time.time() - t0, 2), "run_sec": run_sec},
             }
+
+        if leave_open:
+            set_keep_open(settings, True, reason="loadallocation_com")
 
         return {
             "ok": True,
@@ -865,8 +1569,14 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
             "network_id": net,
             "P_kW": p_kw,
             "Q_kvar": q_kvar,
+            "P_sum_kW": demand_info.get("P_sum_kW"),
             "demand_mode": demand_mode,
             "InitialLosses": initial_losses,
+            "disconnected": disconnected,
+            "attach_mode": attach_mode,
+            "study_path": study,
+            "database_mdb": mdb,
+            "cymdist_open": bool(leave_open),
             "timing": {
                 "total_sec": round(_time.time() - t0, 2),
                 "run_sec": run_sec,
@@ -877,13 +1587,16 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
             "ok": False,
             "engine": "COM",
             "error": str(ex),
+            "disconnected": disconnected,
+            "attach_mode": attach_mode,
             "timing": {"total_sec": round(_time.time() - t0, 2)},
         }
     finally:
-        if app is not None:
+        # Dejar Cyme abierto = misma sesion GUI con BD/estudio §1
+        if not leave_open and app is not None:
             try:
                 app.Close()
             except Exception:
                 pass
-        if kill_existing:
-            _kill_cyme()
+            if kill_existing:
+                _kill_cyme()

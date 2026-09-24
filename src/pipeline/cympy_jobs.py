@@ -21,91 +21,168 @@ def _out(path, data):
 
 
 def job_cabecera(payload):
-    from core.feeder_context import load_settings
-    from core.cymdist_com import pause_cymdist_for_cympy
+    from core.feeder_context import load_settings, resolve_writable_study_path
+    from core.cymdist_com import set_network_demand_com, open_cymdist_gui
     from pipeline.run_demand_allocation import apply_cabecera_medicion
 
     feeder = (payload.get("feeder_id") or "").strip() or None
     s = load_settings(feeder_id=feeder, synthesize=True)
     # Override rutas si vienen del UI
-    for k in ("study_path", "database_mdb", "network_id"):
+    for k in ("study_path", "database_mdb", "network_id", "ui_study_path",
+              "database_connection_name"):
         if payload.get(k):
             s[k] = payload[k]
+    # Conservar elección UI exacta (.xst) para OpenStudy COM / GUI
+    ui_sp = (payload.get("ui_study_path") or payload.get("study_path") or "").strip()
+    if ui_sp and os.path.isfile(ui_sp):
+        s["ui_study_path"] = ui_sp
+    sp = s.get("study_path") or ui_sp or ""
+    if sp:
+        alt = resolve_writable_study_path(sp, s)
+        if alt and alt != sp:
+            print("Cabecera: estudio UI %s -> CymPy %s" % (sp, alt))
+            s["ui_study_path"] = s.get("ui_study_path") or sp
+            s["study_path"] = alt
+            s["study_file"] = os.path.basename(alt)
+    # Obligatorio: persistir en estudio + MDB para reabrir desde CYMDIST
+    s["skip_db_project_save"] = False
+    s["isolated_work_study"] = False
+    s["persist_cabecera_to_db"] = True
     p = float(payload["P_kW"])
     q = float(payload["Q_kvar"])
     vll = payload.get("Vll_kV")
     va = payload.get("Va_kV")
     vb = payload.get("Vb_kV")
     vc = payload.get("Vc_kV")
+
+    # 1) COM en Cyme vivo (misma GUI §1): sync BD+estudio + SetDemand fases + Save
+    #    No matar Cyme: CreateObject reutiliza el proceso visible.
     try:
-        pause_cymdist_for_cympy(s)
+        open_cymdist_gui(s, kill_existing=False, reason="cabecera_sync")
     except Exception as ex:
-        print("AVISO pause:", ex)
-    info = apply_cabecera_medicion(
-        s, p, q, save=True,
-        vll_kv=vll, va_kv=va, vb_kv=vb, vc_kv=vc,
+        print("AVISO sync Cyme cabecera:", ex)
+    info_com = set_network_demand_com(
+        s, p, q, leave_open=True, kill_existing=False
     )
+    print("Cabecera COM:", info_com.get("ok"), info_com.get("msg") or info_com.get("error"))
+
+    # 2) CymPy opcional: tensiones fuente + persistencia MDB (sin matar Cyme si COM ok)
+    info = dict(info_com or {})
+    info["com"] = info_com
+    cympy_err = None
+    try:
+        # No pause/kill: el SetDemand ya está en la GUI; CymPy puede fallar si
+        # el archivo está bloqueado — no es bloqueante si COM ok.
+        info_py = apply_cabecera_medicion(
+            s, p, q, save=True,
+            vll_kv=vll, va_kv=va, vb_kv=vb, vc_kv=vc,
+        )
+        info["cympy"] = info_py
+        if info_py.get("saved"):
+            info["saved"] = True
+        if info_py.get("db_updated"):
+            info["db_updated"] = True
+        if info_py.get("project_saved"):
+            info["project_saved"] = True
+        if info_py.get("source_voltage"):
+            info["source_voltage"] = info_py.get("source_voltage")
+    except Exception as ex_py:
+        cympy_err = str(ex_py)
+        print("AVISO CymPy cabecera (COM ya escribió GUI):", ex_py)
+        info["cympy_error"] = cympy_err
+
+    ok = bool(info_com.get("ok") or info.get("saved"))
+    persist = (info.get("cympy") or {}).get("persist") or {}
     return {
-        "ok": True,
+        "ok": ok,
         "cymdist": info,
         "feeder_id": s.get("feeder_id"),
         "network_id": s.get("network_id"),
-        "study_path": s.get("study_path"),
+        "study_path": info_com.get("study_path") or s.get("ui_study_path") or s.get("study_path"),
+        "ui_study_path": s.get("ui_study_path") or payload.get("study_path"),
+        "database_mdb": info_com.get("database_mdb") or s.get("database_mdb"),
         "P_kW": p,
         "Q_kvar": q,
         "Vll_kV": vll,
         "Va_kV": va,
         "Vb_kV": vb,
         "Vc_kV": vc,
-        "msg": "SetDemand + tensiones fuente OK",
+        "study_saved": bool(info_com.get("saved") or info.get("saved")),
+        "db_updated": bool(info.get("db_updated")),
+        "project_saved": bool(info.get("project_saved")),
+        "persist": persist,
+        "attach_mode": info_com.get("attach_mode"),
+        "P_sum_kW": info_com.get("P_sum_kW"),
+        "msg": (
+            info_com.get("msg")
+            or (
+                "Cabecera persistida en estudio + BD"
+                if info.get("saved") and info.get("db_updated")
+                else (
+                    "Cabecera en estudio (BD parcial)"
+                    if info.get("saved")
+                    else "SetDemand OK pero Save incompleto"
+                )
+            )
+        ),
+        "error": None if ok else (info_com.get("error") or cympy_err),
     }
 
 
 def job_loadallocation_com(payload):
     """LoadAllocation vía COM Cyme.exe en proceso aislado (evita cuelgue UI)."""
     from core.feeder_context import load_settings
-    from core.cymdist_com import run_loadallocation_com, _kill_cyme
+    from core.cymdist_com import run_loadallocation_com
 
     feeder = (payload.get("feeder_id") or "").strip() or None
     s = load_settings(feeder_id=feeder, synthesize=True)
-    for k in ("study_path", "database_mdb", "network_id", "database_connection_name"):
+    for k in ("study_path", "database_mdb", "network_id", "database_connection_name",
+              "ui_study_path"):
         if payload.get(k):
             s[k] = payload[k]
-    # Asegurar que no quede Cyme zombie bloqueando OpenStudy
-    try:
-        _kill_cyme()
-    except Exception:
-        pass
+    # NO matar Cyme: CreateObject reusa la GUI con BD/estudio §1
     return run_loadallocation_com(
         s,
         network_id=payload.get("network_id") or s.get("network_id"),
         p_kw=payload.get("P_kW"),
         q_kvar=payload.get("Q_kvar"),
         method=payload.get("method") or "KWH",
-        kill_existing=True,
+        kill_existing=False,
+        leave_open=True,
+        disconnect_load_ids=payload.get("disconnect_load_ids") or [],
     )
 
 
 def job_loadflow_com(payload):
-    """LoadFlow vía COM Cyme.exe en proceso aislado (evita cuelgue UI §5)."""
+    """LoadFlow vía COM Cyme.exe (mismo patrón soft que §3.3 LoadAllocation)."""
     from core.feeder_context import load_settings
-    from core.cymdist_com import run_loadflow_com, _kill_cyme
+    from core.cymdist_com import run_loadflow_com
 
     feeder = (payload.get("feeder_id") or "").strip() or None
     s = load_settings(feeder_id=feeder, synthesize=True)
-    for k in ("study_path", "database_mdb", "network_id", "database_connection_name", "output_dir"):
+    for k in (
+        "study_path",
+        "database_mdb",
+        "network_id",
+        "database_connection_name",
+        "output_dir",
+        "ui_study_path",
+    ):
         if payload.get(k):
             s[k] = payload[k]
-    leave_open = bool(payload.get("leave_open"))
-    try:
-        _kill_cyme()
-    except Exception:
-        pass
+    leave_open = payload.get("leave_open")
+    if leave_open is None:
+        leave_open = True
+    kill_existing = bool(payload.get("kill_existing", False))
+    scenario = (payload.get("scenario") or "").strip().lower() or None
+    # NO matar Cyme: CreateObject reusa la GUI con BD/estudio §1
     return run_loadflow_com(
         s,
         network_id=payload.get("network_id") or s.get("network_id"),
-        leave_open=leave_open,
-        kill_existing=True,
+        leave_open=bool(leave_open),
+        kill_existing=kill_existing,
+        scenario=scenario,
+        spot_loads=payload.get("spot_loads"),
     )
 
 

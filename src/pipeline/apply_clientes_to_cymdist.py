@@ -177,7 +177,7 @@ def apply_rows(adapter, rows, fp=0.95, lock=True):
                 })
                 print(
                     "EXCLUIDO", lid, "SED", r.get("SED"),
-                    "→ 0 kW + Disconnected (Activo=False)",
+                    "-> 0 kW + Disconnected (Activo=False)",
                 )
             except Exception as ex:
                 report.append({
@@ -208,7 +208,7 @@ def apply_rows(adapter, rows, fp=0.95, lock=True):
                 pass
             kwh_ok = res.get("kwh_ok")
             estado = "OK"
-            detalle = "EA→Consumo(KWH); Pot→kW Locked; símbolo dibujado"
+            detalle = "EA->Consumo(KWH); Pot->kW Locked; simbolo dibujado"
             if ea is not None and ea != "" and kwh_ok is False:
                 estado = "WARN_KWH"
                 detalle = (
@@ -230,11 +230,15 @@ def apply_rows(adapter, rows, fp=0.95, lock=True):
                 "ConnectionStatus": conn.get("after"),
                 "Detalle": detalle,
             })
-            print(
-                "WRITE", lid, "SED", r.get("SED"),
-                "Consumo(KWH)", ea, "→", res.get("kwh_after"),
-                "Pot", pot, "Connected", "kwh_ok=", kwh_ok,
-            )
+            try:
+                print(
+                    "WRITE", lid, "SED", r.get("SED"),
+                    "Consumo(KWH)", ea, "->", res.get("kwh_after"),
+                    "Pot", pot, "Connected", "kwh_ok=", kwh_ok,
+                )
+            except Exception:
+                # Nunca tumbar un write OK por fallo de consola (cp1252/unicode)
+                pass
         except Exception as ex:
             report.append({
                 "Suministro": r.get("Suministro"), "SED": r.get("SED"),

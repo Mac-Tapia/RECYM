@@ -259,11 +259,15 @@ def _load_medidor_map(settings=None, force=False):
 
 
 def _feeder_aliases(feeder_id):
-    """Variantes BD ↔ medidor (IN112↔SI112, etc.)."""
+    """Variantes BD ↔ medidor (IN112↔SI112, PA217V2↔PA217, etc.)."""
     fid = _norm_feeder(feeder_id)
     if not fid:
         return []
     out = [fid]
+    # Estudio variante: PA217V2 / PA217v2 → PA217
+    m_ver = re.match(r"^([A-Z]{1,3}\d{2,4})V\d+$", fid)
+    if m_ver:
+        out.append(m_ver.group(1))
     m = re.match(r"^([A-Z]{1,3})(\d{2,4}[A-Z]?)$", fid)
     if m:
         pref, num = m.group(1), m.group(2)
@@ -277,6 +281,36 @@ def _feeder_aliases(feeder_id):
             seen.add(a)
             uniq.append(a)
     return uniq
+
+
+def list_map_alimentadores(settings=None, only_feeders=True):
+    """Lista códigos de ``medidoralimentador.xlsx`` (columna codigo alimentador).
+
+    Returns list of dicts: feeder_id, medidor, Vll_kV, siglas, label.
+    """
+    by_feeder, path = _load_medidor_map(settings=settings)
+    items = []
+    for code in sorted(by_feeder.keys()):
+        e = by_feeder[code]
+        if only_feeders and not e.get("is_feeder"):
+            continue
+        med = e.get("medidor") or ""
+        vll = e.get("Vll_kV")
+        label = code
+        if med:
+            label = "%s · %s" % (code, med)
+        if vll not in (None, ""):
+            label = "%s · %s kV" % (label, vll)
+        items.append({
+            "feeder_id": code,
+            "feeder_raw": e.get("feeder_raw") or code,
+            "medidor": med,
+            "Vll_kV": vll,
+            "siglas": e.get("siglas") or "",
+            "label": label,
+            "source": path,
+        })
+    return items
 
 
 def _preferred_sistema_keywords(siglas, feeder_id):
@@ -675,12 +709,23 @@ def extract_max_demanda_from_xls(xls_path, medidor, feeder_id=None):
                         max_row = r
             if max_row is None:
                 continue
+            # Hoja vacía / solo ceros: probar otra candidata (no abortar)
+            if max_kw is None or max_kw <= 0:
+                continue
             kvar = _to_float(sh.cell_value(max_row, i_kvar))
             kva = _to_float(sh.cell_value(max_row, i_kva)) if i_kva is not None else None
             fecha_dt = _cell_datetime(book, sh, max_row, i_time) if i_time is not None else None
             return _finalize_stats(
                 max_kw, kvar, kva, fecha_dt, sum_kw, n, n_skip,
                 sheet_name, medidor, xls_path, max_row + 1, [],
+            )
+
+        # Hoja del medidor existe pero sin potencia útil → mensaje claro
+        if sheet_exact:
+            raise RuntimeError(
+                "Medidor %s: hoja '%s' en %s sin P>0 (serie vacía o en cero). "
+                "Revise el Excel de medicioncabecera."
+                % (medidor, sheet_exact, os.path.basename(xls_path))
             )
 
         # 2) Hojas partidas (Ica): ensamblar kW + kvar + kVA por fecha
@@ -737,6 +782,11 @@ def extract_max_demanda_from_xls(xls_path, medidor, feeder_id=None):
                     max_row = r
         if max_row is None:
             raise RuntimeError("Hoja %s sin kW válidos" % kw_sheet)
+        if max_kw is None or max_kw <= 0:
+            raise RuntimeError(
+                "Medidor %s encontrado en %s pero sin P>0 (hoja %s vacía o en cero)"
+                % (medidor, os.path.basename(xls_path), kw_sheet)
+            )
         fecha_dt = _cell_datetime(book, sh_kw, max_row, i_time) if i_time is not None else None
 
         sh_q = book.sheet_by_name(kvar_sheet)

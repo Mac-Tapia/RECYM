@@ -1,10 +1,18 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
-import { setActiveFeeder } from "../api/client";
+import { setActiveContext, setActiveFeeder } from "../api/client";
 
 type Ctx = {
   feeder: string;
   network: string;
+  studyPath: string;
+  databaseMdb: string;
   setFeeder: (f: string, network?: string) => void;
+  setContext: (opts: {
+    feeder?: string;
+    network?: string;
+    studyPath?: string;
+    databaseMdb?: string;
+  }) => void;
 };
 
 const FeederCtx = createContext<Ctx | null>(null);
@@ -12,17 +20,34 @@ const FeederCtx = createContext<Ctx | null>(null);
 export function FeederProvider({ children }: { children: ReactNode }) {
   const [feeder, setF] = useState("");
   const [network, setN] = useState("");
+  const [studyPath, setStudyPath] = useState("");
+  const [databaseMdb, setDatabaseMdb] = useState("");
   const value = useMemo<Ctx>(
     () => ({
       feeder,
       network,
+      studyPath,
+      databaseMdb,
       setFeeder: (f, n) => {
         setF(f || "");
         if (n !== undefined) setN(n || "");
         setActiveFeeder(f || "");
+        setActiveContext({ feeder: f || "", network: n });
+      },
+      setContext: (opts) => {
+        if (opts.feeder !== undefined) setF(opts.feeder || "");
+        if (opts.network !== undefined) setN(opts.network || "");
+        if (opts.studyPath !== undefined) setStudyPath(opts.studyPath || "");
+        if (opts.databaseMdb !== undefined) setDatabaseMdb(opts.databaseMdb || "");
+        setActiveContext({
+          feeder: opts.feeder !== undefined ? opts.feeder || "" : undefined,
+          network: opts.network,
+          studyPath: opts.studyPath,
+          databaseMdb: opts.databaseMdb,
+        });
       },
     }),
-    [feeder, network]
+    [feeder, network, studyPath, databaseMdb]
   );
   return <FeederCtx.Provider value={value}>{children}</FeederCtx.Provider>;
 }

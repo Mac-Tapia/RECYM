@@ -25,7 +25,7 @@ from pipeline.run_demand_allocation import load_session, save_session
 # Listo solo si no quedan Error / Warning / Hint del NetworkDiagnostic
 PROBLEM_SEVERITIES_LOCAL = ("Error", "Warning", "Hint")
 
-_NETWORKS_CACHE = {"ts": 0, "items": []}
+_NETWORKS_CACHE = {"ts": 0, "items": [], "connection": ""}
 
 # CymPy/COM no es reentrante: a lo sumo 1 operación pesada a la vez.
 # Las APIs ligeras (ping, listas en disco) NO deben esperar este lock.
@@ -73,46 +73,71 @@ def with_cympy_lock(who, fn, timeout_sec=0.5):
             pass
 
 
-def _networks_disk_path():
-    """Catálogo de redes en disco (la UI arranca sin abrir CYMDIST)."""
+def _networks_disk_path(connection=""):
+    """Catálogo de redes en disco (la UI arranca sin abrir CYMDIST).
+
+    Si hay connection, usa archivo por BD (bd_networks_<conn>.json) y mantiene
+    bd_networks.json como «último usado».
+    """
     try:
         from core.common import p
-        return p("data", "output", "system", "bd_networks.json")
+        base = p("data", "output", "system")
     except Exception:
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        return os.path.join(root, "data", "output", "system", "bd_networks.json")
+        base = os.path.join(root, "data", "output", "system")
+    conn = str(connection or "").strip()
+    if not conn:
+        return os.path.join(base, "bd_networks.json")
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in conn)
+    safe = safe.strip("_") or "default"
+    return os.path.join(base, "bd_networks_%s.json" % safe)
 
 
-def _load_networks_disk():
-    path = _networks_disk_path()
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        items = data.get("networks") or []
-        if items:
-            return items
-    except Exception:
-        pass
-    return None
+def _load_networks_disk(connection=""):
+    # Preferir catálogo de esa conexión; fallback al genérico
+    paths = []
+    if connection:
+        paths.append(_networks_disk_path(connection))
+    paths.append(_networks_disk_path(""))
+    seen = set()
+    for path in paths:
+        if path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Si pedimos una conexión concreta, no devolver catálogo de otra BD
+            disk_conn = str(data.get("connection") or "").strip()
+            if connection and disk_conn and disk_conn.lower() != str(connection).strip().lower():
+                continue
+            items = data.get("networks") or []
+            if items:
+                return items, disk_conn or connection
+        except Exception:
+            pass
+    return None, ""
 
 
 def _save_networks_disk(items, connection=""):
-    path = _networks_disk_path()
-    try:
-        d = os.path.dirname(path)
-        if d and not os.path.isdir(d):
-            os.makedirs(d)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({
-                "connection": connection,
-                "n": len(items or []),
-                "networks": items or [],
-                "ts": ts(),
-            }, f, indent=2, ensure_ascii=False)
-    except Exception as ex:
-        print("AVISO save bd_networks:", ex)
+    conn = str(connection or "").strip()
+    paths = [_networks_disk_path(conn)]
+    if conn:
+        paths.append(_networks_disk_path(""))  # también «último»
+    for path in paths:
+        try:
+            d = os.path.dirname(path)
+            if d and not os.path.isdir(d):
+                os.makedirs(d)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "connection": conn,
+                    "n": len(items or []),
+                    "networks": items or [],
+                    "ts": ts(),
+                }, f, indent=2, ensure_ascii=False)
+        except Exception as ex:
+            print("AVISO save bd_networks:", ex)
 
 
 def clear_networks_cache():
@@ -139,12 +164,18 @@ def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
 
     s = settings or load_settings()
     now = time.time()
-    conn = s.get("database_connection_name") or ""
+    mdb_path = (s.get("database_mdb") or "").strip()
+    conn = (
+        s.get("database_connection_name")
+        or (os.path.splitext(os.path.basename(mdb_path))[0] if mdb_path else "")
+        or ""
+    )
 
-    # 1) memoria
+    # 1) memoria (misma conexión)
     if (
         not force
         and _NETWORKS_CACHE["items"]
+        and str(_NETWORKS_CACHE.get("connection") or "") == str(conn)
         and (now - float(_NETWORKS_CACHE["ts"] or 0)) < float(cache_ttl_sec)
     ):
         return {
@@ -156,17 +187,18 @@ def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
             "networks": list(_NETWORKS_CACHE["items"]),
         }
 
-    # 2) disco (sin CYMDIST)
+    # 2) disco (sin CYMDIST) — por conexión
     if not force:
-        disk_items = _load_networks_disk()
+        disk_items, disk_conn = _load_networks_disk(conn)
         if disk_items:
             _NETWORKS_CACHE["ts"] = now
             _NETWORKS_CACHE["items"] = disk_items
+            _NETWORKS_CACHE["connection"] = disk_conn or conn
             return {
                 "ok": True,
                 "cached": True,
                 "source": "disk",
-                "connection": conn,
+                "connection": disk_conn or conn,
                 "n": len(disk_items),
                 "networks": list(disk_items),
             }
@@ -179,7 +211,7 @@ def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
                 "connection": conn,
                 "n": 0,
                 "networks": [],
-                "msg": "Sin catálogo local. Pulse «Actualizar lista» (abre CYMDIST una vez).",
+                "msg": "Sin catálogo local para esta BD. Pulse actualizar (abre CYMDIST una vez).",
             }
 
     # 3) CymPy — bajo lock (una sola operación COM)
@@ -187,8 +219,95 @@ def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
         _pause_gui(s)
         import cympy.db as db
 
-        cname = s.get("database_connection_name") or "20260919"
-        db.ConnectDatabaseByName(cname)
+        cname = conn or s.get("database_connection_name") or "20260919"
+        connected = False
+        # Emparejar por ruta .mdb (no por nombre ambiguo: 'BASE JUL25 1' ≠ misma carpeta)
+        try:
+            from core.cympy_adapter import (
+                find_cymdist_connection_for_mdb,
+                unique_connection_name,
+                _extract_mdb_path,
+                _norm_file_path,
+            )
+        except Exception:
+            find_cymdist_connection_for_mdb = None
+            unique_connection_name = None
+            _extract_mdb_path = None
+            _norm_file_path = None
+
+        if mdb_path and os.path.isfile(mdb_path) and find_cymdist_connection_for_mdb:
+            found = find_cymdist_connection_for_mdb(mdb_path)
+            if found and found.get("name"):
+                cname = found["name"]
+                try:
+                    db.ConnectDatabaseByName(str(cname))
+                    connected = True
+                except Exception as ex_name:
+                    print("AVISO ConnectDatabaseByName(%s): %s" % (cname, ex_name))
+            if not connected:
+                try:
+                    cname = unique_connection_name(cname, mdb_path)
+                    mdb = db.MDBDataSource(mdb_path)
+                    ci = db.ConnectionInformation()
+                    ci.Name = cname
+                    ci.Network = mdb
+                    ci.Equipment = mdb
+                    ci.Project = mdb
+                    try:
+                        db.ConnectDatabase(ci)
+                    except Exception:
+                        db.Connect(ci)
+                    connected = True
+                except Exception as ex_path:
+                    raise RuntimeError(
+                        "No se pudo importar/activar BD por ruta %s: %s"
+                        % (mdb_path, ex_path)
+                    )
+        else:
+            # Sin ruta: solo nombre (legado)
+            try:
+                db.ConnectDatabaseByName(str(cname))
+                connected = True
+            except Exception as ex_name:
+                path = mdb_path
+                if path and os.path.isfile(path):
+                    try:
+                        mdb = db.MDBDataSource(path)
+                        ci = db.ConnectionInformation()
+                        ci.Name = cname
+                        ci.Network = mdb
+                        ci.Equipment = mdb
+                        ci.Project = mdb
+                        db.Connect(ci)
+                        connected = True
+                    except Exception as ex_path:
+                        raise RuntimeError(
+                            "No se pudo conectar BD '%s' (%s) ni por ruta (%s)"
+                            % (cname, ex_name, ex_path)
+                        )
+                else:
+                    raise RuntimeError(
+                        "ConnectDatabaseByName(%s) falló y no hay database_mdb: %s"
+                        % (cname, ex_name)
+                    )
+        if not connected:
+            raise RuntimeError("BD no conectada: %s" % cname)
+
+        # Verificar que la BD activa es la ruta pedida
+        if mdb_path and _extract_mdb_path and _norm_file_path:
+            try:
+                cur = db.GetCurrentConnection()
+                cur_path = _extract_mdb_path(getattr(cur, "Network", None))
+                if cur_path and _norm_file_path(cur_path) != _norm_file_path(mdb_path):
+                    raise RuntimeError(
+                        "CYMDIST quedó en otra BD (%s) distinta a la seleccionada (%s)"
+                        % (cur_path, mdb_path)
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+
         raw = [str(n) for n in list(db.ListNetworks())]
         configured = set(list_feeders())
         items = []
@@ -202,12 +321,14 @@ def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
             })
         _NETWORKS_CACHE["ts"] = time.time()
         _NETWORKS_CACHE["items"] = items
+        _NETWORKS_CACHE["connection"] = cname
         _save_networks_disk(items, cname)
         return {
             "ok": True,
             "cached": False,
             "source": "cympy",
             "connection": cname,
+            "database_mdb": mdb_path,
             "n": len(items),
             "networks": items,
         }
@@ -584,6 +705,12 @@ def check_convergence(settings=None, run_lf=True):
     result = {
         "feeder_id": s.get("feeder_id"),
         "network_id": s.get("network_id"),
+        "study_path": s.get("study_path") or "",
+        "ui_study_path": s.get("ui_study_path") or s.get("study_path") or "",
+        "study_file": os.path.basename(
+            s.get("ui_study_path") or s.get("study_path") or ""
+        ),
+        "database_mdb": s.get("database_mdb") or "",
         "converge": None,
         "loadflow": None,
         "status": "ok",
@@ -616,23 +743,30 @@ def check_convergence(settings=None, run_lf=True):
         """Normaliza msg/ok según converge para la UI §2.4."""
         conv = res.get("converge")
         fid = res.get("feeder_id") or s.get("feeder_id") or "?"
+        study = os.path.basename(
+            res.get("ui_study_path")
+            or res.get("study_path")
+            or s.get("ui_study_path")
+            or s.get("study_path")
+            or ""
+        ) or "—"
         if conv == "SI":
             res["ok"] = True
             res["msg"] = (
-                "2.4 · Converge = SI · alimentador %s · red %s"
-                % (fid, res.get("network_id") or s.get("network_id") or "—")
+                "2.4 · Converge = SI · %s · estudio %s · red %s"
+                % (fid, study, res.get("network_id") or s.get("network_id") or "—")
             )
         elif conv == "NO":
             res["ok"] = False
             err = res.get("error") or "LoadFlow sin resultados válidos"
-            res["msg"] = "2.4 · Converge = NO · %s · %s" % (fid, err)
+            res["msg"] = "2.4 · Converge = NO · %s · estudio %s · %s" % (fid, study, err)
         elif conv == "DESCONOCIDO":
             res["ok"] = False
-            res["msg"] = "2.4 · Converge = DESCONOCIDO · %s · %s" % (
-                fid, res.get("error") or "no se pudo verificar"
+            res["msg"] = "2.4 · Converge = DESCONOCIDO · %s · estudio %s · %s" % (
+                fid, study, res.get("error") or "no se pudo verificar"
             )
         else:
-            res["msg"] = "2.4 · Converge = %s · %s" % (conv or "—", fid)
+            res["msg"] = "2.4 · Converge = %s · %s · estudio %s" % (conv or "—", fid, study)
         return res
 
     lf = None
@@ -748,6 +882,13 @@ def get_gate_status(settings=None):
         "ok": True,
         "feeder_id": s.get("feeder_id") or (summary or {}).get("feeder_id"),
         "network_id": s.get("network_id") or (summary or {}).get("network_id"),
+        "study_path": s.get("study_path") or "",
+        "ui_study_path": s.get("ui_study_path") or s.get("study_path") or "",
+        "study_file": os.path.basename(
+            s.get("ui_study_path") or s.get("study_path") or ""
+        ),
+        "database_mdb": s.get("database_mdb") or "",
+        "database_connection_name": s.get("database_connection_name") or "",
         "gate": gate,
         "ready": bool(gate.get("ready")),
         "converge": gate.get("converge"),

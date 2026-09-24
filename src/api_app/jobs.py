@@ -3,6 +3,7 @@
 from __future__ import print_function
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -43,18 +44,135 @@ def get_job(job_id):
 def _run_action(action, payload, feeder, job_id=None):
     """Ejecuta acciones conocidas reutilizando pipeline / Flask helpers."""
     payload = payload or {}
-    from core.feeder_context import load_settings
+    from core.feeder_context import (
+        load_settings,
+        resolve_writable_study_path,
+        apply_context_selection,
+        feeder_family_code,
+    )
     from pipeline.model_quality_gate import with_cympy_lock
 
-    s = load_settings(feeder_id=feeder, synthesize=True) if feeder else load_settings()
+    # Contexto §1 dinámico: BD + estudio del payload (no un alimentador fijo)
+    fid = (feeder or "").strip() or (
+        (payload.get("feeder") or payload.get("feeder_id") or "")
+    )
+    fid = str(fid or "").strip() or None
+    db = (payload.get("database_mdb") or "").strip() or None
+    st = (
+        (payload.get("study_path") or payload.get("ui_study_path") or "")
+    ).strip() or None
+    if db or st or fid:
+        try:
+            ctx = apply_context_selection(
+                database_mdb=db,
+                study_path=st,
+                feeder_id=fid,
+                persist=True,
+            )
+            if ctx.get("feeder_id"):
+                fid = ctx.get("feeder_id")
+        except Exception as ex_ctx:
+            print("AVISO apply_context job:", ex_ctx)
+
+    s = load_settings(feeder_id=fid, synthesize=True) if fid else load_settings()
+    # Overrides explicitos del job (estudio/BD/red de esta ejecucion)
+    if db:
+        s["database_mdb"] = db
+        try:
+            from core.cympy_adapter import find_cymdist_connection_for_mdb
+            found = find_cymdist_connection_for_mdb(db)
+            if found and found.get("name"):
+                s["database_connection_name"] = found["name"]
+        except Exception:
+            pass
+    if st:
+        s["ui_study_path"] = st
+        s["study_path"] = resolve_writable_study_path(st, s)
+        s["study_file"] = os.path.basename(s["study_path"])
+    elif s.get("study_path"):
+        s["study_path"] = resolve_writable_study_path(s.get("study_path"), s)
+    if payload.get("network_id"):
+        s["network_id"] = payload.get("network_id")
+    if fid:
+        s["feeder_id"] = fid
+        fam = feeder_family_code(fid)
+        if fam and not s.get("network_id"):
+            try:
+                from core.feeder_context import lookup_bd_network_id
+                nid = lookup_bd_network_id(fam, s)
+                if nid:
+                    s["network_id"] = nid
+            except Exception:
+                pass
+
+    # Acciones que modifican / analizan CYMDIST: exigir BD + estudio del §1
+    if action in (
+        "calidad_diagnosticar",
+        "calidad_proponer",
+        "calidad_aplicar",
+        "calidad_convergencia",
+        "calidad_hasta_limpio",
+        "distribucion",
+        "flujo",
+    ):
+        if not (s.get("database_mdb") or "").strip():
+            return {
+                "ok": False,
+                "error": "Falta base de datos (§1). Elija .mdb y pulse 1.1 Aplicar.",
+            }
+        if not (s.get("study_path") or "").strip():
+            return {
+                "ok": False,
+                "error": "Falta estudio (§1). Elija estudio y pulse 1.1 Aplicar.",
+            }
+        try:
+            from core.feeder_context import resolve_cymdist_binding
+            bind = resolve_cymdist_binding(s)
+            s["study_path"] = bind["study_path"]
+            s["ui_study_path"] = bind.get("ui_study_path") or s.get("ui_study_path")
+            s["database_mdb"] = bind["database_mdb"]
+            s["database_connection_name"] = bind["database_connection_name"]
+            s["_cymdist_binding"] = bind
+        except Exception as ex_bind:
+            return {"ok": False, "error": "Enlace estudio/BD CYMDIST: %s" % ex_bind}
+
+    def _annotate_study(result):
+        """Adjunta BD/estudio §1 al resultado de cualquier acción §2."""
+        if not isinstance(result, dict):
+            return result
+        result.setdefault("feeder_id", s.get("feeder_id"))
+        result.setdefault("network_id", s.get("network_id"))
+        result["study_path"] = s.get("study_path") or result.get("study_path") or ""
+        result["ui_study_path"] = (
+            s.get("ui_study_path") or result.get("ui_study_path") or result["study_path"]
+        )
+        result["study_file"] = os.path.basename(
+            result.get("ui_study_path") or result.get("study_path") or ""
+        )
+        result["database_mdb"] = s.get("database_mdb") or result.get("database_mdb") or ""
+        result["database_connection_name"] = (
+            s.get("database_connection_name") or result.get("database_connection_name") or ""
+        )
+        return result
 
     def _calidad(fn, timeout_sec=180.0):
-        return with_cympy_lock(action, fn, timeout_sec=float(timeout_sec))
+        def _wrapped():
+            print(
+                "§2 %s · feeder=%s · estudio=%s · BD=%s"
+                % (
+                    action,
+                    s.get("feeder_id"),
+                    os.path.basename(s.get("ui_study_path") or s.get("study_path") or ""),
+                    os.path.basename(s.get("database_mdb") or ""),
+                )
+            )
+            return _annotate_study(fn())
+
+        return with_cympy_lock(action, _wrapped, timeout_sec=float(timeout_sec))
 
     if action == "calidad_diagnosticar":
         from pipeline.model_quality_gate import run_network_diagnostic
         from core.feeder_context import output_path
-        import os
         import shutil
 
         def _diag_and_tablero():
@@ -315,22 +433,24 @@ def _run_action(action, payload, feeder, job_id=None):
                     "fails": fails,
                 }
             ok = result.get("status") in (
-                "ok", "ok_fallback_kwh", "ok_with_warnings", "ok_validation_fail", "dry_run"
+                "ok", "ok_with_warnings", "ok_validation_fail", "dry_run"
             )
+            if result.get("status") == "error" or result.get("allocation_ok") is False:
+                ok = False
             method = str(result.get("method") or "")
             if method.startswith("cymdist_COM") or result.get("engine") == "COM":
-                prefix = "LoadAllocation COM OK"
+                prefix = "LoadAllocation CYMDIST (COM) OK"
             elif method.startswith("cymdist_"):
-                prefix = "LoadAllocation.Run OK"
-            elif "fallback" in method:
-                prefix = "Distribución OK (fallback KWH)"
+                prefix = "LoadAllocation CYMDIST (API) OK"
+            elif result.get("status") == "error":
+                prefix = "LoadAllocation CYMDIST FALLO (sin redistribuir en RECYM)"
             else:
-                prefix = "Distribución"
+                prefix = "LoadAllocation CYMDIST"
             return {
                 "ok": ok,
                 "result": summary,
                 "validation_ok": result.get("validation_ok"),
-                "error": None if ok else (result.get("fallback_error") or result.get("allocation_error")),
+                "error": None if ok else (result.get("allocation_error") or result.get("aviso")),
                 "msg": (
                     prefix + " · " + str((val or {}).get("msg") or (val or {}).get("balance_msg") or "sin validacion")
                     if ok else None
@@ -359,6 +479,16 @@ def _run_action(action, payload, feeder, job_id=None):
             s2 = dict(s)
             s2["_job_progress"] = _prog
             s2["skip_db_project_save"] = True
+            # Forzar enlace estudio+BD del §1 (misma BD/estudio que cabecera)
+            try:
+                from core.feeder_context import resolve_cymdist_binding
+                bind = resolve_cymdist_binding(s2)
+                s2["study_path"] = bind["study_path"]
+                s2["ui_study_path"] = bind.get("ui_study_path") or s2.get("ui_study_path")
+                s2["database_mdb"] = bind["database_mdb"]
+                s2["database_connection_name"] = bind["database_connection_name"]
+            except Exception as ex_bind:
+                return {"ok": False, "error": "Enlace estudio/BD: %s" % ex_bind}
             result = run_load_flow(s2, scenario=scenario)
             ok = result.get("status") in ("ok", "dry_run")
             informe = None
@@ -368,15 +498,22 @@ def _run_action(action, payload, feeder, job_id=None):
                     informe = fill_informe(s2, overwrite_copy=True)
                 except Exception as ex_inf:
                     informe = {"ok": False, "error": str(ex_inf)}
+            study_name = os.path.basename(
+                s2.get("ui_study_path") or s2.get("study_path") or ""
+            )
             return {
                 "ok": ok,
                 "result": result,
                 "error": None if ok else (result.get("error") or "LoadFlow fallo"),
                 "informe": informe,
+                "study_path": s2.get("study_path"),
+                "ui_study_path": s2.get("ui_study_path"),
+                "database_mdb": s2.get("database_mdb"),
                 "msg": (
-                    ("LoadFlow %s OK · %s" % (
+                    ("LoadFlow %s OK · %s · estudio %s" % (
                         scenario or "general",
                         result.get("engine") or "",
+                        study_name or "—",
                     )) if ok else None
                 ),
             }

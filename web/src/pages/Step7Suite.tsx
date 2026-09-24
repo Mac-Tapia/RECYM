@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { api, type Json } from "../api/client";
 import { useFeeder } from "../state/feeder";
+import { ContextBind, useHasSectionContext } from "../components/ContextBind";
 
 export function Step7Suite() {
   const { feeder } = useFeeder();
+  const hasCtx = useHasSectionContext();
   const [force, setForce] = useState(false);
   const [msg, setMsg] = useState("");
   const [out, setOut] = useState("");
@@ -14,6 +16,10 @@ export function Step7Suite() {
   const [nfKv, setNfKv] = useState("22.9");
 
   async function call(path: string, label: string, body?: Json, method = "POST") {
+    if (!hasCtx && path !== "/api/suite/entorno") {
+      setMsg("Elija BD + estudio en §1 y pulse 1.1 Aplicar antes de §7.");
+      return;
+    }
     setBusy(true);
     setMsg(label + "…");
     try {
@@ -34,7 +40,8 @@ export function Step7Suite() {
   return (
     <section className="panel">
       <h2>7 · Optimización + Suite</h2>
-      <p className="muted">Herramientas del pipeline · contexto §1 ({feeder || "—"}).</p>
+      <ContextBind hint="Optimización y herramientas sobre el estudio/BD de §1" />
+      <p className="muted">Herramientas del pipeline · alimentador {feeder || "—"}.</p>
 
       <h3>7.1 Optimización CYMDIST</h3>
       <p className="muted" style={{ marginTop: 0 }}>

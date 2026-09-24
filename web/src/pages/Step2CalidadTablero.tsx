@@ -116,17 +116,34 @@ function applyDiagResult(prev: Board | null, result: Json): Board {
 }
 
 export function Step2CalidadTablero() {
-  const { feeder } = useFeeder();
+  const { feeder, network, studyPath, databaseMdb, setContext } = useFeeder();
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState("");
   const [gate, setGate] = useState<Json | null>(null);
   const [board, setBoard] = useState<Board | null>(null);
   const [activo, setActivo] = useState<Record<string, boolean>>({});
 
+  const studyFile = (studyPath || "").split(/[/\\]/).pop() || "";
+  const dbFile = (databaseMdb || "").split(/[/\\]/).pop() || "";
+  const hasCtx = Boolean(feeder && (studyPath || databaseMdb));
+
   const refreshGate = useCallback(async () => {
     const j = await api<Json>("/api/calidad/estado");
     setGate(j);
-  }, []);
+    // Hidratar contexto §1 desde servidor si la SPA aún no lo tiene
+    if (
+      (!feeder || !studyPath || !databaseMdb) &&
+      (j?.feeder_id || j?.study_path || j?.ui_study_path || j?.database_mdb)
+    ) {
+      setContext({
+        feeder: String(j.feeder_id || feeder || ""),
+        network: String(j.network_id || network || ""),
+        studyPath: String(j.ui_study_path || j.study_path || studyPath || ""),
+        databaseMdb: String(j.database_mdb || databaseMdb || ""),
+      });
+    }
+    return j;
+  }, [feeder, network, studyPath, databaseMdb, setContext]);
 
   const refreshBoard = useCallback(async (rebuild = 0, refreshDiag = false, clear = false, seedLoads = false) => {
     const bust = Date.now();
@@ -150,6 +167,31 @@ export function Step2CalidadTablero() {
   }, []);
 
   useEffect(() => {
+    // Al entrar a §2: sincronizar BD/estudio del §1 y tablero de ese alimentador
+    (async () => {
+      try {
+        const j = await api<{
+          ok?: boolean;
+          current_feeder?: string;
+          current_network?: string;
+          current_study?: string;
+          current_database?: string;
+        }>("/api/contexto/archivos", { timeoutMs: 30000 });
+        if (j?.ok) {
+          setContext({
+            feeder: j.current_feeder || feeder || "",
+            network: j.current_network || "",
+            studyPath: j.current_study || studyPath || "",
+            databaseMdb: j.current_database || databaseMdb || "",
+          });
+        }
+      } catch {
+        /* gate/tablero abajo */
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
     if (!feeder) return;
     // Al cambiar alimentador: vaciar UI y regenerar desde inventario de ESE radial
     setBoard({
@@ -165,18 +207,37 @@ export function Step2CalidadTablero() {
   }, [feeder, refreshGate, refreshBoard]);
 
   async function job(action: string, label: string, payload: Json = {}) {
+    if (!hasCtx) {
+      setMsg("Elija BD + estudio en §1 y pulse 1.1 Aplicar antes de §2.");
+      return;
+    }
     setBusy(label);
-    setMsg(`${label}…`);
+    setMsg(
+      `${label} · ${feeder || "?"} · estudio ${studyFile || "—"} · BD ${dbFile || "—"}…`
+    );
     // Solo 2.1 vacía y luego rellena las tablas del tablero con el diagnóstico nuevo
     const isDiag21 = action === "calidad_diagnosticar";
     if (isDiag21) {
       setBoard((prev) => wipeBoardDiag(prev));
-      setMsg("2.1 · Diagnosticando… el tablero se actualizará al terminar");
+      setMsg(
+        `2.1 · Diagnosticando ${feeder} · estudio ${studyFile} (CYMDIST)…`
+      );
     }
     try {
-      const result = await runJob(action, payload, (j) => {
-        setMsg(String(j.message || label));
-      });
+      const result = await runJob(
+        action,
+        {
+          ...payload,
+          feeder: feeder || undefined,
+          feeder_id: feeder || undefined,
+          network_id: network || undefined,
+          study_path: studyPath || undefined,
+          database_mdb: databaseMdb || undefined,
+        },
+        (j) => {
+          setMsg(String(j.message || label));
+        }
+      );
 
       if (isDiag21) {
         // 1) Pintar al instante códigos / muestra / totales desde el job
@@ -324,10 +385,11 @@ export function Step2CalidadTablero() {
 
   /** Solo el botón activo se marca .running; los demás se bloquean sin parecer en ejecución. */
   function btnProps(id: string, kind: "secondary" | "ghost" = "ghost") {
+    const needCtx = !["2.5", "2.7", "2.8", "tablero"].includes(id);
     const active = busy === id;
     return {
       className: `${kind}${active ? " running" : ""}`,
-      disabled: Boolean(busy),
+      disabled: Boolean(busy) || (needCtx && !hasCtx),
       "aria-busy": active,
     } as const;
   }
@@ -393,13 +455,18 @@ export function Step2CalidadTablero() {
       <section className="panel">
         <h2>2 · Calidad del modelo + Tablero</h2>
         <p className="muted">
-          NetworkDiagnostic (códigos 220000–220053). Gate antes de §3. Cada botón ejecuta solo su acción.
+          Vinculado al <b>estudio y BD de §1</b>. Cada acción activa esa BD en CYMDIST,
+          abre ese estudio y analiza solo ese alimentador. Gate antes de §3.
         </p>
         <div className="hdr-bar">
           <span className={"badge" + (ready ? " ready" : "")}>
             {ready ? "Gate LISTO" : "Gate pendiente"}
           </span>
-          <span className="muted">{feeder || "sin alimentador"}</span>
+          <span className="muted" title={studyPath || ""}>
+            {feeder || "sin alimentador"}
+            {studyFile ? ` · ${studyFile}` : ""}
+            {dbFile ? ` · ${dbFile}` : ""}
+          </span>
           <span
             className={
               "badge" +
@@ -410,6 +477,11 @@ export function Step2CalidadTablero() {
             Converge: {String(gate?.converge || "—")}
           </span>
         </div>
+        {!hasCtx ? (
+          <p className="muted" style={{ color: "#b45309" }}>
+            Configure BD + estudio en §1 y pulse <b>1.1 Aplicar</b> para habilitar §2.
+          </p>
+        ) : null}
         <div className="actions">
           <button type="button" {...btnProps("2.1", "secondary")}
             onClick={() => job("calidad_diagnosticar", "2.1")}>2.1 · Diagnosticar</button>

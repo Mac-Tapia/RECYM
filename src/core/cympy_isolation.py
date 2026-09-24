@@ -179,11 +179,19 @@ def run_job_action_isolated(action, payload=None, feeder=None, timeout=900, prog
                 result = {"ok": False, "error": "JSON out inválido: %s" % ex_j}
 
         if result is None:
+            err = "Worker sin resultado"
+            rc = proc.returncode
+            if is_cympy_exit_crash(rc):
+                err = (
+                    "Worker CymPy Access Violation (0xC0000005) sin JSON. "
+                    "En §3.3 se usa motor COM para evitarlo; reinicie API y reintente."
+                )
             result = {
                 "ok": False,
-                "error": "Worker sin resultado",
+                "error": err,
                 "returncode": rc,
                 "stderr": (proc.stderr or "")[-2000:],
+                "stdout": (proc.stdout or "")[-2000:],
             }
 
         if not isinstance(result, dict):
@@ -193,11 +201,33 @@ def run_job_action_isolated(action, payload=None, feeder=None, timeout=900, prog
         result["worker_returncode"] = rc
         result["worker_elapsed_s"] = round(time.time() - t0, 2)
         if crashed:
-            result["ok"] = False
-            result["crashed_com"] = True
-            result["error"] = result.get("error") or (
-                "Worker CymPy Access Violation (0xC0000005); API intacta"
+            # CymPy a menudo sale 0xC0000005 al destruir COM tras exito real.
+            # Si el worker ya escribio resultado util, conservar OK.
+            had_ok = bool(result.get("ok")) and not result.get("error")
+            meaningful = (
+                result.get("summary")
+                or result.get("tablero")
+                or result.get("csv")
+                or result.get("cymdist")
+                or (result.get("msg") and had_ok)
             )
+            if had_ok or meaningful:
+                result["ok"] = True
+                result["crashed_com"] = True
+                result["crash_soft"] = True
+                base_msg = result.get("msg") or "OK"
+                if "AV" not in str(base_msg) and "Access" not in str(base_msg):
+                    result["msg"] = (
+                        "%s · aviso: CymPy AV al cerrar (resultado conservado)"
+                        % base_msg
+                    )
+                result.pop("error", None)
+            else:
+                result["ok"] = False
+                result["crashed_com"] = True
+                result["error"] = result.get("error") or (
+                    "Worker CymPy Access Violation (0xC0000005); API intacta"
+                )
         if proc.stderr and not result.get("ok"):
             result.setdefault("worker_stderr", (proc.stderr or "")[-1500:])
         if not result.get("msg") and result.get("ok"):

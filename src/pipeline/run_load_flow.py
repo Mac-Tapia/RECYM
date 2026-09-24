@@ -1,20 +1,20 @@
 from __future__ import print_function
 """
-Flujo de carga normal CYMDIST (sim.LoadFlow / COM Cymdist.LoadFlow).
+Flujo de carga normal CYMDIST (COM Cymdist.LoadFlow; CymPy solo si se fuerza).
 
 Segun tutorial CYME «Flujo de carga en redes» (BalLoadFlowInd / IL917123ES):
   analiza el regimen permanente con las cargas YA definidas en el modelo.
 NO reparte demanda de cabecera: eso es LoadAllocation (IL917115ES).
 
-Escenarios RECYM (tras conectar SpotLoad §3) — independientes:
-  - situacional: DESCONECTA fisicamente todas las cargas nuevas (§3) y corre flujo
-  - proyectado: CONECTA fisicamente las cargas nuevas (§3) con su P/Q y corre flujo
+Escenarios RECYM (tras conectar SpotLoad §4) — independientes:
+  - situacional: DESCONECTA fisicamente todas las cargas nuevas (§4) y corre flujo
+  - proyectado: CONECTA fisicamente las cargas nuevas (§4) con su P/Q y corre flujo
 Cada boton deja el modelo en ese estado (no se restaura automaticamente).
 
-Anti-cuelgue UI (§5.1):
-  - sin db.SaveProject en el proceso SPA
-  - COM LoadFlow en SUBPROCESO con timeout
-  - mensajes de progreso al job SSE
+Anti-AV §5 (mismo patron que §3.3):
+  - motor COM in-process (sin require_cympy / SetValue ConnectionStatus)
+  - sin SaveProject MDB grande
+  - leave_open / attach a la sesion GUI §1
 """
 import json
 import os
@@ -43,7 +43,7 @@ def _progress(settings, msg):
 
 def _apply_scenario_new_loads(adapter, settings, scenario):
     """
-    Conmuta cargas nuevas del §4 (SpotLoad concentrada) según escenario.
+    Conmuta cargas nuevas del §4 (SpotLoad concentrada) según escenario (ruta CymPy).
 
     situacional → ConnectionStatus=Disconnected (no aportan al flujo)
     proyectado  → ConnectionStatus=Connected + P/Q del reporte §4
@@ -69,9 +69,7 @@ def _apply_scenario_new_loads(adapter, settings, scenario):
         lid = r["LoadID"]
         try:
             if scen == "situacional":
-                # Desconexion fisica: no aporta al flujo (ni a distribucion)
                 conn = adapter.set_load_connected(lid, False)
-                # Mantener P/Q en casilleros (solo desconectada)
                 notes.append({
                     "LoadID": lid,
                     "ConnectionStatus": conn.get("after"),
@@ -82,11 +80,8 @@ def _apply_scenario_new_loads(adapter, settings, scenario):
                     "Fuente": r.get("Fuente"),
                 })
             else:
-                # proyectado / general: conectar y asegurar P/Q trifasico→por fase
                 conn = adapter.set_load_connected(lid, True)
                 if float(r.get("P_kW") or 0) > 0 or float(r.get("Q_kvar") or 0) > 0:
-                    # lock=False: no dejar SpotLoad §3 Locked; 3.3 necesita
-                    # residual Unlocked para repartir cabecera − fijos.
                     adapter.set_load_pq(lid, r["P_kW"], r["Q_kvar"], lock=False)
                 notes.append({
                     "LoadID": lid,
@@ -106,8 +101,8 @@ def _apply_scenario_new_loads(adapter, settings, scenario):
 def run_load_flow(settings=None, scenario=None):
     """
     scenario: None | 'situacional' | 'proyectado'
-      - situacional = desconecta cargas §3 y ejecuta LoadFlow solo
-      - proyectado  = conecta cargas §3 y ejecuta LoadFlow solo
+      - situacional = desconecta cargas §4 y ejecuta LoadFlow solo
+      - proyectado  = conecta cargas §4 y ejecuta LoadFlow solo
     Guarda loadflow_result.json y, si hay scenario, loadflow_<scenario>.json
     """
     s = dict(settings or load_settings())
@@ -127,7 +122,7 @@ def run_load_flow(settings=None, scenario=None):
         "scenario": scen or "general",
         "status": "ok",
         "note": (
-            "Cada boton es independiente: situacional desconecta cargas §3; "
+            "Cada boton es independiente: situacional desconecta cargas §4; "
             "proyectado las conecta. No redistribuir tras SpotLoad."
         ),
     }
@@ -136,7 +131,8 @@ def run_load_flow(settings=None, scenario=None):
         print("[%s] DRY_RUN: flujo no ejecutado." % s["feeder_id"])
         return result
 
-    prefer_com = s.get("loadflow_engine", "COM").upper() != "CYMPY"
+    # Default COM (como §3.3). Solo CymPy si loadflow_engine=CYMPY.
+    prefer_com = str(s.get("loadflow_engine") or "COM").upper() != "CYMPY"
     print("[%s] Ejecutando LoadFlow (flujo de carga normal)%s..." % (
         s["feeder_id"],
         (" [%s]" % scen) if scen else "",
@@ -157,129 +153,114 @@ def run_load_flow(settings=None, scenario=None):
         keep = False
         lf_fixed = False
 
-    # Pausar GUI si Cyme esta abierto (escritura CymPy de conexion §3)
-    if keep or scen in ("situacional", "proyectado"):
-        try:
-            from core.cymdist_com import pause_cymdist_for_cympy
-            pause_cymdist_for_cympy(s)
-        except Exception as ex:
-            print("AVISO pause CYMDIST:", ex)
-
-    # Mitiga 480010 / 260035 — omitir si ya se aplicó (SaveProject colgaba aquí)
-    do_fix = bool(s.get("auto_fix_lf_warnings", True)) and not (
-        lf_fixed and not s.get("force_fix_lf_warnings")
-    )
-    if do_fix:
-        try:
-            _progress(s, "pre-fix avisos LF...")
-            from pipeline.fix_lf_warnings import run as fix_lf_warnings
-            fix_res = fix_lf_warnings(s)
-            result["lf_warnings_fix"] = {
-                "ok": fix_res.get("ok"),
-                "notes": (fix_res.get("notes") or [])[:20],
-            }
-            print("[%s] Pre-fix LF warnings: %s" % (
-                s["feeder_id"], "OK" if fix_res.get("ok") else "parcial"))
-            try:
-                from pipeline.run_demand_allocation import load_session, save_session
-                sess2 = load_session(s)
-                sess2["lf_warnings_fixed"] = True
-                save_session(s, sess2)
-            except Exception:
-                pass
-        except Exception as ex:
-            result["lf_warnings_fix"] = {"ok": False, "error": str(ex)}
-            print("[%s] AVISO fix_lf_warnings: %s" % (s["feeder_id"], ex))
-    else:
-        result["lf_warnings_fix"] = {
-            "ok": True,
-            "skipped": True,
-            "reason": "ya_aplicado_en_sesion",
-        }
-        _progress(s, "pre-fix omitido (ya aplicado)")
-
-    adapter = None
-    try:
-        _progress(s, "estudio / escenario %s..." % (scen or "general"))
-        c = require_cympy(s)
-        adapter = CymPyAdapter(c, api, s)
-        adapter.open_study(force_backup=False)
-        if scen in ("situacional", "proyectado") or list_connected_spot_loads(s):
-            target = scen or "proyectado"
-            touched, scen_notes = _apply_scenario_new_loads(adapter, s, target)
-            result["new_loads_scenario"] = scen_notes
-            result["n_new_loads"] = len(touched)
-            result["new_loads_connected"] = (target != "situacional")
-            if touched:
-                print("[%s] Cargas §3 escenario %s: %d (%s)" % (
-                    s["feeder_id"],
-                    target,
-                    len(touched),
-                    "DESCONECTADAS" if target == "situacional" else "CONECTADAS",
-                ))
-            # Persistir ConnectionStatus en .zxst para que el COM lo lea.
-            # Sin SaveProject (skip_db_project_save).
-            if touched and s.get("save_after_write", True):
-                try:
-                    adapter.save_study()
-                except Exception as ex:
-                    print("AVISO save pre-LF:", ex)
-    except Exception as ex:
-        result["scenario_prep_error"] = str(ex)
-        print("[%s] AVISO preparar escenario cargas nuevas: %s" % (s["feeder_id"], ex))
-
     meta = {}
     ok = False
     err = None
+    adapter = None
 
     if prefer_com:
-        from core.cympy_job import run_cympy_job
-        from core import cympy_adapter as _cym_ad
-        if adapter is not None:
-            try:
-                adapter.close_study(save=False)
-            except Exception:
-                pass
-            adapter = None
-        try:
-            _cym_ad._PROCESS_STUDY_PATH = None
-        except Exception:
-            pass
+        # --- Ruta COM-first (anti AV 0xC0000005): sin require_cympy ---
+        # No fix_lf_warnings ni open_study CymPy: provocan Access Violation
+        # en el worker aislado tras §3.2/§3.3.
+        from core.cymdist_com import run_loadflow_com
 
-        timeout_com = float(
-            s.get("loadflow_com_timeout_sec")
-            or s.get("cympy_job_timeout_sec")
-            or 120
+        spot_loads = []
+        try:
+            spot_loads = list_connected_spot_loads(s)
+        except Exception as ex_sl:
+            print("[LF] AVISO list_connected_spot_loads:", ex_sl)
+
+        leave_open = bool(keep) or bool(s.get("cymdist_leave_open", True))
+        _progress(
+            s,
+            "COM LoadFlow [%s] (sin CymPy, leave_open=%s)..."
+            % (scen or "general", leave_open),
         )
-        _progress(s, "COM LoadFlow (subproceso <=%ss)..." % int(timeout_com))
-        # leave_open=False en worker: no dejar Cyme colgado; resume_gui aparte si keep
-        com = run_cympy_job(
-            "loadflow_com",
-            {
-                "feeder_id": s.get("feeder_id"),
-                "network_id": net,
-                "study_path": s.get("study_path"),
-                "database_mdb": s.get("database_mdb"),
-                "database_connection_name": s.get("database_connection_name"),
-                "leave_open": False,
-            },
-            settings=s,
-            timeout_sec=timeout_com,
+        com = run_loadflow_com(
+            s,
+            network_id=net,
+            leave_open=leave_open,
+            kill_existing=False,
+            scenario=scen,
+            spot_loads=spot_loads if scen else None,
         )
         meta = {"engine": "COM", "com": com}
         ok = bool(com.get("ok"))
-        err = None if ok else (com.get("error") or "LoadFlow COM falló/timeout")
-        if ok:
-            result["topo"] = com.get("topo") or {}
-            result["source_node"] = com.get("source_node")
-            result["saved"] = com.get("saved")
-            result["warnings"] = com.get("warnings") or []
-            result["warn_file"] = com.get("warn_file")
-            result["cymdist_open"] = False
-            result["calculation_method"] = com.get("calculation_method")
-            result["log_errors"] = com.get("log_errors") or []
-            result["com_elapsed_sec"] = com.get("elapsed_sec")
+        err = None if ok else (com.get("error") or "LoadFlow COM fallo")
+        result["engine"] = "COM"
+        result["topo"] = com.get("topo") or {}
+        result["source_node"] = com.get("source_node")
+        result["saved"] = com.get("saved")
+        result["warnings"] = com.get("warnings") or []
+        result["warn_file"] = com.get("warn_file")
+        result["cymdist_open"] = bool(com.get("cymdist_open"))
+        result["calculation_method"] = com.get("calculation_method")
+        result["log_errors"] = com.get("log_errors") or []
+        result["com_elapsed_sec"] = com.get("elapsed_sec")
+        result["attach_mode"] = com.get("attach_mode")
+        result["new_loads_scenario"] = com.get("new_loads_scenario") or []
+        result["n_new_loads"] = com.get("n_new_loads") or 0
+        result["new_loads_connected"] = com.get("new_loads_connected")
+        if not ok:
+            result["lf_warnings_fix"] = {"ok": True, "skipped": True, "reason": "prefer_COM"}
     else:
+        # --- Ruta CymPy legacy (solo si loadflow_engine=CYMPY) ---
+        if keep or scen in ("situacional", "proyectado"):
+            try:
+                from core.cymdist_com import pause_cymdist_for_cympy
+                pause_cymdist_for_cympy(s)
+            except Exception as ex:
+                print("AVISO pause CYMDIST:", ex)
+
+        do_fix = bool(s.get("auto_fix_lf_warnings", True)) and not (
+            lf_fixed and not s.get("force_fix_lf_warnings")
+        )
+        if do_fix:
+            try:
+                _progress(s, "pre-fix avisos LF...")
+                from pipeline.fix_lf_warnings import run as fix_lf_warnings
+                fix_res = fix_lf_warnings(s)
+                result["lf_warnings_fix"] = {
+                    "ok": fix_res.get("ok"),
+                    "notes": (fix_res.get("notes") or [])[:20],
+                }
+                try:
+                    from pipeline.run_demand_allocation import load_session, save_session
+                    sess2 = load_session(s)
+                    sess2["lf_warnings_fixed"] = True
+                    save_session(s, sess2)
+                except Exception:
+                    pass
+            except Exception as ex:
+                result["lf_warnings_fix"] = {"ok": False, "error": str(ex)}
+                print("[%s] AVISO fix_lf_warnings: %s" % (s["feeder_id"], ex))
+        else:
+            result["lf_warnings_fix"] = {
+                "ok": True,
+                "skipped": True,
+                "reason": "ya_aplicado_en_sesion",
+            }
+
+        try:
+            _progress(s, "estudio / escenario %s..." % (scen or "general"))
+            c = require_cympy(s)
+            adapter = CymPyAdapter(c, api, s)
+            adapter.open_study(force_backup=False)
+            if scen in ("situacional", "proyectado") or list_connected_spot_loads(s):
+                target = scen or "proyectado"
+                touched, scen_notes = _apply_scenario_new_loads(adapter, s, target)
+                result["new_loads_scenario"] = scen_notes
+                result["n_new_loads"] = len(touched)
+                result["new_loads_connected"] = (target != "situacional")
+                if touched and s.get("save_after_write", True):
+                    try:
+                        adapter.save_study()
+                    except Exception as ex:
+                        print("AVISO save pre-LF:", ex)
+        except Exception as ex:
+            result["scenario_prep_error"] = str(ex)
+            print("[%s] AVISO preparar escenario cargas nuevas: %s" % (s["feeder_id"], ex))
+
         if adapter is None:
             c = require_cympy(s)
             adapter = CymPyAdapter(c, api, s)
@@ -306,26 +287,25 @@ def run_load_flow(settings=None, scenario=None):
             result["source_node"] = com.get("source_node")
             result["saved"] = com.get("saved")
 
-    # No restaurar tras situacional: el modelo queda desconectado hasta proyectado.
-    if adapter is not None:
-        try:
-            adapter.close_study(save=False)
-        except Exception:
-            pass
+        if adapter is not None:
+            try:
+                adapter.close_study(save=False)
+            except Exception:
+                pass
 
-    if keep:
-        try:
-            from core.cymdist_com import resume_cymdist_gui
-            _progress(s, "reabriendo GUI Cyme...")
-            com_r = resume_cymdist_gui(
-                s,
-                reason="post_loadflow_%s" % (scen or "general"),
-            )
-            result["cymdist_open"] = bool(com_r.get("cymdist_open"))
-        except Exception as ex:
-            result["resume_error"] = str(ex)
+        if keep:
+            try:
+                from core.cymdist_com import resume_cymdist_gui
+                _progress(s, "reabriendo GUI Cyme...")
+                com_r = resume_cymdist_gui(
+                    s,
+                    reason="post_loadflow_%s" % (scen or "general"),
+                )
+                result["cymdist_open"] = bool(com_r.get("cymdist_open"))
+            except Exception as ex:
+                result["resume_error"] = str(ex)
 
-    result["engine"] = (meta or {}).get("engine")
+    result["engine"] = (meta or {}).get("engine") or result.get("engine")
     if ok:
         result["status"] = "ok"
         _progress(s, "LoadFlow OK (%s)" % (scen or "general"))
@@ -335,10 +315,10 @@ def run_load_flow(settings=None, scenario=None):
         result["status"] = "error"
         result["error"] = err
         result["ayuda"] = (
-            "LoadFlow fallo. CymPy reporta 130013 cuando los complementos de "
-            "simulacion no autentican; RECYM reintenta automaticamente via COM "
-            "(Cymdist.Application). Verifique database_mdb, study_path y que no "
-            "haya otra sesion Cyme bloqueando el estudio."
+            "LoadFlow fallo. Por defecto RECYM usa motor COM (Cymdist.Application) "
+            "como en §3.3. Verifique database_mdb, study_path y que no haya otra "
+            "sesion Cyme bloqueando el estudio. Si forzo CYMPY, el worker puede "
+            "caer con Access Violation 0xC0000005."
         )
         _progress(s, "ERROR LoadFlow: %s" % err)
         print("ERROR LoadFlow:", err)

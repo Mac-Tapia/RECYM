@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, getActiveFeeder, type Json } from "../api/client";
+import { ContextBind } from "../components/ContextBind";
 
 type Delivery = {
   ok?: boolean;
@@ -276,6 +277,7 @@ export function Step6Informes() {
   return (
     <section className="panel">
       <h2>6 · Informes de entrega</h2>
+      <ContextBind hint="Informes del alimentador/estudio activos de §1" />
       <p className="muted">
         PDF OCR + ambos flujos §5 + gráficas → Word/Excel en doc/. Antes de cerrar, valide la vista preliminar.
         · alimentador {feederHdr}

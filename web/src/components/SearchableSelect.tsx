@@ -58,10 +58,23 @@ export function SearchableSelect({
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
 
-  const selected = useMemo(
-    () => options.find((o) => o.value === value) || null,
-    [options, value]
-  );
+  const selected = useMemo(() => {
+    if (!value) return null;
+    const exact = options.find((o) => o.value === value);
+    if (exact) return exact;
+    // Windows: / vs \ o rutas equivalentes por basename
+    const norm = (p: string) => (p || "").replace(/\//g, "\\").toLowerCase();
+    const byNorm = options.find((o) => norm(o.value) === norm(value));
+    if (byNorm) return byNorm;
+    const base = (value.split(/[/\\]/).pop() || "").toLowerCase();
+    if (!base) return null;
+    return (
+      options.find((o) => {
+        const ob = (o.value.split(/[/\\]/).pop() || o.label || "").toLowerCase();
+        return ob === base;
+      }) || null
+    );
+  }, [options, value]);
 
   const filtered = useMemo(() => {
     const list = options.filter((o) => matchesQuery(o, query));

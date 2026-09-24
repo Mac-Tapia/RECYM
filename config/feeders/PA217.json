@@ -11,5 +11,9 @@
   "control_workbook": "data\\input\\feeders\\PA217\\Control_Simulacion.xlsx",
   "catalog_workbook": "data\\input\\feeders\\PA217\\Catalogo_Maestro.xlsx",
   "output_dir": "data\\output\\feeders\\PA217",
-  "notes": "Estudio en projects_dir; BD compartida en database_mdb"
+  "notes": "Estudio en projects_dir; BD compartida en database_mdb",
+  "via_eld": false,
+  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\PA217v2.xst",
+  "ui_study_file": "PA217v2.xst",
+  "study_open_fallback": true
 }
