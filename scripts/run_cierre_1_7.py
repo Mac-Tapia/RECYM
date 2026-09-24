@@ -190,15 +190,32 @@ def main():
     for scen, label in (("situacional", "5.1 situacional"), ("proyectado", "5.2 proyectado")):
         res, err = run_job(
             "flujo",
-            {"scenario": scen, "update_informe": True},
-            timeout_sec=420,
+            {
+                "scenario": scen,
+                "update_informe": True,
+                # 5.2 entrega informe completo (capturas + Word); 5.1 solo cuadros
+                "deliver_complete": scen == "proyectado",
+                "force_captures": scen == "proyectado",
+            },
+            timeout_sec=720 if scen == "proyectado" else 420,
         )
         st = ((res or {}).get("result") or res or {}).get("status") or (res or {}).get("msg")
+        inf = (res or {}).get("informe") or {}
+        detail = err or (res or {}).get("error") or ""
+        if scen == "proyectado" and inf:
+            detail = (detail + " · informe_ok=%s delivery=%s" % (
+                inf.get("ok"), inf.get("delivery_ready"),
+            )).strip(" ·")
         log(label, str(st)[:160], ok=not err and (res or {}).get("ok", True) is not False,
-            detail=err or (res or {}).get("error"))
+            detail=detail)
 
-    # —— §6 Informes ——
-    arm, err = http("POST", "/api/informe/armar", {"fill": True}, timeout=180)
+    # —— §6 Informes (punto unico de entrega; refuerzo si 5.2 no completo) ——
+    arm, err = http(
+        "POST",
+        "/api/informe/armar",
+        {"fill": True, "ensure_lf": True, "force_captures": True, "require_delivery": True},
+        timeout=720,
+    )
     log("6.1 armar informe", arm.get("msg") or arm.get("path") or "armar",
         ok=not err and arm.get("ok", True) is not False, detail=err or arm.get("error"))
 

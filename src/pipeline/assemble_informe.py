@@ -1,10 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Arma copias de entrega del informe (Word + Excel) sin alterar formato ni numerales.
+Arma copias de entrega del informe (Word + Excel) SIN alterar los modelos.
 
-Fuente plantilla : data/output/informe/{informe.docx, justificacion.xlsx}
-Destino entrega  : doc/{informe.docx, justificacion.xlsx}
-Resultados flujo : data/output/feeders/<ID>/demand/loadflow_*.json
+Fuente MODELO (solo lectura):
+  data/input/InformeModelo/InformeModelo.docx
+  data/input/InformeModelo/informeModelo.xlsx
+
+Destino entrega (copias rellenables):
+  doc/informe.docx
+  doc/justificacion.xlsx
+
+Nunca escribe en data/input/InformeModelo/.
 """
 from __future__ import print_function
 import json
@@ -15,19 +21,46 @@ from datetime import datetime
 from core.common import mkdir, p
 from core.feeder_context import load_settings, output_path
 
-TEMPLATE_DIR = p("data", "output", "informe")
+# Modelos oficiales (inmutables)
+MODELO_DIR = p("data", "input", "InformeModelo")
+MODELO_WORD = "InformeModelo.docx"
+MODELO_EXCEL = "informeModelo.xlsx"
+
+# Compat: plantilla legacy en data/output/informe (fallback)
+LEGACY_TEMPLATE_DIR = p("data", "output", "informe")
 DOC_DIR = p("doc")
-TEMPLATE_FILES = ("informe.docx", "justificacion.xlsx")
+
+# Nombres de entrega (UI / API)
+DELIVERY_WORD = "informe.docx"
+DELIVERY_EXCEL = "justificacion.xlsx"
+
+# Alias públicos usados por fill_informe
+TEMPLATE_DIR = MODELO_DIR
+TEMPLATE_FILES = (DELIVERY_WORD, DELIVERY_EXCEL)
+
+
+def _modelo_sources():
+    """Rutas absolutas de los modelos de entrada (nunca se sobrescriben)."""
+    word = os.path.join(MODELO_DIR, MODELO_WORD)
+    excel = os.path.join(MODELO_DIR, MODELO_EXCEL)
+    # Fallback legacy si falta el modelo nuevo
+    if not os.path.isfile(word):
+        word = os.path.join(LEGACY_TEMPLATE_DIR, "informe.docx")
+    if not os.path.isfile(excel):
+        excel = os.path.join(LEGACY_TEMPLATE_DIR, "justificacion.xlsx")
+    return {"word": word, "excel": excel}
 
 
 def _paths():
+    src = _modelo_sources()
     return {
-        "plantilla_dir": TEMPLATE_DIR,
+        "plantilla_dir": MODELO_DIR,
+        "modelo_dir": MODELO_DIR,
         "doc_dir": DOC_DIR,
-        "informe_plantilla": os.path.join(TEMPLATE_DIR, "informe.docx"),
-        "justificacion_plantilla": os.path.join(TEMPLATE_DIR, "justificacion.xlsx"),
-        "informe_doc": os.path.join(DOC_DIR, "informe.docx"),
-        "justificacion_doc": os.path.join(DOC_DIR, "justificacion.xlsx"),
+        "informe_plantilla": src["word"],
+        "justificacion_plantilla": src["excel"],
+        "informe_doc": os.path.join(DOC_DIR, DELIVERY_WORD),
+        "justificacion_doc": os.path.join(DOC_DIR, DELIVERY_EXCEL),
     }
 
 
@@ -36,14 +69,19 @@ def informe_paths(settings=None):
     s = settings or load_settings()
     base = _paths()
     feeder = s.get("feeder_id") or "?"
+    feeder_out = output_path(s, "informe")
     return {
         "feeder_id": feeder,
         "plantilla_dir": base["plantilla_dir"],
+        "modelo_dir": base["modelo_dir"],
         "doc_dir": base["doc_dir"],
         "informe_plantilla": base["informe_plantilla"],
         "justificacion_plantilla": base["justificacion_plantilla"],
         "informe_doc": base["informe_doc"],
         "justificacion_doc": base["justificacion_doc"],
+        # Copia por alimentador (auditoría; no sustituye doc/)
+        "informe_feeder_doc": os.path.join(feeder_out, DELIVERY_WORD),
+        "justificacion_feeder_doc": os.path.join(feeder_out, DELIVERY_EXCEL),
         "loadflow_situacional": output_path(s, "demand", "loadflow_situacional.json"),
         "loadflow_proyectado": output_path(s, "demand", "loadflow_proyectado.json"),
         "loadflow_result": output_path(s, "demand", "loadflow_result.json"),
@@ -53,37 +91,48 @@ def informe_paths(settings=None):
 
 def assemble_informe(settings=None, overwrite=True):
     """
-    Copia byte-a-byte plantillas → doc/, preservando formato, numerales e imagenes.
-    No reescribe el contenido del Word/Excel (solo copia).
+    Copia byte-a-byte MODELO → doc/ (y espejo por feeder), preservando
+    formato, numerales, formulas e imagenes. Nunca toca data/input/InformeModelo.
     """
     s = settings or load_settings()
     paths = informe_paths(s)
     mkdir(paths["doc_dir"])
+    feeder_dir = os.path.dirname(paths["informe_feeder_doc"])
+    mkdir(feeder_dir)
+
+    src_map = [
+        (paths["informe_plantilla"], paths["informe_doc"], paths["informe_feeder_doc"]),
+        (paths["justificacion_plantilla"], paths["justificacion_doc"], paths["justificacion_feeder_doc"]),
+    ]
 
     copied = []
     missing = []
-    for name in TEMPLATE_FILES:
-        src = os.path.join(paths["plantilla_dir"], name)
-        dst = os.path.join(paths["doc_dir"], name)
+    for src, dst_doc, dst_feeder in src_map:
+        name = os.path.basename(dst_doc)
         if not os.path.isfile(src):
             missing.append(src)
             continue
-        if (not overwrite) and os.path.isfile(dst):
-            copied.append({"name": name, "src": src, "dst": dst, "action": "skipped_exists"})
+        if (not overwrite) and os.path.isfile(dst_doc):
+            copied.append({"name": name, "src": src, "dst": dst_doc, "action": "skipped_exists"})
             continue
-        shutil.copy2(src, dst)
+        shutil.copy2(src, dst_doc)
+        try:
+            shutil.copy2(src, dst_feeder)
+        except Exception:
+            pass
         copied.append({
             "name": name,
             "src": src,
-            "dst": dst,
-            "bytes": os.path.getsize(dst),
-            "action": "copied",
+            "dst": dst_doc,
+            "feeder_copy": dst_feeder,
+            "bytes": os.path.getsize(dst_doc),
+            "action": "copied_from_modelo",
         })
 
     if missing:
         return {
             "ok": False,
-            "error": "Faltan plantillas en data/output/informe: %s" % "; ".join(missing),
+            "error": "Faltan modelos en data/input/InformeModelo: %s" % "; ".join(missing),
             "paths": paths,
             "copied": copied,
         }
@@ -93,40 +142,23 @@ def assemble_informe(settings=None, overwrite=True):
         "feeder_id": s.get("feeder_id"),
         "assembled_at": datetime.now().isoformat(timespec="seconds"),
         "note": (
-            "Copia sin alterar formato ni numerales. "
-            "Imagenes del .docx se preservan embebidas. "
-            "Rellenar tablas con resultados de loadflow_situacional / loadflow_proyectado."
+            "Copia desde InformeModelo (input). Modelos originales intactos. "
+            "Rellenar solo entradas LF situacional/proyectado; formulas se mantienen."
         ),
+        "modelo_dir": MODELO_DIR,
         "paths": paths,
         "copied": copied,
-        "scenarios": {
-            "situacional": _read_json_if(paths["loadflow_situacional"]),
-            "proyectado": _read_json_if(paths["loadflow_proyectado"]),
-        },
     }
     with open(paths["assemble_manifest"], "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
-
-    print("[informe] Guardado en:", paths["doc_dir"])
-    for c in copied:
-        print("  -", c["dst"])
     return manifest
 
 
-def _read_json_if(path):
-    if not path or not os.path.isfile(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as ex:
-        return {"error": str(ex)}
-
-
 def main():
-    m = assemble_informe()
-    print(json.dumps(m, indent=2, ensure_ascii=False, default=str))
-    if not m.get("ok"):
+    import json as _json
+    r = assemble_informe(overwrite=True)
+    print(_json.dumps(r, indent=2, ensure_ascii=False, default=str))
+    if not r.get("ok"):
         raise SystemExit(1)
 
 

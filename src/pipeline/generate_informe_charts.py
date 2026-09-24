@@ -42,13 +42,20 @@ def _is_cymdist_capture(png_path):
 
 
 def _should_skip(png_path, lf_json_path):
-    """True si hay captura CYMDIST o PNG manual mas reciente que el JSON LF."""
+    """True si PNG manual/cymdist es mas reciente que el JSON LF fuente.
+
+    Si el LoadFlow §5 es mas nuevo que la captura, NO omitir: hay que
+    regenerar para que situacional/proyectado reflejen el flujo actual.
+    """
     if not os.path.isfile(png_path):
+        return False
+    lf_m = _mtime(lf_json_path)
+    png_m = _mtime(png_path)
+    # LF mas nuevo que la imagen → regenerar (aunque sea captura CYMDIST)
+    if lf_m > 0 and png_m > 0 and lf_m > png_m + 1.0:
         return False
     if _is_cymdist_capture(png_path):
         return True
-    lf_m = _mtime(lf_json_path)
-    png_m = _mtime(png_path)
     if lf_m <= 0:
         return True
     return png_m > lf_m + 1.0
@@ -118,9 +125,42 @@ def _plot_cargabilidad(metrics, title, out_path):
     _save_fig(fig, out_path)
 
 
+def _plot_trafo_cargabilidad(sit, proy, out_path, rated_mva=30.0):
+    """Barras de cargabilidad del trafo SET (kVA cabecera / MVA nominal)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    rated_kva = float(rated_mva) * 1000.0
+    def _pct(m):
+        if not m:
+            return 0.0
+        kva = m.get("kva")
+        if kva is None:
+            return 0.0
+        return 100.0 * float(kva) / rated_kva
+
+    labels = ["Situacional", "Proyectado"]
+    vals = [_pct(sit), _pct(proy)]
+    fig, ax = plt.subplots(figsize=(7.2, 4.0))
+    colors = ["#2f6fed", "#c47a00"]
+    bars = ax.bar(labels, vals, color=colors, width=0.55)
+    ax.axhline(80.0, color="#3d8b40", linestyle="--", linewidth=1.0, label="80%")
+    ax.axhline(100.0, color="#b00020", linestyle=":", linewidth=1.0, label="100%")
+    ax.set_ylabel("Cargabilidad trafo (%)")
+    ax.set_title("Cargabilidad transformador SET (base %.0f MVA)" % rated_mva)
+    ax.set_ylim(0.0, max(110.0, max(vals) * 1.15 if vals else 110.0))
+    ax.legend(loc="upper right", fontsize=8)
+    for b, v in zip(bars, vals):
+        ax.text(b.get_x() + b.get_width() / 2.0, v + 1.0, "%.1f%%" % v,
+                ha="center", va="bottom", fontsize=10)
+    ax.grid(axis="y", linestyle=":", alpha=0.4)
+    _save_fig(fig, out_path)
+
+
 def generate_informe_charts(img_dir, scenarios, paths=None, force=False):
     """
-    Genera los 4 PNG LF en img_dir.
+    Genera los 4 PNG LF en img_dir (+ trafo_cargabilidad si falta).
     scenarios: dict con situacional/proyectado (metrics_from_lf).
     paths: informe_paths (para mtime de JSON).
     Errores de escenario ausente van a `pending` (no a `errors`) para no
@@ -156,6 +196,10 @@ def generate_informe_charts(img_dir, scenarios, paths=None, force=False):
             pending.append(fname)
             continue
         out = os.path.join(img_dir, fname)
+        # Nunca pisar capturas CYMDIST de coloreo §5 con barras matplotlib
+        if _is_cymdist_capture(out):
+            skipped.append({"file": fname, "reason": "cymdist_capture_preserved"})
+            continue
         if not force and _should_skip(out, lf_json):
             skipped.append({"file": fname, "reason": "manual_newer_than_lf"})
             continue
@@ -164,6 +208,13 @@ def generate_informe_charts(img_dir, scenarios, paths=None, force=False):
                 _plot_tension(m, title, out)
             else:
                 _plot_cargabilidad(m, title, out)
+            # Si habia sidecar CYMDIST huerfano, limpiarlo (ya no aplica)
+            side = out + ".cymdist.json"
+            if os.path.isfile(side):
+                try:
+                    os.remove(side)
+                except Exception:
+                    pass
             generated.append({
                 "file": fname,
                 "path": out,
@@ -173,6 +224,27 @@ def generate_informe_charts(img_dir, scenarios, paths=None, force=False):
             })
         except Exception as ex:
             errors.append("%s: %s" % (fname, ex))
+
+    # Grafico trafo SET (image10) — no es captura CYMDIST
+    trafo_out = os.path.join(img_dir, "trafo_cargabilidad.png")
+    if scenarios.get("situacional") or scenarios.get("proyectado"):
+        if force or not os.path.isfile(trafo_out):
+            try:
+                _plot_trafo_cargabilidad(
+                    scenarios.get("situacional"),
+                    scenarios.get("proyectado"),
+                    trafo_out,
+                )
+                generated.append({
+                    "file": "trafo_cargabilidad.png",
+                    "path": trafo_out,
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    "source": "loadflow_json",
+                })
+            except Exception as ex:
+                errors.append("trafo_cargabilidad.png: %s" % ex)
+        else:
+            skipped.append({"file": "trafo_cargabilidad.png", "reason": "exists"})
 
     present = [f for f in REQUIRED_LF_IMAGES if os.path.isfile(os.path.join(img_dir, f))]
     missing = [f for f in REQUIRED_LF_IMAGES if f not in present]

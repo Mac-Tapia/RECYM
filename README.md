@@ -28,7 +28,8 @@ Por cada alimentador:
 | Documento | Contenido |
 |-----------|-----------|
 | **[docs/PRODUCCION.md](docs/PRODUCCION.md)** | Auth, CORS, checklist go-live estación |
-| **[docs/ARQUITECTURA.md](docs/ARQUITECTURA.md)** | Capas, CymPy/COM, API, artefactos |
+| **[docs/ARQUITECTURA.md](docs/ARQUITECTURA.md)** | Capas, CymPy/COM, API, artefactos, v7 |
+| **[docs/CAMPAIGN_V7.md](docs/CAMPAIGN_V7.md)** | Campaign Aggregate §§1–7 + API v2 |
 | **[docs/FLUJO_TRABAJO.md](docs/FLUJO_TRABAJO.md)** | Campaña §§1–7 end-to-end + batch |
 | **[docs/MANUAL_UI_DEMANDA.md](docs/MANUAL_UI_DEMANDA.md)** | Manual operativo UI |
 | [docs/API_CONTRATO_UI.md](docs/API_CONTRATO_UI.md) | Contrato REST / jobs / SSE |

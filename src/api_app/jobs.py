@@ -461,9 +461,13 @@ def _run_action(action, payload, feeder, job_id=None):
 
     if action == "flujo":
         from pipeline.run_load_flow import run_load_flow
-        from pipeline.fill_informe import fill_informe
+        from pipeline.deliver_informe import deliver_informe
         scenario = (payload.get("scenario") or "").strip().lower() or None
         update_informe = payload.get("update_informe", True)
+        # Tras proyectado (o si piden captura) la entrega incluye coloreo §5.
+        deliver_complete = payload.get("deliver_complete")
+        if deliver_complete is None:
+            deliver_complete = (scenario == "proyectado") or (not scenario)
 
         def _run():
             def _prog(msg):
@@ -494,8 +498,24 @@ def _run_action(action, payload, feeder, job_id=None):
             informe = None
             if ok and update_informe:
                 try:
-                    _prog("actualizando informe...")
-                    informe = fill_informe(s2, overwrite_copy=True)
+                    if deliver_complete:
+                        _prog("entregando informe completo (capturas §5 + Word/Excel)…")
+                        informe = deliver_informe(
+                            s2,
+                            ensure_lf=False,
+                            force_captures=bool(payload.get("force_captures", False)),
+                            require_delivery=bool(payload.get("require_delivery", False)),
+                        )
+                    else:
+                        # Tras 5.1: actualizar cuadros sin re-capturar el par completo
+                        # (la captura viva se hace en 5.2 / §6 armar).
+                        _prog("actualizando cuadros informe (sin recaptura completa)…")
+                        from pipeline.fill_informe import fill_informe
+                        s2["informe_auto_cymdist_capture"] = False
+                        s2["force_cymdist_captures"] = False
+                        informe = fill_informe(
+                            s2, overwrite_copy=True, require_delivery=False
+                        )
                 except Exception as ex_inf:
                     informe = {"ok": False, "error": str(ex_inf)}
             study_name = os.path.basename(
@@ -518,7 +538,8 @@ def _run_action(action, payload, feeder, job_id=None):
                 ),
             }
 
-        return _calidad(_run, timeout_sec=300.0)
+        # LF + capturas CYMDIST + Word puede superar 5 min
+        return _calidad(_run, timeout_sec=720.0 if (update_informe and deliver_complete) else 300.0)
 
     if action == "build_tablero":
         from analysis.build_dashboard import main as build_tablero
@@ -538,6 +559,13 @@ def _worker(job_id, action, payload, feeder):
     try:
         payload = dict(payload or {})
         payload["_job_id"] = job_id
+
+        # Ledger campaña v7 (best-effort)
+        try:
+            from app.orchestrator import register_legacy_job, complete_legacy_job
+            register_legacy_job(feeder or "", action, payload, job_id)
+        except Exception as ex_led:
+            print("AVISO campaign ledger:", ex_led)
 
         use_iso = False
         try:
@@ -582,10 +610,28 @@ def _worker(job_id, action, payload, feeder):
             message=msg,
             result=result,
         )
+        try:
+            from app.orchestrator import complete_legacy_job
+            complete_legacy_job(
+                job_id,
+                ok=ok,
+                result=result,
+                error=None if ok else (
+                    (result or {}).get("error") if isinstance(result, dict) else str(result)
+                ),
+                message=msg,
+            )
+        except Exception as ex_done:
+            print("AVISO complete ledger:", ex_done)
     except Exception as ex:
         import traceback
         traceback.print_exc()
         _set_job(job_id, status="error", message=str(ex), result={"ok": False, "error": str(ex)})
+        try:
+            from app.orchestrator import complete_legacy_job
+            complete_legacy_job(job_id, ok=False, error=str(ex), message=str(ex))
+        except Exception:
+            pass
 
 
 @router.post("")

@@ -217,11 +217,55 @@ def job_capture_informe_color(payload):
     )
 
 
+def job_deliver_informe(payload):
+    """Entrega autonoma del informe (LF opcional + capturas + Word/Excel/PDF + OCR)."""
+    from core.feeder_context import load_settings
+    from pipeline.deliver_informe import deliver_informe
+
+    feeder = (payload.get("feeder_id") or "").strip() or None
+    s = load_settings(feeder_id=feeder, synthesize=True)
+    for k in (
+        "study_path", "database_mdb", "network_id", "database_connection_name",
+        "output_dir", "cyme_root",
+    ):
+        if payload.get(k):
+            s[k] = payload[k]
+    ocr_review = payload.get("ocr_review")
+    if ocr_review is None:
+        ocr_review = True
+    return deliver_informe(
+        settings=s,
+        ensure_lf=bool(payload.get("ensure_lf", True)),
+        force_captures=bool(payload.get("force_captures", False)),
+        require_delivery=bool(payload.get("require_delivery", True)),
+        ocr_review=bool(ocr_review),
+        ocr_review_rounds=int(payload.get("ocr_rounds") or payload.get("ocr_review_rounds") or 3),
+    )
+
+
+def job_review_informe_ocr(payload):
+    """Revision OCR del PDF con correccion (hasta 3 rondas)."""
+    from core.feeder_context import load_settings
+    from pipeline.review_informe_pdf import review_and_correct_informe, review_informe_pdf
+
+    feeder = (payload.get("feeder_id") or "").strip() or None
+    s = load_settings(feeder_id=feeder, synthesize=True)
+    if payload.get("review_only"):
+        return review_informe_pdf(s, max_pages=int(payload.get("max_pages") or 10))
+    return review_and_correct_informe(
+        s,
+        max_rounds=int(payload.get("rounds") or payload.get("ocr_rounds") or 3),
+        max_pages=int(payload.get("max_pages") or 10),
+    )
+
+
 JOBS = {
     "cabecera": job_cabecera,
     "loadallocation_com": job_loadallocation_com,
     "loadflow_com": job_loadflow_com,
     "capture_informe_color": job_capture_informe_color,
+    "deliver_informe": job_deliver_informe,
+    "review_informe_ocr": job_review_informe_ocr,
 }
 
 

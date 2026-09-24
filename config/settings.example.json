@@ -40,6 +40,8 @@
   "informe_prefer_cymdist_captures": true,
   "informe_auto_cymdist_capture": true,
   "informe_capture_open_gui": true,
+  "informe_ocr_review": true,
+  "informe_ocr_review_rounds": 3,
   "force_cymdist_captures": false,
   "use_diagnostic_corrections": true,
   "sync_corrections_to_catalog": true,

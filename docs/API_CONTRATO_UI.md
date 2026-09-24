@@ -1,8 +1,17 @@
 # Contrato API UI RECYM (§§1–7)
 
 Base: `http://127.0.0.1:5055` · UI version `6.0-spa`  
-Arquitectura: [`ARQUITECTURA.md`](ARQUITECTURA.md) · Flujo: [`FLUJO_TRABAJO.md`](FLUJO_TRABAJO.md)  
+Arquitectura: [`ARQUITECTURA.md`](ARQUITECTURA.md) · Flujo: [`FLUJO_TRABAJO.md`](FLUJO_TRABAJO.md) · Campaign v7: [`CAMPAIGN_V7.md`](CAMPAIGN_V7.md)  
 Header de contexto: `X-Feeder: <ID>` (opcional; también `feeder` en query/body).
+
+## Campaign API v2
+
+- `GET /api/v2/campaigns/{feeder}` → steps + gates
+- `POST /api/v2/campaigns/{feeder}/commands` `{ "command": "RunLoadFlow", "params": { "scenario": "situacional" } }`
+- `POST /api/v2/campaigns/{feeder}/skip-spot`
+- `GET /api/v2/jobs/{job_id}`
+
+Los jobs legacy también actualizan el ledger de campaña.
 
 ## Numerales UI → endpoints
 

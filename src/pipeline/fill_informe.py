@@ -2,22 +2,19 @@
 """
 Rellena automaticamente informe.docx + justificacion.xlsx con resultados LoadFlow.
 
-Flujo (cualquier alimentador, p.ej. PA217 / IC106 / …):
-  1) Copia plantilla limpia (data/output/informe) → doc/
-  2) Exige ambos LoadFlow (situacional + proyectado) y meta OCR minima
-  3) Genera graficas PNG desde JSON LF (o respeta override manual CYMDIST)
+Flujo (cualquier alimentador):
+  1) Copia MODELO limpio (data/input/InformeModelo/) → doc/  [nunca escribe en input]
+  2) Exige ambos LoadFlow (situacional + proyectado) y meta minima
+  3) Genera graficas PNG desde JSON LF (o respeta override CYMDIST)
   4) Escribe metricas situacional/proyectado SOLO en celdas de ENTRADA del Excel
-     y restaura formulas canónicas de la plantilla original (Informe + C7/C41);
-     no fija MD/pérdidas: Excel calcula C185:G186 / VLOOKUP OSM
-  5) Extrae tablas evaluando esas formulas y las vuelca 1:1 a las 7 tablas Word
-  6) Sustituye textos (conclusión d = nodo de conexión SpotLoad CYMDIST) + imagenes
+     («Resultados de escenarios»); MANTIENE formulas del modelo en hoja Informe
+  5) Extrae tablas y las vuelca 1:1 a las tablas Word (copia del modelo)
+  6) Sustituye textos + imagenes en la copia Word
   7) Render final con Microsoft Word (campos, paginas, PDF)
 
-Imagenes LF obligatorias (auto desde LoadFlow o captura CYMDIST):
-  situacional_tension.png | situacional_cargabilidad.png
-  proyectado_tension.png  | proyectado_cargabilidad.png
-
-Opcionales: topologia.png | trafo_cargabilidad.png
+Modelos inmutables:
+  data/input/InformeModelo/InformeModelo.docx
+  data/input/InformeModelo/informeModelo.xlsx
 """
 from __future__ import print_function
 import json
@@ -53,12 +50,13 @@ ET.register_namespace("v", "urn:schemas-microsoft-com:vml")
 
 # Plantilla EMAPICA → media a reemplazar si existen capturas nuevas
 IMAGE_MAP = {
-    "topologia.png": "word/media/image1.png",
-    "situacional_tension.png": "word/media/image3.png",
-    "situacional_cargabilidad.png": "word/media/image5.png",
-    "proyectado_tension.png": "word/media/image7.png",
-    "proyectado_cargabilidad.png": "word/media/image9.png",
-    "trafo_cargabilidad.png": "word/media/image10.png",
+    "topologia.png": ("word/media/image1.png",),
+    # image2/4/6/8 = leyendas del modelo Word (no se inventan mapas)
+    "situacional_tension.png": ("word/media/image3.png",),
+    "situacional_cargabilidad.png": ("word/media/image5.png",),
+    "proyectado_tension.png": ("word/media/image7.png",),
+    "proyectado_cargabilidad.png": ("word/media/image9.png",),
+    # image10: solo si existe captura/archivo real; no generar matplotlib
 }
 
 LF_OK_STATUS = ("ok", "dry_run")
@@ -145,6 +143,8 @@ def metrics_from_lf(lf_data, settings=None):
     kvar = _num(topo.get("KVARTOT"))
     kw_loss = _num(topo.get("KWLOSS"))
     kvar_loss = _num(topo.get("KVARLOSS"))
+    # SpotLoad §4: NO inventar delta en kW. Solo reportar lo que devolvio el LF CYMDIST.
+    # Si COM conecta la carga pero KWTOT no cambia, eso se refleja tal cual (ejecucion real).
     vll = _num(topo.get("VLL")) or _num(settings.get("voltage_ll_kv")) or 22.9
     vln = _num(topo.get("VLN"))
     if vln is None and vll:
@@ -168,6 +168,9 @@ def metrics_from_lf(lf_data, settings=None):
         kva_loss = abs(kw_loss)
     elif kva_loss is None and kvar_loss is not None and kw_loss is None:
         kva_loss = abs(kvar_loss)
+    loss_estimated = False
+    # NO inventar perdidas: solo lo que devolvio CYMDIST (KWLOSS/KVARLOSS).
+    # Si COM no entrega KWLOSS, el cuadro queda vacio (n/d) — no inventar %.
     fp_loss = None
     if kw_loss is not None and kva_loss:
         fp_loss = _fp_pct(kw_loss, kva_loss)
@@ -185,6 +188,7 @@ def metrics_from_lf(lf_data, settings=None):
         "kvar_loss": kvar_loss,
         "kva_loss": kva_loss,
         "fp_loss_pct": fp_loss,
+        "loss_estimated": loss_estimated,
         "vll": vll,
         "vln": vln,
         "vpu": vpu,
@@ -365,7 +369,11 @@ def _images_dir(settings):
 
 
 def _check_delivery_gates(scenarios, meta, img_dir, charts_res=None, settings=None):
-    """Valida requisitos de entrega rigurosa. Retorna (ready, missing)."""
+    """Valida requisitos de entrega rigurosa. Retorna (ready, missing).
+
+    Las 4 imagenes de coloreo DEBEN ser capturas live CYMDIST
+    (VoltageLevel/LoadingLevel). No se aceptan matplotlib ni topology_render.
+    """
     missing = []
     raw_sit = scenarios.get("raw_situacional")
     raw_proy = scenarios.get("raw_proyectado")
@@ -373,16 +381,20 @@ def _check_delivery_gates(scenarios, meta, img_dir, charts_res=None, settings=No
         missing.append("loadflow_situacional")
     if not scenarios.get("proyectado") or not _lf_status_ok(raw_proy):
         missing.append("loadflow_proyectado")
-    # Meta debe existir en informe_meta.json (PDF OCR / UI §5), no solo spot-load
     ocr_meta = load_informe_meta(settings) if settings is not None else None
     if not meta_is_complete(ocr_meta):
         missing.append("informe_meta_ocr (cliente + potencia_kw via PDF §5)")
+    try:
+        from pipeline.capture_informe_color_views import is_live_cymdist_view
+    except Exception:
+        is_live_cymdist_view = None
     for fname in REQUIRED_LF_IMAGES:
-        if not os.path.isfile(os.path.join(img_dir, fname)):
-            missing.append(fname)
-    if charts_res and charts_res.get("errors"):
-        for err in charts_res["errors"]:
-            missing.append("chart_error:%s" % err)
+        path = os.path.join(img_dir, fname)
+        if not os.path.isfile(path):
+            missing.append("%s (falta captura CYMDIST)" % fname)
+            continue
+        if is_live_cymdist_view is not None and not is_live_cymdist_view(path):
+            missing.append("%s (no es vista live CYMDIST coloreada)" % fname)
     return (len(missing) == 0), missing
 
 
@@ -690,20 +702,43 @@ def _repair_informe_formulas(wi):
     return _ensure_canonical_formulas(wi, INFORME_CANONICAL_FORMULAS)
 
 
+def _repair_informe_modelo_refs(wi):
+    """
+    En la COPIA del modelo, corrige referencias claramente rotas sin tocar
+    el archivo de input.
+
+    Caso conocido InformeModelo: E32 apunta a Resultados!C5 (Vp.u.) pero la
+    cabecera E31 es «kW» — debe ser H5 (kW del punto) como C185.
+    """
+    notes = []
+    try:
+        e32 = wi["E32"].value
+        if isinstance(e32, str) and e32.startswith("=") and "C5" in e32.replace(" ", "").upper():
+            # Mantener estilo de formula del modelo (+ prefijo opcional)
+            wi["E32"] = "='Resultados de escenarios'!H5"
+            notes.append("copia: E32 reparado C5->H5 (columna kW)")
+    except Exception as ex:
+        notes.append("aviso repair E32: %s" % ex)
+    return notes
+
+
 def fill_excel(xlsx_path, scenarios, meta):
     """
-    Actualiza justificacion.xlsx para CUALQUIER alimentador:
+    Actualiza la COPIA justificacion.xlsx (desde InformeModelo):
 
-      1) Copia ya vino de plantilla (assemble); aquí solo se rellenan ENTRADAS LF
-      2) Se restauran fórmulas canónicas Informe + Resultados (C7/C41) si faltan
-         o si quedaron valores fijos — mismas expresiones que el Excel original
-      3) Etiquetas / cabecera con meta del alimentador en análisis
-      4) excel_tables evalúa la cadena de fórmulas (MD/pérdidas) para el Word
+      1) Solo ENTRADAS LF en «Resultados de escenarios» (situacional + proyectado)
+      2) Restaura Fperdida C7/C41 si alguien las piso
+      3) NO reescribe el bloque de formulas Informe del modelo (se mantienen)
+      4) Cabecera meta (cliente, alimentador, kW, …) en celdas de valor
+      5) excel_tables evalua la cadena para volcar al Word
 
-    Nunca escribe números en C185:G186 ni en VLOOKUPs OSM: eso lo calcula Excel.
+    Nunca escribe en data/input/InformeModelo/.
     """
     wb = load_workbook(xlsx_path)
     notes = []
+    # Inventario hojas (revision modelo)
+    notes.append("hojas: %s" % ", ".join(wb.sheetnames))
+
     if "Resultados de escenarios" in wb.sheetnames:
         ws = wb["Resultados de escenarios"]
         n_res = _ensure_canonical_formulas(ws, RESULTADOS_CANONICAL_FORMULAS)
@@ -711,13 +746,14 @@ def fill_excel(xlsx_path, scenarios, meta):
             notes.append("Resultados: %d formulas Fperdida restauradas (C7/C41)" % n_res)
         notes += _write_escenario_block(ws, scenarios.get("situacional"), "situacional")
         notes += _write_escenario_block(ws, scenarios.get("proyectado"), "proyectado")
+    else:
+        notes.append("AVISO: falta hoja «Resultados de escenarios»")
+
     if "Informe" in wb.sheetnames:
         wi = wb["Informe"]
-        # Primero fórmulas (por si una corrida previa las convirtió en valores)
-        nfix = _ensure_canonical_formulas(wi, INFORME_CANONICAL_FORMULAS)
-        if nfix:
-            notes.append("Informe: %d formulas canónicas restauradas (plantilla)" % nfix)
-        # Cabecera: solo celdas de entrada (B14–B18 / OSM / MD son fórmulas)
+        # Preservar formulas del modelo; solo reparar refs rotas conocidas en la copia
+        notes += _repair_informe_modelo_refs(wi)
+        # Cabecera: solo celdas de entrada (no formulas)
         for coord, val in (
             ("C4", meta.get("cliente") or ""),
             ("C5", meta.get("ubicacion") or ""),
@@ -737,16 +773,19 @@ def fill_excel(xlsx_path, scenarios, meta):
         if meta.get("tension_kv") is not None and not _cell_is_formula(wi, "C9"):
             wi["C9"] = meta["tension_kv"]
         feeder = meta.get("alimentador") or ""
-        # Etiquetas texto (no fórmula) del bloque MD / títulos — cualquier alimentador
         for coord, txt in (
+            ("B26", "2.1 RED ACTUAL DE ELECTRODUNAS %s" % feeder),
             ("B101", "2.1 RED PROYECTADA DE ELECTRODUNAS %s" % feeder),
             ("B181", "PERDIDAS OBTENIDAS DE ESTUDIOS REALIZADOS AL ALIMENTADOR %s (Incorporando cargas solicitadas)" % feeder),
             ("B185", "ESTADO ACTUAL %s" % feeder),
             ("B186", "ESTADO PROYECTADO %s" % feeder),
         ):
-            if not _cell_is_formula(wi, coord):
-                wi[coord] = txt
-        notes.append("cabecera Informe completa (%s)" % feeder)
+            if coord in wi and not _cell_is_formula(wi, coord):
+                # Solo si la celda existe como etiqueta (no formula)
+                cur = wi[coord].value
+                if cur is None or (isinstance(cur, str) and not cur.startswith("=")):
+                    wi[coord] = txt
+        notes.append("cabecera Informe (%s) · formulas modelo preservadas" % feeder)
     wb.save(xlsx_path)
     tables = extract_excel_tables_for_word(xlsx_path, scenarios, meta)
     return notes, tables
@@ -1624,12 +1663,20 @@ def fill_word(docx_path, scenarios, meta, images_dir=None, excel_tables=None):
 
     images_replaced = []
     if images_dir and os.path.isdir(images_dir):
-        for src_name, dst_rel in IMAGE_MAP.items():
+        # Solo reemplazar media con archivos reales presentes (capturas CYMDIST / mapa).
+        # Nunca inventar leyendas ni graficas.
+        for src_name, dst_rels in IMAGE_MAP.items():
+            if isinstance(dst_rels, str):
+                dst_rels = (dst_rels,)
             src = os.path.join(images_dir, src_name)
-            dst = os.path.join(tmp, dst_rel.replace("/", os.sep))
-            if os.path.isfile(src) and os.path.isfile(dst):
-                shutil.copy2(src, dst)
-                images_replaced.append({"src": src, "dst": dst_rel})
+            if not os.path.isfile(src):
+                continue
+            for dst_rel in dst_rels:
+                dst = os.path.join(tmp, dst_rel.replace("/", os.sep))
+                if os.path.isfile(dst):
+                    shutil.copy2(src, dst)
+                    images_replaced.append({"src": src, "dst": dst_rel})
+
 
     out_tmp = docx_path + ".__new.docx"
     if os.path.isfile(out_tmp):
@@ -1919,12 +1966,11 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     mkdir(img_dir)
     charts_res = None
 
-    # Preferir capturas CYMDIST vivas (API: coloreo + ExportActiveView / GUI).
-    # Orden: 1) captura API situacional+proyectado  2) mapa inventario (fallback)
-    #        3) graficas matplotlib solo si aun falta slot
+    # Preferir capturas CYMDIST vivas (API: coloreo VoltageLevel/LoadingLevel).
+    # NUNCA suplir con matplotlib ni topology_render inventados: el informe
+    # documenta ejecuciones reales §5 sin/con proyecto.
     capture_res = None
     prefer_cymdist = bool(s.get("informe_prefer_cymdist_captures", True))
-    # Por defecto SI: integrar capturas estado actual / con proyecto via CYMDIST API
     auto_capture = s.get("informe_auto_cymdist_capture")
     if auto_capture is None:
         auto_capture = True
@@ -1932,16 +1978,31 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
         auto_capture = bool(auto_capture)
     force_cap = bool(s.get("force_cymdist_captures", False))
     force_charts = bool(s.get("force_informe_charts", False))
+    # Si LoadFlow §5 es mas reciente que las capturas, forzar recaptura CYMDIST
+    if not force_cap:
+        try:
+            from pipeline.generate_informe_charts import _mtime
+            for scen_name, fname in (
+                ("situacional", "situacional_tension.png"),
+                ("proyectado", "proyectado_tension.png"),
+            ):
+                lf_p = paths.get("loadflow_%s" % scen_name)
+                png_p = os.path.join(img_dir, fname)
+                if lf_p and _mtime(lf_p) > _mtime(png_p) + 1.0:
+                    force_cap = True
+                    notes.append(
+                        "force captura CYMDIST: LF %s mas nuevo que %s" % (scen_name, fname)
+                    )
+                    break
+        except Exception as ex_fc:
+            notes.append("aviso force-cap check: %s" % ex_fc)
+
     if prefer_cymdist:
         try:
             from pipeline.capture_informe_color_views import (
-                is_cymdist_capture,
                 is_live_cymdist_view,
-                ensure_standard_legends,
                 capture_informe_color_views,
             )
-            from pipeline.render_informe_color_maps import generate_informe_color_maps
-            ensure_standard_legends(force=False)
 
             missing_live = [
                 f for f in REQUIRED_LF_IMAGES
@@ -1949,15 +2010,15 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
             ]
             if auto_capture and (missing_live or force_cap):
                 notes.append(
-                    "captura CYMDIST API: activando coloreo VoltageLevel/LoadingLevel "
-                    "en situacional + proyectado…"
+                    "captura CYMDIST nativa: VoltageLevel/LoadingLevel "
+                    "situacional+proyectado (force=%s) — sin imagenes inventadas…"
+                    % force_cap
                 )
                 capture_res = capture_informe_color_views(
                     settings=s,
                     open_gui=bool(s.get("informe_capture_open_gui", True)),
-                    force=force_cap or bool(missing_live),
+                    force=bool(force_cap or missing_live),
                 )
-                # Persist log for UI diagnostics
                 try:
                     with open(os.path.join(img_dir, "capture_log.txt"), "a", encoding="utf-8") as lf:
                         lf.write("\n--- fill_informe capture %s ---\n" % datetime.now().isoformat(timespec="seconds"))
@@ -1966,67 +2027,43 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
                 except Exception:
                     pass
                 notes.append(
-                    "cymdist API captures: %d ok, err: %d"
+                    "cymdist captures: %d ok, err: %d"
                     % (
                         len(capture_res.get("generated") or []),
                         len(capture_res.get("errors") or []),
                     )
                 )
-                for err in (capture_res.get("errors") or [])[:4]:
+                for err in (capture_res.get("errors") or [])[:6]:
                     notes.append("capture: %s" % err)
             else:
                 notes.append("cymdist live views ya presentes (4 PNG)")
 
-            # Fallback inventario solo para slots que NO tienen captura viva
             still_missing = [
                 f for f in REQUIRED_LF_IMAGES
                 if not is_live_cymdist_view(os.path.join(img_dir, f))
-                and not is_cymdist_capture(os.path.join(img_dir, f))
             ]
-            if still_missing or (
-                force_cap and not (capture_res and capture_res.get("generated"))
-            ):
-                rend = generate_informe_color_maps(
-                    settings=s, force=False  # nunca pisar live views
-                )
+            if still_missing:
                 notes.append(
-                    "color maps fallback: %d gen, %d skip, err: %d"
-                    % (
-                        len(rend.get("generated") or []),
-                        len(rend.get("skipped") or []),
-                        len(rend.get("errors") or []),
-                    )
+                    "SIN suplir imagenes: faltan capturas CYMDIST live: %s"
+                    % ", ".join(still_missing)
                 )
-                for err in (rend.get("errors") or [])[:3]:
-                    notes.append("color map: %s" % err)
             else:
-                notes.append("sin fallback topology_render (capturas API OK)")
+                notes.append("4 capturas CYMDIST live OK (sin fallback inventado)")
         except Exception as ex:
             notes.append("cymdist color omitido: %s" % ex)
 
-    if scenarios.get("situacional") or scenarios.get("proyectado"):
-        try:
-            charts_res = generate_informe_charts(
-                img_dir,
-                {
-                    "situacional": scenarios.get("situacional"),
-                    "proyectado": scenarios.get("proyectado"),
-                },
-                paths=paths,
-                force=force_charts,
-            )
-            notes.append(
-                "charts generated: %d skipped: %d"
-                % (len(charts_res.get("generated") or []), len(charts_res.get("skipped") or []))
-            )
-        except Exception as ex:
-            charts_res = {
-                "ok": False,
-                "errors": [str(ex)],
-                "generated": [],
-                "missing": list(REQUIRED_LF_IMAGES),
-            }
-            notes.append("charts error: %s" % ex)
+    # Graficas matplotlib DESACTIVADAS para slots de coloreo §5 (no inventar).
+    # Solo se permiten capturas CYMDIST reales.
+    charts_res = {
+        "ok": True,
+        "generated": [],
+        "skipped": [{"file": f, "reason": "cymdist_only_no_matplotlib"} for f in REQUIRED_LF_IMAGES],
+        "pending": [],
+        "errors": [],
+    }
+    if force_charts:
+        notes.append("aviso: force_informe_charts ignorado (politica: solo capturas CYMDIST)")
+    notes.append("charts: omitidos — informe solo con vistas CYMDIST nativas")
 
     # Mapa satelite §2.1: ubicacion de la carga nueva (nodo X/Y → WGS84)
     map_res = None
@@ -2050,8 +2087,8 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     if require_delivery and not delivery_ready:
         err = (
             "Informe incompleto para entrega. Falta: %s. "
-            "Complete: PDF OCR en §5 (cliente+potencia), "
-            "Flujo situacional, Flujo proyectado; las graficas LF se generan solas."
+            "Requiere: PDF OCR §5 (cliente+potencia), LoadFlow situacional + proyectado, "
+            "y 4 capturas CYMDIST live (VoltageLevel/LoadingLevel) — sin imagenes inventadas."
             % (", ".join(missing) if missing else "requisitos")
         )
         manifest = {
@@ -2074,8 +2111,8 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
             "scenarios_used": scenarios_used,
             "notes": notes,
             "aviso_imagenes": (
-                "Graficas LF se generan desde loadflow_*.json. "
-                "topologia.png = mapa satelite carga nueva. Override en %s."
+                "Solo capturas nativas CYMDIST (VoltageLevel/LoadingLevel) sin/con proyecto. "
+                "No se suplira con matplotlib ni topology_render. Directorio: %s."
                 % img_dir
             ),
         }
@@ -2113,28 +2150,46 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     notes.append("word tables source: %s" % (wres.get("tables_source") or excel_tables and "excel" or "metrics"))
     notes.append("images replaced: %d" % len(wres.get("images_replaced") or []))
 
+    # Espejo por alimentador (auditoría); modelos en input siguen intactos
+    try:
+        import shutil as _shutil
+        for src, dst in (
+            (paths["informe_doc"], paths.get("informe_feeder_doc")),
+            (paths["justificacion_doc"], paths.get("justificacion_feeder_doc")),
+        ):
+            if src and dst and os.path.isfile(src):
+                mkdir(os.path.dirname(dst))
+                _shutil.copy2(src, dst)
+        notes.append("copia feeder: %s" % os.path.dirname(paths.get("informe_feeder_doc") or ""))
+    except Exception as ex_cp:
+        notes.append("aviso copia feeder: %s" % ex_cp)
+
     replaced_names = [
         os.path.basename(x.get("src") or "") for x in (wres.get("images_replaced") or [])
     ]
     lf_replaced = [n for n in REQUIRED_LF_IMAGES if n in replaced_names]
 
     # Render final Word: campos, paginado y PDF de entrega
+    # (omitible si el ciclo OCR corrige Word primero y exporta PDF aparte)
     render_res = None
-    try:
-        from pipeline.render_informe import render_informe as _render_informe
-        render_res = _render_informe(s, export_pdf=True, preview_pages=True)
-        if render_res.get("ok"):
-            notes.append(
-                "render Word ok · paginas=%s · pdf=%s"
-                % (render_res.get("pages"), "si" if render_res.get("pdf") else "no")
-            )
-            for n in (render_res.get("notes") or [])[:8]:
-                notes.append("render: %s" % n)
-        else:
-            notes.append("aviso render Word: %s" % (render_res.get("error") or "fallo"))
-    except Exception as ex:
-        render_res = {"ok": False, "error": str(ex)}
-        notes.append("aviso render Word: %s" % ex)
+    if bool(s.get("informe_skip_render")):
+        notes.append("render omitido (ciclo OCR: Word→PDF aparte)")
+    else:
+        try:
+            from pipeline.render_informe import render_informe as _render_informe
+            render_res = _render_informe(s, export_pdf=True, preview_pages=True)
+            if render_res.get("ok"):
+                notes.append(
+                    "render Word ok · paginas=%s · pdf=%s"
+                    % (render_res.get("pages"), "si" if render_res.get("pdf") else "no")
+                )
+                for n in (render_res.get("notes") or [])[:8]:
+                    notes.append("render: %s" % n)
+            else:
+                notes.append("aviso render Word: %s" % (render_res.get("error") or "fallo"))
+        except Exception as ex:
+            render_res = {"ok": False, "error": str(ex)}
+            notes.append("aviso render Word: %s" % ex)
 
     manifest = {
         "ok": True,

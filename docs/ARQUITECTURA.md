@@ -2,11 +2,36 @@
 
 Suite **multi-alimentador** para modelado, corrección, asignación de demanda, flujos de carga e informes sobre **CYMDIST 9.2 / CymPy**, con UI SPA (React) y API (FastAPI + puente Flask).
 
-Versión de referencia UI: **SPA v6** (`ui_version: 6.0-spa`).
+Versión de referencia UI: **SPA v6** (`ui_version: 6.0-spa`).  
+**Dominio de campaña v7:** [`CAMPAIGN_V7.md`](CAMPAIGN_V7.md) (máquina de estados §§1–7 + ledger SQLite).
 
 ---
 
-## 1. Vista general
+## 0. Arquitectura v7 (objetivo en despliegue)
+
+```mermaid
+flowchart TB
+  SPA[SPA_Steps_1_to_7] -->|command_or_legacy_job| API[FastAPI]
+  API --> Orch[CampaignOrchestrator]
+  Orch --> Ledger[(SQLite_campaigns_db)]
+  Orch --> Jobs[jobs_plus_isolation]
+  Jobs -->|cyme_serial| Actor[Cyme_subprocess_x1]
+  Actor --> Port[cymdist_com_cympy]
+  Port --> Cyme[Cyme_exe]
+  Ledger --> SPA
+```
+
+Principios:
+
+1. **Campaign** por alimentador con steps `1.1`…`7.suite` y gates explícitos.
+2. **Un solo dueño Cyme** a la vez (aislamiento / futura cola `cyme` concurrency=1).
+3. **§4 opcional**; **§5 no exige §4**; tras SpotLoad no redistribuir.
+4. **6.fill sin Cyme**; capturas solo en `6.capture`.
+5. Migración estranguladora: legacy `/api/jobs` escribe el mismo ledger.
+
+---
+
+## 1. Vista general (actual + puente)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -223,6 +248,7 @@ api_app/main.py ──► jobs.py / routers/tablero.py
 | Documento | Contenido |
 |-----------|-----------|
 | [`FLUJO_TRABAJO.md`](FLUJO_TRABAJO.md) | Flujo de campaña end-to-end |
+| [`CAMPAIGN_V7.md`](CAMPAIGN_V7.md) | Campaign Aggregate §§1–7 + API v2 |
 | [`MANUAL_UI_DEMANDA.md`](MANUAL_UI_DEMANDA.md) | Manual operativo UI §§1–7 |
 | [`API_CONTRATO_UI.md`](API_CONTRATO_UI.md) | Endpoints |
 | [`VALIDACION_INTEGRAL.md`](VALIDACION_INTEGRAL.md) | Checklist validación PA217 |

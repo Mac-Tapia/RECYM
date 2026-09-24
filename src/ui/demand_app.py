@@ -468,7 +468,7 @@ tr.off-row{opacity:.55;background:#fafaf9}
       <li>Previo: §1 cabecera → §2 EA/Pot + distribución → §3 carga nueva → §5.1 PDF OCR.</li>
       <li><b>Flujo estado situacional</b> — desconecta SpotLoad §3 → LoadFlow → gráficas situacional.</li>
       <li><b>Flujo con cargas nuevas</b> — conecta SpotLoad §3 (P/Q) → LoadFlow → gráficas proyectado.</li>
-      <li>En §5 pulse <b>Rellenar informes</b> cuando el checklist esté en verde.</li>
+      <li>En §5 pulse <b>Rellenar informes</b> cuando el checklist esté en verde (o tras 5.2 el informe se entrega solo).</li>
     </ol>
     <div class="actions">
       <button type="button" id="btnFlowSit" class="secondary" onclick="runFlujo('situacional')">Flujo estado situacional</button>
@@ -5703,11 +5703,15 @@ def api_distribucion():
 @app.route("/api/flujo", methods=["POST"])
 def api_flujo():
     """LoadFlow independiente: situacional (desconecta §3) | proyectado (conecta §3).
-    update_informe=true (default) rellena §5 tras el flujo."""
+    update_informe=true (default) rellena informe tras el flujo.
+    Tras proyectado entrega completa (capturas §5 + Word/Excel/PDF)."""
     s = _settings()
     body = request.get_json(silent=True) or {}
     scenario = (body.get("scenario") or "").strip().lower() or None
     update_informe = body.get("update_informe", True)
+    deliver_complete = body.get("deliver_complete")
+    if deliver_complete is None:
+        deliver_complete = (scenario == "proyectado") or (not scenario)
 
     def _run():
         result = run_load_flow(s, scenario=scenario)
@@ -5715,7 +5719,19 @@ def api_flujo():
         informe = None
         if ok and update_informe:
             try:
-                informe = fill_informe(s, overwrite_copy=True)
+                if deliver_complete:
+                    from pipeline.deliver_informe import deliver_informe
+                    informe = deliver_informe(
+                        s,
+                        ensure_lf=False,
+                        force_captures=bool(body.get("force_captures", False)),
+                        require_delivery=bool(body.get("require_delivery", False)),
+                    )
+                else:
+                    # 5.1: cuadros sin recaptura completa (captura en 5.2 / §6)
+                    s["informe_auto_cymdist_capture"] = False
+                    s["force_cymdist_captures"] = False
+                    informe = fill_informe(s, overwrite_copy=True, require_delivery=False)
             except Exception as ex_inf:
                 informe = {"ok": False, "error": str(ex_inf)}
         return {
@@ -5787,23 +5803,57 @@ def api_informe_capturas():
 
 @app.route("/api/informe/armar", methods=["POST"])
 def api_informe_armar():
-    """Copia plantillas a doc/ y rellena valores desde LoadFlow (fill=true por defecto).
-    Con fill=true aplica gate de entrega (ambos LF + OCR + 4 PNG).
-    Integra capturas CYMDIST API (estado actual / con proyecto) por defecto."""
+    """Entrega autonoma del informe completo (punto unico §6).
+
+    Body:
+      fill: true (default) — Excel+Word+PDF
+      ensure_lf: true — corre LF §5 si faltan
+      force_captures: true — fuerza capturas CYMDIST
+      require_delivery: true (default si fill) — gate estricto
+      ocr_review: true (default) — revision OCR hasta 3 rondas
+      ocr_rounds: 3
+    """
     s = _settings()
     body = request.get_json(silent=True) or {}
     do_fill = body.get("fill", True)
-    # Permitir forzar recaptura desde UI
-    if body.get("force_captures"):
-        s = dict(s)
-        s["force_cymdist_captures"] = True
-        s["informe_auto_cymdist_capture"] = True
     try:
         if do_fill:
-            manifest = fill_informe(s, overwrite_copy=True, require_delivery=True)
+            from pipeline.deliver_informe import deliver_informe
+            ocr_review = body.get("ocr_review")
+            if ocr_review is None:
+                ocr_review = True
+            manifest = deliver_informe(
+                s,
+                ensure_lf=bool(body.get("ensure_lf", False)),
+                force_captures=bool(body.get("force_captures", False)),
+                require_delivery=bool(body.get("require_delivery", True)),
+                ocr_review=bool(ocr_review),
+                ocr_review_rounds=int(body.get("ocr_rounds") or body.get("ocr_review_rounds") or 3),
+            )
         else:
             manifest = assemble_informe(s, overwrite=True)
         return jsonify(manifest)
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/informe/review_ocr", methods=["POST"])
+def api_informe_review_ocr():
+    """Revision OCR rigurosa del PDF (opcionalmente con correccion, hasta 3 rondas)."""
+    s = _settings()
+    body = request.get_json(silent=True) or {}
+    try:
+        from pipeline.review_informe_pdf import (
+            review_informe_pdf,
+            review_and_correct_informe,
+        )
+        if body.get("review_only"):
+            return jsonify(review_informe_pdf(s, max_pages=int(body.get("max_pages") or 10)))
+        return jsonify(review_and_correct_informe(
+            s,
+            max_rounds=int(body.get("rounds") or body.get("ocr_rounds") or 3),
+            max_pages=int(body.get("max_pages") or 10),
+        ))
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 

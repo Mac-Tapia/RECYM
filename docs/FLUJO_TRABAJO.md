@@ -2,7 +2,7 @@
 
 Campaña típica por alimentador (referencia: **PA217**).  
 UI: `scripts\20_demand_ui.bat` → http://127.0.0.1:5055  
-Arquitectura: [`ARQUITECTURA.md`](ARQUITECTURA.md) · Manual: [`MANUAL_UI_DEMANDA.md`](MANUAL_UI_DEMANDA.md)
+Arquitectura: [`ARQUITECTURA.md`](ARQUITECTURA.md) · Campaign v7: [`CAMPAIGN_V7.md`](CAMPAIGN_V7.md) · Manual: [`MANUAL_UI_DEMANDA.md`](MANUAL_UI_DEMANDA.md)
 
 ---
 
@@ -13,13 +13,17 @@ flowchart TD
   A[§1 Contexto: BD + estudio + cabecera P/Q] --> B[§2 Calidad: diagnosticar / corregir / gate]
   B --> C[§3 Clientes: armar tabla → EA/Pot → Incluir]
   C --> D[§3 Distribución LoadAllocation Consumo kWh]
-  D --> E[§4 SpotLoad: conectar carga Locked]
-  E --> F1[§5 Situacional: desconecta SpotLoad → LF]
-  E --> F2[§5 Proyectado: conecta SpotLoad → LF]
-  F1 --> G[§6 Informes: meta OCR + doc]
+  D --> E[§4 SpotLoad: opcional Locked]
+  D --> F1[§5 Situacional: desconecta SpotLoad si hay → LF]
+  D --> F2[§5 Proyectado: conecta SpotLoad si hay → LF]
+  E --> F1
+  E --> F2
+  F1 --> G[§6 Informes: meta + captura Cyme + doc sin Cyme]
   F2 --> G
   G --> H[§7 Opt / Suite opcional]
 ```
+
+**Estado vivo:** `GET /api/v2/campaigns/{feeder}` (gates ready/blocked/ok).
 
 ---
 
@@ -82,17 +86,38 @@ Tolerancias: `precision_tol_kwh`, `precision_tol_kw` en settings.
 
 | Escenario | Comportamiento |
 |-----------|----------------|
-| Situacional | Desconecta SpotLoad §4 → LoadFlow |
-| Proyectado | Conecta SpotLoad §4 → LoadFlow |
+| Situacional | Desconecta SpotLoad §4 **si existen** → LoadFlow |
+| Proyectado | Conecta SpotLoad §4 **si existen** → LoadFlow |
 | General | LF sin conmutar escenario |
 
-Motor: COM (`loadflow_engine: COM`). Tras OK se intenta refrescar insumos de §6.
+§4 es **opcional**: sin SpotLoad, 5.1/5.2 corren sobre el modelo actual.  
+Motor: COM (`loadflow_engine: COM`). Tras **5.2 proyectado** el job entrega el informe completo
+(capturas CYMDIST de coloreo + Excel/Word/PDF). Tras 5.1 solo actualiza cuadros numéricos.
 
-### §6 — Informes de entrega
+### §6 — Informes de entrega (autonómico)
 
-1. Meta desde PDF OCR (cliente, potencia_kw, …) o edición manual.
-2. Requiere ambos flujos §5 + imágenes PNG.
-3. Rellenar → `doc/informe.docx` (y PDF/preview según pipeline).
+Punto único de código: `pipeline.deliver_informe` (no requiere un agente externo).
+
+| Vía | Cómo |
+|-----|------|
+| UI | Botón **Rellenar informes → doc** → `POST /api/informe/armar` (`force_captures` + fill) |
+| Tras §5.2 | Job `flujo` con `update_informe=true` → `deliver_informe` |
+| CLI | `.tools\python37-win32\python.exe -m pipeline.deliver_informe --feeder AL209 --ensure-lf` |
+| Batch | `scripts\26_deliver_informe.bat AL209` |
+
+Incluye: LoadFlow §5 si faltan (`ensure_lf`), 4 PNG VoltageLevel/LoadingLevel situacional+proyectado,
+pérdidas/cuadros, leyendas, trafo, `doc/informe.docx` + PDF + preview.
+Gate: ambos LF + 4 PNG live + meta (`require_delivery`).
+
+**Revision OCR post-entrega (autonómica, hasta 3 ciclos):**
+
+```
+PDF → OCR revisión → (si falla) corregir Word → Word→PDF → OCR otra vez
+```
+
+Hasta 3 veces. Comprueba cuadros (kW sit/proy, pérdidas), capturas CYMDIST
+(sidecar escenario, live, sit≠proy) y media embebida en Word.
+Log: `doc/review_ocr.json`. API: `POST /api/informe/review_ocr`.
 
 ### §7 — Optimización + Suite
 
@@ -109,7 +134,7 @@ scripts\11_run_feeder.bat --all-feeders
 ```
 
 Ejecuta `run_sequence` de `settings.json` (validar → diagnóstico → fixes → clientes → allocation → tablero).  
-LoadFlow situacional/proyectado e informes suelen hacerse por UI (§§5–6) o scripts auxiliares (`scripts\_run_lf_informe.py`, etc.).
+LoadFlow + informe completo: `scripts\26_deliver_informe.bat <FEEDER>` o campaña `scripts\run_cierre_1_7.py` (§5.2 + §6).
 
 ---
 

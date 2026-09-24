@@ -33,10 +33,11 @@ export function Step5Flujos() {
       <h2>5 · Análisis CYMDIST (flujos)</h2>
       <ContextBind hint="LoadFlow sobre el mismo estudio/BD de §1" />
       <p className="muted">
-        Situacional desconecta las SpotLoad §4 ya guardadas; proyectado las conecta.
-        Basta con <b>4.2</b> (una) <i>y/o</i> <b>4.3</b> (bloque).{" "}
-        <b>4.3 es opcional</b>: si no hay lote, §5 no se bloquea.
-        Cada botón es independiente. Tras OK se intenta actualizar §6.
+        §4 es <b>opcional</b>: si hay SpotLoad guardadas (4.2 y/o 4.3) se consideran;
+        si no hay ninguna, 5.1/5.2 corren igual solo con el modelo actual.
+        Situacional desconecta las del §4 (si existen); proyectado las conecta.
+        Cada botón es independiente. Tras OK se actualiza el informe <b>sin</b>{" "}
+        reabrir Cyme (capturas de color en §6).
       </p>
       <div className="actions">
         <button type="button" className={"secondary" + (busy === "5.1" ? " running" : "")}

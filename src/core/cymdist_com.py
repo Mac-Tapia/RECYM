@@ -1134,11 +1134,17 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
         app, attach_mode = acquire_cymdist_app(
             settings, show_window=bool(leave_open), kill_existing=False
         )
-        binding = sync_cymdist_binding(app, settings)
+        # LoadFlow: no Save previo ni registro CymPy (AV 0xC0000005 en .sxst/
+        # sesion GUI ya abierta tras §1–§3). Solo activar BD+estudio.
+        binding = sync_cymdist_binding(
+            app, settings, save_before=False, register_db=False
+        )
         mdb = binding.get("database_mdb") or mdb
         study = binding.get("study_path") or study
+        study_obj = binding.get("study_obj")
 
-        # Escenario §5: conmutar SpotLoad nuevas sin CymPy (anti AV 0xC0000005)
+        # Escenario §5: conmutar SpotLoad nuevas sin CymPy (anti AV 0xC0000005).
+        # §4 es opcional: sin cargas nuevas → escenario vacio, solo corre LF.
         if scen in ("situacional", "proyectado") or spot_loads:
             target = scen or "proyectado"
             touched, scen_notes = apply_scenario_spot_loads_com(
@@ -1152,6 +1158,11 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
                         len(touched),
                         "DESCONECTADAS" if target == "situacional" else "CONECTADAS",
                     )
+                )
+            else:
+                print(
+                    "[COM-LF] Sin SpotLoad §4 — escenario %s solo LoadFlow (OK)"
+                    % (target,)
                 )
 
         warn_path = None
@@ -1232,6 +1243,36 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
                         topo[kw] = lf.QueryResultNode(kw, src)
                     except Exception as ex:
                         topo[kw] = "ERR:%s" % ex
+                # KWLOSS/KVARLOSS a menudo no existen en nodo fuente → red / keywords alt.
+                for loss_kw, alts in (
+                    ("KWLOSS", ("KWLOSS", "TotalKWLoss", "KWLosses", "PLOSS")),
+                    ("KVARLOSS", ("KVARLOSS", "TotalKVARLoss", "KVARLosses", "QLOSS")),
+                ):
+                    cur = topo.get(loss_kw)
+                    cur_s = str(cur or "").strip()
+                    if cur is not None and not cur_s.startswith(("$", "ERR:")):
+                        continue
+                    for alt in alts:
+                        for getter_name in ("QueryResultNetwork", "QueryResult"):
+                            getter = getattr(lf, getter_name, None)
+                            if getter is None:
+                                continue
+                            try:
+                                if getter_name == "QueryResultNetwork":
+                                    val = getter(alt, net)
+                                else:
+                                    val = getter(alt)
+                            except Exception:
+                                continue
+                            vs = str(val or "").strip()
+                            if vs and not vs.startswith(("$", "ERR:")):
+                                topo[loss_kw] = val
+                                topo["%s_source" % loss_kw] = "%s:%s" % (getter_name, alt)
+                                break
+                        if topo.get(loss_kw) not in (None, cur) and not str(
+                            topo.get(loss_kw) or ""
+                        ).startswith(("$", "ERR:")):
+                            break
                 if _topo_ok(topo):
                     method_used = method
                     break
@@ -1240,7 +1281,7 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
 
         # Corregir KWTOT/KVARTOT ~3× vs cabecera §1 (informe / convergencia)
         if method_used is not None and topo:
-            topo = normalize_lf_topo_powers(topo, settings)
+            topo = normalize_lf_topo_powers(topo, settings, scenario=scen)
 
         warnings = []
         log_errors = []
@@ -1274,14 +1315,23 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
                 pass
 
         saved = False
-        if settings.get("save_after_write", True):
+        # Solo persistir si se conmuto SpotLoad §4. Study.Save sobre .sxst con
+        # GUI abierta provoca AV 0xC0000005 (Cyme.exe crash dump) tras LF OK.
+        need_save = bool(touched) and bool(settings.get("save_after_write", True))
+        if need_save:
             try:
-                # IStudy.Save via OpenStudy return or Study coclass
-                study_obj = comtypes.client.CreateObject("Cymdist.Study")
-                study_obj.Save()
-                saved = True
-            except Exception:
+                if study_obj is not None:
+                    study_obj.Save()
+                    saved = True
+                else:
+                    st = comtypes.client.CreateObject("Cymdist.Study")
+                    st.Save()
+                    saved = True
+            except Exception as ex_sv:
+                print("[COM-LF] AVISO Save tras escenario:", ex_sv)
                 saved = False
+        elif not touched and scen:
+            print("[COM-LF] Save omitido (sin SpotLoad §4 que persistir)")
 
         ok = bool(method_used is not None and _topo_ok(topo))
         # Errores fatales en log aunque topo parezca numerico
@@ -1325,6 +1375,20 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
                 "method=%s ret=%s. %s"
                 % (method_used, run_ret, (log_errors[:1] or warnings[:1] or [""])[0])
             )
+        # Dejar GUI visible/estable tras LF (el worker aislado puede soltar Cyme)
+        if leave_open and ok:
+            try:
+                app.ShowWindow(1)
+            except Exception:
+                pass
+            try:
+                from pipeline.run_demand_allocation import load_session, save_session
+                sess = load_session(settings) or {}
+                sess["cymdist_keep_open"] = True
+                sess["cymdist_keep_open_reason"] = "post_loadflow_%s" % (scen or "general")
+                save_session(settings, sess)
+            except Exception:
+                pass
         return result
     except Exception as ex:
         return {"ok": False, "error": str(ex), "engine": "COM"}
