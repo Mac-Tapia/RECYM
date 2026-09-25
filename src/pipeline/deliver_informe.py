@@ -42,22 +42,27 @@ def deliver_informe(
     scenarios_lf=None,
     ocr_review=True,
     ocr_review_rounds=3,
+    informe_mode=None,
 ):
     """
-    Genera el informe completo listo para entrega.
+    Genera el informe listo para entrega.
 
-    ensure_lf: si True, ejecuta LoadFlow situacional/proyectado cuando falten
-               o no esten en status ok.
+    informe_mode: completo (default) | situacional
+      situacional = diagnóstico estado situacional Electro Dunas (solo LF situacional).
+
+    ensure_lf: si True, ejecuta LoadFlow de los escenarios del modo cuando falten.
     force_captures: fuerza recaptura CYMDIST (ignore PNG previos).
-    require_delivery: gate estricto (ambos LF + 4 PNG live + meta).
+    require_delivery: gate estricto según modo.
     ocr_review: tras fill, revision OCR rigurosa (imagenes/cuadros) hasta N rondas.
     """
     from core.feeder_context import load_settings
     from pipeline.assemble_informe import informe_paths
-    from pipeline.fill_informe import fill_informe, delivery_status
+    from pipeline.fill_informe import fill_informe, delivery_status, _normalize_informe_mode
     from pipeline.run_load_flow import run_load_flow
 
     s = dict(settings or load_settings())
+    mode = _normalize_informe_mode(informe_mode or s.get("informe_mode"))
+    s["informe_mode"] = mode
     # Entrega completa siempre integra capturas §5 (no depender de un agente).
     s["informe_auto_cymdist_capture"] = True
     s["informe_prefer_cymdist_captures"] = True
@@ -69,7 +74,12 @@ def deliver_informe(
     notes = []
     lf_runs = []
     if ensure_lf:
-        want = scenarios_lf or ("situacional", "proyectado")
+        if scenarios_lf:
+            want = tuple(scenarios_lf)
+        elif mode == "situacional":
+            want = ("situacional",)
+        else:
+            want = ("situacional", "proyectado")
         paths = informe_paths(s)
         for scen in want:
             key = "loadflow_%s" % scen
@@ -95,9 +105,12 @@ def deliver_informe(
                     "lf_runs": lf_runs,
                     "notes": notes,
                     "feeder_id": s.get("feeder_id"),
+                    "informe_mode": mode,
                 }
 
-    manifest = fill_informe(s, overwrite_copy=True, require_delivery=require_delivery)
+    manifest = fill_informe(
+        s, overwrite_copy=True, require_delivery=require_delivery, informe_mode=mode
+    )
     if not isinstance(manifest, dict):
         manifest = {"ok": False, "error": "fill_informe sin manifest"}
 
@@ -108,6 +121,7 @@ def deliver_informe(
         manifest["pre_notes"] = notes
     manifest["lf_runs"] = lf_runs
     manifest["delivery_mode"] = "deliver_informe"
+    manifest["informe_mode"] = mode
 
     # Revision OCR rigurosa (hasta 3 rondas con correccion definitiva)
     do_review = ocr_review
@@ -149,7 +163,7 @@ def deliver_informe(
             manifest["ocr_review_failed"] = True
 
     try:
-        st = delivery_status(s)
+        st = delivery_status(s, mode=mode)
         manifest["delivery_status"] = st
         if st.get("delivery_ready") and manifest.get("ok") and manifest.get("ocr_review", {}).get("passed", True):
             manifest["delivery_ready"] = True
@@ -167,6 +181,12 @@ def main(argv=None):
     ap.add_argument("--no-gate", action="store_true", help="No exigir gate de entrega")
     ap.add_argument("--no-ocr-review", action="store_true", help="Omitir revision OCR post-fill")
     ap.add_argument("--ocr-rounds", type=int, default=3, help="Rondas max revision OCR (1-3)")
+    ap.add_argument(
+        "--mode",
+        choices=("completo", "situacional"),
+        default="completo",
+        help="completo=sit+proy; situacional=informe técnico estado situacional ED",
+    )
     ap.add_argument("--json", action="store_true", help="Salida JSON completa")
     args = ap.parse_args(argv)
 
@@ -180,6 +200,7 @@ def main(argv=None):
         require_delivery=not bool(args.no_gate),
         ocr_review=not bool(args.no_ocr_review),
         ocr_review_rounds=int(args.ocr_rounds or 3),
+        informe_mode=args.mode,
     )
     if args.json:
         print(json.dumps(res, indent=2, ensure_ascii=False, default=str))

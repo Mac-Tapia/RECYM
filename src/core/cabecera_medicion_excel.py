@@ -325,9 +325,12 @@ def _preferred_sistema_keywords(siglas, feeder_id):
         "PA": ["pisco", "ica"],
         "PI": ["pisco"],
         "AL": ["chincha"],
+        "CA": ["chincha"],  # CA101 → SISTEMA Chincha.xls
         "NA": ["nasca"],
         "CH": ["chincha"],
         "PO": ["nasca", "pisco"],
+        "TM": ["chincha"],
+        "IC": ["ica"],
     }.get(key, [])
 
 
@@ -672,7 +675,15 @@ def extract_max_demanda_from_xls(xls_path, medidor, feeder_id=None):
             % (medidor, feeder_id or "?", os.path.basename(xls_path))
         )
 
-    book = xlrd.open_workbook(xls_path, on_demand=True)
+    try:
+        book = xlrd.open_workbook(xls_path, on_demand=True)
+    except OSError as ex:
+        # Python 32-bit + .xls de 200–400 MB → WinError 8 (memoria)
+        raise RuntimeError(
+            "No se pudo abrir %s (memoria insuficiente en Python 32-bit). "
+            "Cierre otras extracciones / reinicie la UI (scripts\\20_demand_ui.bat) y reintente. "
+            "Detalle: %s" % (os.path.basename(xls_path), ex)
+        )
     try:
         # 1) Preferir hoja completa (kW+kvar juntos)
         for sheet_name in candidates:
@@ -844,20 +855,61 @@ def _file_has_feeder_data(path, medidor, feeder_id):
         finally:
             book.release_resources()
         return False, None
+    except RuntimeError:
+        # p.ej. falta xlrd — propagar para mensaje claro en UI
+        raise
     except Exception:
         return False, None
 
 
-def find_medicion_files_for_medidor(medidor, settings=None, files=None, feeder_id=None, siglas=None):
-    """Lista Excel con hoja del medidor o familia de hojas del alimentador."""
-    items = files if files is not None else list_medicioncabecera_files(settings)
+def _medicion_items_ranked(settings=None, files=None, feeder_id=None, siglas=None):
+    """Lista Excel medicioncabecera ordenada: primero SISTEMA preferido (CA→Chincha…)."""
+    items = list(files if files is not None else list_medicioncabecera_files(settings))
+    prefs = _preferred_sistema_keywords(siglas, feeder_id or "")
+
+    def _name(item):
+        if isinstance(item, dict):
+            return (item.get("name") or os.path.basename(item.get("path") or "") or "")
+        return os.path.basename(item or "")
+
+    def rank(item):
+        low = _name(item).lower()
+        for i, p in enumerate(prefs or []):
+            if p in low:
+                return i
+        # SISTEMA* antes que otros
+        if low.startswith("sistema"):
+            return 50
+        return 99
+
+    items.sort(key=rank)
+    return items
+
+
+def find_medicion_files_for_medidor(
+    medidor, settings=None, files=None, feeder_id=None, siglas=None, stop_on_first=True
+):
+    """Lista Excel con hoja del medidor.
+
+    Abre de a uno (Python 32-bit: los .xls pesan 100–400 MB; indexar los 4
+    a la vez provoca WinError 8 / falta de memoria). Por defecto se detiene
+    en el primer hit (suficiente para suggested_file).
+    """
     hits = []
-    for item in items:
+    for item in _medicion_items_ranked(
+        settings=settings, files=files, feeder_id=feeder_id, siglas=siglas
+    ):
         path = item.get("path") if isinstance(item, dict) else item
         name = item.get("name") if isinstance(item, dict) else os.path.basename(path or "")
         if not path or not os.path.isfile(path):
             continue
-        ok, sheet = _file_has_feeder_data(path, medidor, feeder_id)
+        try:
+            ok, sheet = _file_has_feeder_data(path, medidor, feeder_id)
+        except OSError as ex:
+            # WinError 8 / memoria: saltar este archivo e intentar el siguiente
+            if getattr(ex, "winerror", None) == 8 or "memoria" in str(ex).lower():
+                continue
+            raise
         if ok:
             hits.append({
                 "name": name,
@@ -865,22 +917,20 @@ def find_medicion_files_for_medidor(medidor, settings=None, files=None, feeder_i
                 "sheet": sheet,
                 "size_mb": round(os.path.getsize(path) / (1024.0 * 1024.0), 1),
             })
-    # Ordenar por sistema preferido
-    prefs = _preferred_sistema_keywords(siglas, feeder_id or "")
-    if prefs:
-        def rank(h):
-            low = (h.get("name") or "").lower()
-            for i, p in enumerate(prefs):
-                if p in low:
-                    return i
-            return 99
-        hits.sort(key=rank)
+            if stop_on_first:
+                break
     return hits
 
 
 def find_medicion_file_for_medidor(medidor, settings=None, files=None, feeder_id=None, siglas=None):
+    """Primer Excel (preferido por siglas) que contiene la hoja del medidor."""
     hits = find_medicion_files_for_medidor(
-        medidor, settings=settings, files=files, feeder_id=feeder_id, siglas=siglas
+        medidor,
+        settings=settings,
+        files=files,
+        feeder_id=feeder_id,
+        siglas=siglas,
+        stop_on_first=True,
     )
     if not hits:
         return None
@@ -914,6 +964,34 @@ def resolve_cabecera_medicion(feeder_id, settings=None):
         feeder_id=meta["feeder_id"],
         siglas=meta.get("siglas"),
     )
+    # Fallback: si no se indexaron hojas (.xls / xlrd), sugerir SISTEMA por siglas
+    if not hits:
+        prefs = _preferred_sistema_keywords(meta.get("siglas"), meta["feeder_id"])
+        for item in list_medicioncabecera_files(settings):
+            low = (item.get("name") or "").lower()
+            if prefs and not any(p in low for p in prefs):
+                continue
+            if not prefs and not low.startswith("sistema"):
+                continue
+            hits.append({
+                "name": item["name"],
+                "path": item["path"],
+                "sheet": None,
+                "size_mb": item.get("size_mb"),
+                "preferred_only": True,
+            })
+            break
+        if not hits:
+            for item in list_medicioncabecera_files(settings):
+                if str(item.get("name") or "").lower().startswith("sistema"):
+                    hits.append({
+                        "name": item["name"],
+                        "path": item["path"],
+                        "sheet": None,
+                        "size_mb": item.get("size_mb"),
+                        "preferred_only": True,
+                    })
+                    break
     return {
         "ok": True,
         "feeder_id": meta["feeder_id"],

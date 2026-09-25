@@ -196,14 +196,26 @@ def clear_tablero_diagnostics(settings, rebuild=True):
 
 
 def _coerce_diag(raw, phase):
-    """None / vacío → ceros. Diagnóstico real conserva datos."""
-    if not raw or raw.get("empty"):
+    """None / vacío → ceros. Diagnóstico real conserva datos (incluso 0 problemas)."""
+    if not raw:
         return empty_diag_snapshot(phase)
+    # Solo tratar como vacío si el flag empty es True Y no hay filas/conteos
+    if raw.get("empty") is True:
+        has_data = (
+            int(raw.get("total_messages") or 0) > 0
+            or int(raw.get("n_problems") or 0) > 0
+            or bool(raw.get("by_code"))
+            or bool(raw.get("top_errors"))
+            or bool(raw.get("timestamp"))
+        )
+        if not has_data:
+            return empty_diag_snapshot(phase)
     out = dict(raw)
     out.setdefault("total_messages", 0)
     out.setdefault("n_problems", 0)
     out.setdefault("by_code", {})
     out.setdefault("top_errors", [])
+    # Tras 2.1 siempre hay diagnóstico (aunque 0 problemas)
     out["empty"] = False
     return out
 

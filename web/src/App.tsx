@@ -26,7 +26,10 @@ export function App() {
   const dbFile = (databaseMdb || "").split(/[/\\]/).pop() || "";
 
   useEffect(() => {
-    // Bootstrap contexto §1 al cargar la SPA (cualquier numeral)
+    // Bootstrap UNA sola vez al montar. No re-ejecutar cuando setContext
+    // cambia (si no, pisa la selección nueva del formulario con settings viejos:
+    // p.ej. sidebar AL209/BASE JUL25 mientras §1 ya tiene CA101V2/260924).
+    let cancelled = false;
     (async () => {
       try {
         const j = await api<{
@@ -36,6 +39,7 @@ export function App() {
           current_study?: string;
           current_database?: string;
         }>("/api/contexto/archivos", { timeoutMs: 30000 });
+        if (cancelled) return;
         if (j?.ok && (j.current_feeder || j.current_study || j.current_database)) {
           setContext({
             feeder: j.current_feeder || "",
@@ -48,7 +52,11 @@ export function App() {
         /* sin contexto aún */
       }
     })();
-  }, [setContext]);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- solo montaje
+  }, []);
 
   async function refreshUi() {
     // Actualizar DEBE vaciar el tablero (campos → 0). Ping+reload solo

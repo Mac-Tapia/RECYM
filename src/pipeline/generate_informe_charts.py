@@ -19,6 +19,20 @@ REQUIRED_LF_IMAGES = (
     "proyectado_cargabilidad.png",
 )
 
+# Informe técnico solo estado situacional (Electro Dunas): 2 PNG de coloreo
+SITUACIONAL_LF_IMAGES = (
+    "situacional_tension.png",
+    "situacional_cargabilidad.png",
+)
+
+
+def required_lf_images_for_mode(mode=None):
+    """Imágenes obligatorias según modo de informe (completo | situacional)."""
+    m = str(mode or "completo").strip().lower()
+    if m in ("situacional", "sit", "estado_situacional", "diagnostico_situacional"):
+        return SITUACIONAL_LF_IMAGES
+    return REQUIRED_LF_IMAGES
+
 
 def _mtime(path):
     try:

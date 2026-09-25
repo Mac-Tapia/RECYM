@@ -1,16 +1,32 @@
 {
   "name": "CA101",
-  "description": "Auto desde BD/estudio (sin config/feeders previa)",
+  "description": "Alimentador CA101 — estudio CA101V2 multi-red (BD 260924)",
   "network_id": "NET_2030_131_CA101",
-  "study_file": "ELD.zxst",
-  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\ELD.zxst",
-  "voltage_ll_kv": 22.9,
-  "region": "",
+  "network_ids": [
+    "NET_2030_131_CA101",
+    "NET_2030_1192582_CN101",
+    "NET_2030_1192595_CN102",
+    "NET_2030_184_PE104",
+    "NET_2030_191_PN102",
+    "NET_2030_192_PN103"
+  ],
+  "transfer_pair": [
+    "CA101",
+    "CN101"
+  ],
+  "transfer_pair_note": "Par por calidad de tensión en CA101V2 (confirmable). Baseline: máxima demanda multi-alimentador.",
+  "study_file": "CA101V2.sxst",
+  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101V2.sxst",
+  "voltage_ll_kv": 10.0,
+  "region": "Chincha",
   "substation": "",
   "enabled": true,
   "control_workbook": "",
   "catalog_workbook": "",
-  "output_dir": "",
-  "notes": "Sintetizado automáticamente para diagnóstico de red BD",
-  "synthesized": true
+  "output_dir": "data\\output\\feeders\\CA101",
+  "notes": "Actualizado 2026-09-24: CA101V2.sxst + BD 260924.mdb · multi-red máxima demanda",
+  "synthesized": false,
+  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101V2.sxst",
+  "ui_study_file": "CA101V2.sxst",
+  "via_eld": false
 }

@@ -1,0 +1,666 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+\documentclass[
+  11pt,
+]{article}
+\usepackage{xcolor}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{longtable,booktabs,array}
+\usepackage{caption}
+\captionsetup[table]{skip=6pt}
+\newcounter{none} % for unnumbered tables
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+% Allow footnotes in longtable head/foot
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\usepackage{bookmark}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+% fallback for those not using the hyperref driver hyperxmp:
+\makeatletter
+\@ifundefined{xmpquote}{\newcommand{\xmpquote}[1]{#1}}{}
+\makeatother
+\hypersetup{
+  hidelinks,
+  pdfcreator={LaTeX via pandoc}}
+
+\author{}
+\date{}
+
+\begin{document}
+
+\section{RECYM: An Automated Multi-Feeder Workflow for Demand Allocation
+and Load-Flow Studies in CYMDIST Distribution
+Networks}\label{recym-an-automated-multi-feeder-workflow-for-demand-allocation-and-load-flow-studies-in-cymdist-distribution-networks}
+
+\textbf{Draft manuscript — IEEE PES Transactions structure (full RECYM
+scope)}\\
+\textbf{Target venue:} \emph{IEEE Transactions on Power Delivery} (alt.:
+\emph{IEEE Trans. Smart Grid} / \emph{IEEE Access})\\
+\textbf{Citation style:} IEEE numbered \texttt{{[}n{]}} in order of
+appearance\\
+\textbf{Status:} Draft v0.2 — whole project (SPA §§1–7, API/jobs,
+pipeline, CymPy/COM, multi-feeder, PA217 evidence)\\
+\textbf{Authors / affiliation:} \emph{{[}To be completed{]}}\\
+\textbf{Corresponding author:} \emph{{[}email{]}}
+
+\subsubsection{IEEE / PES numerals enforced in this
+draft}\label{ieee-pes-numerals-enforced-in-this-draft}
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.4062}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.2188}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3750}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Requirement
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Limit
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+This draft
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Abstract & \textbf{150–250 words}, one paragraph; no citations/equations
+& \textasciitilde159 words \\
+Index Terms & Alphabetical keywords & Yes (separate block) \\
+Body sections & Roman \textbf{I–VII} (+ A/B subsections) & Yes \\
+First PES submission & \textbf{≤ 10 pages} (2-column, figs/refs/bios
+included) & Keep when compiling IEEEtran \\
+Citations & \texttt{{[}1{]}}, \texttt{{[}2{]}–{[}4{]}} & Yes \\
+Units & SI (kW, kvar, kWh, kV, p.u.) & Yes \\
+\end{longtable}
+}
+
+\begin{quote}
+Source artifacts: \texttt{docs/ARQUITECTURA.md},
+\texttt{docs/FLUJO\_TRABAJO.md},\\
+\texttt{data/output/feeders/PA217/} (session, allocation, cierre\_1\_7,
+inventory, images).\\
+Copy into official IEEEtran / IEEE Word template; trim Appendix if PDF
+\textgreater{} 10 pages.
+\end{quote}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{Abstract}\label{abstract}
+
+Distribution utilities need repeatable procedures to clean network
+models, allocate measured substation demand, inject important-customer
+and prospective spot loads, and compare situational versus projected
+operating cases. This paper presents RECYM, a multi-feeder software
+suite that couples CYMDIST/CymPy with a seven-step single-page
+application and a batch pipeline. The workflow integrates network
+diagnostics, large-customer energy/power mapping to secondary
+distribution substations, kilowatt-hour-based load allocation via the
+CYMDIST COM API, locked three-phase spot loads, dual load-flow
+scenarios, and automated delivery reports. On feeder PA217 (22.9 kV,
+Electro Dunas), the campaign closed with zero diagnostic problems,
+important customers verified within configured energy/power tolerances,
+headroom-balanced allocation (9537.9 kW versus 9537.88 kW), a 1420 kW
+prospective spot load, and successful situational and projected load
+flows. The same architecture scales to a catalog of about 96 feeders
+sharing one Access database and per-feeder study files.
+
+\subsection{Index Terms}\label{index-terms}
+
+CYMDIST, demand studies, distribution networks, load allocation, load
+flow analysis, power system modeling, software tools.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{I. Introduction}\label{i.-introduction}
+
+Modern distribution planning relies on detailed feeder models to assess
+voltage profiles, thermal loading, and the impact of new customers
+{[}1{]}, {[}2{]}. Commercial packages such as CYMDIST provide load
+allocation and unbalanced load-flow engines used widely by utilities
+{[}3{]}. In practice, however, campaigns still depend on manual GUI
+steps: correcting DEFAULT equipment, transferring billing energy and
+demand to SED nodes, locking loads, connecting prospective spot loads,
+and regenerating reports for situational (existing) versus projected
+(with new load) cases.
+
+Incomplete or inconsistent models degrade allocation and load-flow
+quality {[}1{]}, {[}4{]}. Open tooling such as OpenDSS {[}5{]} and
+pandapower {[}6{]} supports research automation, yet many Latin American
+utilities already standardize on CYMDIST study (\texttt{.zxst}) and
+Access (\texttt{.mdb}) assets. Bridging enterprise models with scripted,
+auditable workflows remains a gap {[}7{]}, {[}8{]}.
+
+This paper introduces \textbf{RECYM} (\emph{Redes / Electro Dunas
+CYMDIST Management}), a suite that:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  Provides a layered architecture (SPA UI, REST/job API, Python
+  pipeline, CymPy/COM core) for multi-feeder operation;
+\item
+  Encodes a seven-step campaign from context and model-quality gate
+  through dual load flows and delivery reports;
+\item
+  Demonstrates end-to-end closure on a real 22.9\,kV feeder (PA217) with
+  quantitative precision and balance metrics.
+\end{enumerate}
+
+Section II reviews related work. Section III describes the architecture.
+Section IV details the proposed workflow. Section V presents the case
+study. Section VI discusses results. Section VII concludes.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{II. Related Work}\label{ii.-related-work}
+
+\subsubsection{A. Distribution Modeling and Load
+Allocation}\label{a.-distribution-modeling-and-load-allocation}
+
+Kersting {[}1{]} formalizes three-phase distribution modeling and load
+representation. Load allocation methods distribute measured headroom
+demand across customer meters using energy, demand, or transformer kVA
+as weighting factors {[}3{]}, {[}9{]}. CYMDIST implements
+Connected+Total allocation templates with consumption (kWh), diversity,
+and loss factors {[}3{]}. Accuracy depends on locked large customers and
+clean connectivity {[}9{]}, {[}10{]}.
+
+\subsubsection{B. Automation of Utility
+Studies}\label{b.-automation-of-utility-studies}
+
+Dugan and McDermott {[}5{]} popularized scriptable distribution
+analysis. Python ecosystems (pandapower, PyPSA) emphasize open data
+models {[}6{]}, {[}11{]}. COM/API automation of commercial tools is less
+documented in the literature but is operationally critical when the
+system of record is proprietary {[}7{]}, {[}8{]}. RECYM targets that
+niche: reproducible CYMDIST campaigns without abandoning the utility’s
+native database.
+
+\subsubsection{C. Capacity and New-Load
+Studies}\label{c.-capacity-and-new-load-studies}
+
+Hosting-capacity and interconnection studies compare base and
+incremental cases under voltage and thermal limits {[}12{]}, {[}13{]}.
+Regulatory interconnection frameworks (e.g., IEEE Std 1547 {[}14{]})
+motivate clear situational vs.~projected narratives. RECYM
+operationalizes that comparison at feeder scale for a new medium-voltage
+customer request.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{III. System Architecture}\label{iii.-system-architecture}
+
+\subsubsection{A. Layered Design}\label{a.-layered-design}
+
+Fig. 1 (see \texttt{docs/ARQUITECTURA.md}) summarizes five layers:
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.5385}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.4615}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Layer
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Role
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Presentation & React SPA (§§1–7), Vite build served at port 5055 \\
+API & FastAPI jobs/SSE + Flask handler bridge for \texttt{/api/*} \\
+Domain & \texttt{pipeline/}, \texttt{analysis/},
+\texttt{optimization/} \\
+Core & \texttt{cympy\_adapter}, \texttt{cymdist\_com},
+\texttt{feeder\_context}, Excel I/O \\
+External data & CYMDIST \texttt{.zxst} studies, shared \texttt{.mdb},
+Excel workbooks \\
+\end{longtable}
+}
+
+Long-running actions (diagnostics, allocation, load flow) run as
+asynchronous jobs with Server-Sent Events (SSE) progress, avoiding UI
+timeouts during COM calls.
+
+\subsubsection{B. Multi-Feeder
+Configuration}\label{b.-multi-feeder-configuration}
+
+Global settings (\texttt{config/settings.json}) define CYME paths, the
+shared Access database, default equipment IDs, precision tolerances, and
+the batch \texttt{run\_sequence}. Each feeder file
+(\texttt{config/feeders/\textless{}ID\textgreater{}.json}) binds
+\texttt{network\_id}, study path, control/catalog workbooks, and output
+directory. Selection follows CLI (\texttt{-\/-feeder}), environment
+(\texttt{RECYM\_FEEDER}), UI header \texttt{X-Feeder}, or
+\texttt{active\_feeder}. The catalog used in this work contains on the
+order of \textbf{96} Electro Dunas feeders plus study ELD for
+system-wide diagnostics.
+
+\subsubsection{C. CYMDIST Integration}\label{c.-cymdist-integration}
+
+Write operations require a usable study file and
+\texttt{dry\_run=false}. Load allocation and load flow preferentially
+use the \textbf{COM} engine (\texttt{loadflow\_engine:\ COM}) for
+reliability when native CymPy allocation is unavailable. Customer fields
+mapped by RECYM include KWH consumption, kW/kvar,
+\texttt{ConnectionStatus} (Connected/Disconnected), and
+\texttt{LockDuringLoadAllocation} (Locked/Unlocked) {[}3{]}.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{IV. Proposed Workflow}\label{iv.-proposed-workflow}
+
+The SPA enforces a numbered campaign (Fig. 2 /
+\texttt{docs/FLUJO\_TRABAJO.md}).
+
+\subsubsection{A. §1 Context and
+Headroom}\label{a.-1-context-and-headroom}
+
+The operator selects database and study, then loads feeder headroom
+measurement (P, Q, optionally from metering Excel). CYMDIST network
+allocation templates are set to Total ON, downstream consumption in kWh,
+load factor (default 65\,\%), and loss factor (k=0.3).
+
+\subsubsection{B. §2 Model-Quality Gate}\label{b.-2-model-quality-gate}
+
+NetworkDiagnostic runs at feeder or system (96-network / ELD) scope.
+Corrections for DEFAULT equipment and base voltages are proposed and
+applied. The gate requires zero Error/Warning/Hint messages and
+load-flow convergence before demand steps.
+
+\subsubsection{C. §3 Important Customers and
+Allocation}\label{c.-3-important-customers-and-allocation}
+
+Billing supply and “important customers” tables are crossed by NIS. For
+each included SED:
+
+\begin{itemize}
+\tightlist
+\item
+  Energy \textbf{EA} → CYMDIST \textbf{KWH} (consumption);
+\item
+  Demand \textbf{Pot} → \textbf{kW}, Locked during allocation;
+\item
+  Excluded rows → Disconnected + 0\,kW.
+\end{itemize}
+
+Load allocation then distributes residual headroom by kWh weights.
+Precision checks enforce (\textbar{}\Delta\mathrm{kWh}\textbar{}\le 0.5)
+and (\textbar{}\Delta\mathrm{kW}\textbar{}\le 0.01).
+
+\subsubsection{D. §4 Prospective Spot
+Load}\label{d.-4-prospective-spot-load}
+
+A concentrated three-phase spot load is attached to an \emph{existing}
+node (no new topology). Active and reactive power are split equally:
+
+{[} P\_A=P\_B=P\_C=\frac{P_{3\phi}}{3},\qquad
+Q\_A=Q\_B=Q\_C=\frac{Q_{3\phi}}{3}. {]}
+
+The load is Locked. After §4, allocation (§3.3) is not re-run; only load
+flow follows.
+
+\subsubsection{E. §5 Dual Load-Flow
+Scenarios}\label{e.-5-dual-load-flow-scenarios}
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+Scenario & Spot-load §4 & Purpose \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Situational & Disconnected & Existing network condition \\
+Projected & Connected & With prospective customer \\
+General & Unchanged & Ad-hoc LF \\
+\end{longtable}
+}
+
+\subsubsection{F. §§6–7 Reports and
+Suite}\label{f.-67-reports-and-suite}
+
+§6 fills delivery Word/PDF reports from OCR meta (customer, kW request)
+and scenario images. §7 exposes optional device optimization (reclosers,
+regulators, capacitors) and batch suite tools.
+
+\textbf{Algorithm 1} (scenario load flow):
+
+\begin{verbatim}
+Input: study S, spot-load set L, scenario ∈ {situational, projected}
+if scenario = situational: disconnect each ℓ ∈ L
+if scenario = projected:   connect each ℓ ∈ L
+Run COM LoadFlow on S
+Export voltage/loading summaries and map images
+\end{verbatim}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{V. Case Study}\label{v.-case-study}
+
+\subsubsection{A. Network and Software}\label{a.-network-and-software}
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Utility:} Electro Dunas (Peru).
+\item
+  \textbf{Feeder:} PA217, network \texttt{NET\_2030\_179\_PA217},
+  (V\_\{LL\}=22.9,\mathrm{kV}), SET Paracas.
+\item
+  \textbf{Study / DB:} \texttt{PA217.zxst}, Access
+  \texttt{20260919.mdb}.
+\item
+  \textbf{Software:} CYMDIST 9.2, CymPy, Python 3.7 win32, RECYM SPA v6.
+\item
+  \textbf{Prospective customer:} San Fernando S.A., incubadora Sur
+  project, request \textbf{1420\,kW} (feasibility at MV).
+\end{itemize}
+
+\subsubsection{B. Headroom Measurement}\label{b.-headroom-measurement}
+
+From metering session (\texttt{L-PA235}, Excel \emph{SISTEMA Pisco.xls},
+2026-03-03):
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}lr@{}}
+\toprule\noalign{}
+Quantity & Value \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+(P) & 9537.88\,kW \\
+(Q) & 2587.65\,kvar \\
+(S) & 9882.67\,kVA \\
+Avg. (P) & 6204.65\,kW \\
+Load factor & 65.05\,\% \\
+\end{longtable}
+}
+
+\subsubsection{C. Metrics}\label{c.-metrics}
+
+Diagnostic message counts; customer EA/Pot precision; allocation
+headroom balance; spot-load phase split; situational/projected LF
+success; end-to-end campaign closure
+(\texttt{cierre\_1\_7\_report.json}).
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{VI. Results and
+Discussion}\label{vi.-results-and-discussion}
+
+\subsubsection{A. Model Quality}\label{a.-model-quality}
+
+Post-campaign diagnostics for PA217 reported \textbf{0} messages and
+\textbf{0} problems (before/after summaries empty), satisfying the §2
+gate for the validated run.
+
+\subsubsection{B. Important-Customer
+Precision}\label{b.-important-customer-precision}
+
+Twelve candidate rows were built; \textbf{11} SED mappings passed
+precision tests ((n\_\{\mathrm{fail}\}=0)); one supply without SED was
+skipped. Representative verified customers include Caliza Cementos Inca
+(3800.57\,kW / 1.75\,GWh), Minerales Paracas (1273.76\,kW), and Emsalsa
+(458.00\,kW). Absolute errors were within configured tolerances (Table
+I).
+
+\textbf{TABLE I}\\
+IMPORTANT-CUSTOMER PRECISION ON PA217 (SAMPLE)
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1389}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.0694}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1389}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1389}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.2083}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1944}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 12\tabcolsep) * \real{0.1111}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Customer
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+SED
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+EA (kWh)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Pot (kW)
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+(\Delta)kWh
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+(\Delta)kW
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Status
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Caliza cementos inca & SE30940 & 1\,747\,551.27 & 3800.57 & 0.0 & 0.0 &
+OK \\
+Minerales Paracas & SE30480 & 678\,852.12 & 1273.76 & 0.0 & 0.0 & OK \\
+LJMetales & SE30642 & 527\,079.81 & 956.49 & 0.0 & 0.0 & OK \\
+Emsalsa & SE30353 & 157\,621.44 & 458.00 & 0.0 & 0.0 & OK \\
+Uvica & SE30424 & 167\,101.44 & 366.30 & 0.0 & 0.0 & OK \\
+\end{longtable}
+}
+
+\subsubsection{C. Load Allocation
+Balance}\label{c.-load-allocation-balance}
+
+COM kWh-based LoadAllocation yielded (\sum P = 9537.9,\mathrm{kW})
+against headroom (P=9537.88,\mathrm{kW}) ((\Delta\approx 0\%)), with
+validation mode reporting balance OK over 257 modeled loads.
+
+\subsubsection{D. Prospective Spot Load}\label{d.-prospective-spot-load}
+
+A locked spot load of \textbf{1420\,kW} was placed at node
+\texttt{NODE\_1080\_320357\_MI-17145\_2} (UTM zone 18S; approx.
+13.862°\,S, 76.132°\,W). An independent integral check on device
+\texttt{SAN\_FERNANDO1} confirmed phase powers
+(466.67/466.67/466.67,\mathrm{kW}) for a 1400\,kW three-phase injection
+(equal split), and the orphan zero-kW device was disconnected.
+
+\subsubsection{E. Dual Load Flows and Campaign
+Closure}\label{e.-dual-load-flows-and-campaign-closure}
+
+Situational and projected load flows both completed successfully. The
+automated closure report recorded \textbf{21/21} steps OK
+(\texttt{closed:\ true}), including context, diagnostics, EA/Pot apply,
+allocation, both LF scenarios, informe assembly, and suite checks.
+
+\subsubsection{F. Discussion and
+Limitations}\label{f.-discussion-and-limitations}
+
+RECYM reduces GUI chatter and produces auditable JSON/CSV artifacts per
+feeder. Limitations include: (i) Windows/COM session coupling to
+CYMDIST; (ii) dependence on study-file integrity; (iii) native CymPy
+allocation may be unavailable, requiring COM fallback; (iv) optimization
+(§7) is exposed but not the focus of the PA217 closure metrics. Results
+are for one feeder; multi-feeder statistical aggregation is future work.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{VII. Conclusion}\label{vii.-conclusion}
+
+This paper presented RECYM, an automated multi-feeder workflow for
+CYMDIST demand and load-flow studies. The seven-step SPA and batch
+pipeline combine model-quality gating, important-customer injection, kWh
+load allocation, locked spot loads, and situational/projected load
+flows—covering the full product stack (UI, API/jobs, domain pipelines,
+CymPy/COM, multi-feeder config, and report generation). On Electro Dunas
+feeder PA217, the method achieved zero diagnostic issues, verified
+customer precision, headroom-balanced allocation, dual load-flow closure
+for a 1420 kW prospective MV customer, and a 21/21 automated campaign
+closure. Future work includes fleet-wide KPI dashboards across
+\textasciitilde96 feeders, tighter regulatory voltage/thermal scoring,
+and production hardening of §7 device optimization.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{\texorpdfstring{Appendix A — Batch \texttt{run\_sequence}
+(excerpt)}{Appendix A — Batch run\_sequence (excerpt)}}\label{appendix-a-batch-run_sequence-excerpt}
+
+\texttt{validate\_inputs} → \texttt{network\_diagnostic} →
+\texttt{sync\_equipment} → \texttt{build\_corrections} →
+\texttt{bulk\_fix} → \texttt{fix\_base\_voltages} →
+\texttt{network\_diagnostic\_after} → \texttt{inventory\_loads} →
+\texttt{build\_clientes} → \texttt{apply\_clientes} →
+\texttt{verify\_precision} → \texttt{demand\_allocation} →
+\texttt{report}.
+
+\subsection{Appendix B — Figure
+Sources}\label{appendix-b-figure-sources}
+
+{\def\LTcaptype{none} % do not increment counter
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.2727}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 2\tabcolsep) * \real{0.7273}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+Fig.
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Suggested file
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+1 Architecture & Diagram in \texttt{docs/ARQUITECTURA.md} \\
+2 Workflow & Mermaid in \texttt{docs/FLUJO\_TRABAJO.md} \\
+3 Location map &
+\texttt{data/output/feeders/PA217/informe\_images/topologia.png} \\
+4–5 Voltage/loading & \texttt{situacional\_*.png},
+\texttt{proyectado\_*.png} \\
+\end{longtable}
+}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\subsection{References}\label{references}
+
+{[}1{]} W. H. Kersting, \emph{Distribution System Modeling and
+Analysis}, 4th ed.~Boca Raton, FL, USA: CRC Press, 2017.
+
+{[}2{]} T. Gönen, \emph{Electric Power Distribution Engineering}, 3rd
+ed.~Boca Raton, FL, USA: CRC Press, 2014.
+
+{[}3{]} Eaton CYME, \emph{CYMDIST Reference Manual / How-to Tutorials}
+(Load Allocation, Load Flow), version 9.2. Saint-Bruno, QC, Canada:
+Eaton, 2022.
+
+{[}4{]} R. C. Dugan, M. F. McGranaghan, S. Santoso, and H. W. Beaty,
+\emph{Electrical Power Systems Quality}, 3rd ed.~New York, NY, USA:
+McGraw-Hill, 2012.
+
+{[}5{]} R. C. Dugan and T. E. McDermott, “An open source platform for
+collaborating on smart grid research,” in \emph{Proc. IEEE Power Energy
+Soc. Gen.~Meeting}, Detroit, MI, USA, 2011, pp.~1–7.
+
+{[}6{]} L. Thurner \emph{et al.}, “pandapower—An open-source Python tool
+for convenient modeling, analysis, and optimization of electric power
+systems,” \emph{IEEE Trans. Power Syst.}, vol.~33, no. 6, pp.~6510–6521,
+Nov.~2018.
+
+{[}7{]} J. Peppanen, M. J. Reno, M. Thakkar, S. Grijalva, and R. G.
+Harley, “Leveraging AMI data for distribution system model calibration
+and situational awareness,” \emph{IEEE Trans. Smart Grid}, vol.~6, no.
+4, pp.~2000–2009, Jul.~2015.
+
+{[}8{]} Y. Wang, Q. Chen, T. Hong, and C. Kang, “Review of smart meter
+data analytics: Applications, methodologies, and challenges,” \emph{IEEE
+Trans. Smart Grid}, vol.~10, no. 3, pp.~3125–3148, May 2019.
+
+{[}9{]} A. K. Ghosh, D. L. Lubkeman, and R. H. Jones, “Load modeling for
+distribution circuit state estimation,” \emph{IEEE Trans. Power Del.},
+vol.~12, no. 2, pp.~999–1005, Apr.~1997.
+
+{[}10{]} M. E. Baran and A. W. Kelley, “State estimation for real-time
+monitoring of distribution systems,” \emph{IEEE Trans. Power Syst.},
+vol.~9, no. 3, pp.~1601–1609, Aug.~1994.
+
+{[}11{]} T. Brown, J. Hörsch, and D. Schlachtberger, “PyPSA: Python for
+power system analysis,” \emph{J. Open Res. Softw.}, vol.~6, no. 1, Art.
+no. 4, 2018.
+
+{[}12{]} M. Rylander, J. Smith, and W. Sunderman, “Streamlined method
+for determining distribution system hosting capacity,” in \emph{Proc.
+IEEE Rural Electric Power Conf.}, Asheville, NC, USA, 2015, pp.~3–9.
+
+{[}13{]} F. Ding and B. Mather, “On distributed PV hosting capacity
+estimation, sensitivity study, and improvement,” \emph{IEEE Trans.
+Sustain. Energy}, vol.~8, no. 3, pp.~1010–1020, Jul.~2017.
+
+{[}14{]} \emph{IEEE Standard for Interconnection and Interoperability of
+Distributed Energy Resources with Associated Electric Power Systems
+Interfaces}, IEEE Std 1547-2018, Apr.~2018.
+
+{[}15{]} H. L. Willis, \emph{Power Distribution Planning Reference
+Book}, 2nd ed.~New York, NY, USA: Marcel Dekker, 2004.
+
+{[}16{]} J. A. Momoh, \emph{Electric Power Distribution, Automation,
+Protection, and Control}. Boca Raton, FL, USA: CRC Press, 2008.
+
+{[}17{]} A. Abur and A. G. Expósito, \emph{Power System State
+Estimation: Theory and Implementation}. New York, NY, USA: Marcel
+Dekker, 2004.
+
+{[}18{]} OSINERGMIN, \emph{Normativa técnica de calidad de servicio
+eléctrico / distribución} (Perú). Lima, Peru: Organismo Supervisor de la
+Inversión en Energía y Minería. {[}Online{]}. Available:
+https://www.osinergmin.gob.pe
+
+{[}19{]} IEEE PES, “IEEE guide for electric power distribution
+reliability indices,” IEEE Std 1366-2022, 2022.
+
+{[}20{]} S. Conti, S. Raiti, G. Tina, and U. Vagliasindi, “Study of the
+impact of PV generation on voltage profile in LV distribution networks,”
+in \emph{Proc. IEEE Power Tech}, St.~Petersburg, Russia, 2005, pp.~1–6.
+
+\end{document}

@@ -1,0 +1,74 @@
+{
+  "ok": true,
+  "passed": true,
+  "feeder_id": "AL209",
+  "max_rounds": 3,
+  "cycle": "ocr_review → correct_word → word_to_pdf → ocr_review (x3)",
+  "rounds_done": 1,
+  "rounds": [
+    {
+      "round": 1,
+      "phase": "ocr_review",
+      "passed": true,
+      "n_errors": 0,
+      "n_warnings": 0,
+      "findings": [],
+      "notes": [
+        "texto PDF paginas=7 chars=8696 methods=native,ocr+native"
+      ],
+      "pdf": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe.pdf",
+      "correct_word": null,
+      "word_to_pdf": null
+    }
+  ],
+  "final": {
+    "ok": true,
+    "passed": true,
+    "feeder_id": "AL209",
+    "pdf": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe.pdf",
+    "docx": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe.docx",
+    "reviewed_at": "2026-09-24T00:19:12",
+    "n_errors": 0,
+    "n_warnings": 0,
+    "findings": [],
+    "notes": [
+      "texto PDF paginas=7 chars=8696 methods=native,ocr+native"
+    ],
+    "ocr_pages": [
+      {
+        "page": 1,
+        "chars": 1339
+      },
+      {
+        "page": 2,
+        "chars": 809
+      },
+      {
+        "page": 3,
+        "chars": 1022
+      },
+      {
+        "page": 4,
+        "chars": 1168
+      },
+      {
+        "page": 5,
+        "chars": 1095
+      },
+      {
+        "page": 6,
+        "chars": 1877
+      },
+      {
+        "page": 7,
+        "chars": 1386
+      }
+    ],
+    "scenarios_kw": {
+      "situacional": 6531.0,
+      "proyectado": 6531.0
+    }
+  },
+  "notes": [],
+  "finished_at": "2026-09-24T00:19:12"
+}

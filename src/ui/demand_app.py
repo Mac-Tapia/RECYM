@@ -236,9 +236,16 @@ tr.off-row{opacity:.55;background:#fafaf9}
     </div>
     <div class="actions">
       <button type="button" onclick="saveHead()">Guardar medición cabecera</button>
+      <button type="button" class="secondary" onclick="loadMaxDemandAll()"
+        title="Extrae Pmáx/Q de cada alimentador del estudio (Excel) y escribe SetDemand en todas las redes">
+        1.2 · Cargar máxima demanda (todos los alimentadores del estudio)</button>
       <button type="button" class="ghost" onclick="previewHead()">Recalcular P/Q</button>
+      <button type="button" class="ghost" onclick="runTransferVoltageQuality()"
+        title="Evalúa transferencia por calidad de tensión sobre transfer_pair (baseline en pico)">
+        1.3 · Transferencia por calidad de tensión (pico)</button>
       <span class="muted" id="headMsg"></span>
     </div>
+    <div class="pathbox muted" id="maxDemandMultiMsg" style="margin-top:8px;display:none"></div>
   </section>
 
   <section class="panel" id="panelCalidad">
@@ -1079,6 +1086,133 @@ function previewHead(){
       ' · <a href="#mode">editar en §1</a>';
   }catch(e){
     prev.textContent = String(e);
+  }
+}
+
+async function loadMaxDemandAll(){
+  const msgEl = document.getElementById('headMsg');
+  const box = document.getElementById('maxDemandMultiMsg');
+  const sel = getContextSelection();
+  if (!sel.study_path || !sel.database_mdb) {
+    if (msgEl) {
+      msgEl.innerHTML = '<span class="err">Seleccione BD y estudio, pulse «Verificar y conectar», luego 1.2.</span>';
+      msgEl.className = 'err';
+    }
+    return {ok:false, error:'Falta BD/estudio'};
+  }
+  const feeder = sel.feeder || ctxFeederFromStudy(sel.study_path) || '';
+  if (msgEl) {
+    msgEl.textContent = 'Extrayendo máxima demanda multi-alimentador ('+feeder+')…';
+    msgEl.className = 'muted';
+  }
+  if (box) { box.style.display = 'block'; box.textContent = 'Proceso aislado CymPy…'; }
+  const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const timer = setTimeout(function(){ try { if (ctrl) ctrl.abort(); } catch(e) {} }, 600000);
+  try{
+    const headers = {'Content-Type': 'application/json'};
+    if (feeder) headers['X-Feeder'] = feeder;
+    const r = await fetch('/api/cabecera/max-demand-multi', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({
+        feeder: feeder,
+        database_mdb: sel.database_mdb,
+        study_path: sel.study_path,
+        write_cymdist: true,
+        save: true,
+      }),
+      signal: ctrl ? ctrl.signal : undefined,
+    });
+    const j = await r.json();
+    if (j.ok) {
+      const ex = j.extraction || {};
+      let msg = 'OK máxima demanda · '+ (j.feeder_id||feeder)
+        +' · extraídos '+ (ex.n_ok||0) +'/'+ (ex.n_networks||0)
+        +' · escritos '+ (j.n_written||0);
+      if (j.artifact) msg += ' · '+ j.artifact;
+      if (msgEl) { msgEl.textContent = msg; msgEl.className = 'ok'; }
+      if (box) {
+        const lines = (ex.networks||[]).map(function(n){
+          if (n.ok) return n.feeder_short+': P='+n.P_kW+' Q='+n.Q_kvar+' ('+(n.fecha_medicion||'')+')';
+          return n.feeder_short+': ERROR '+ (n.error||'');
+        });
+        box.innerHTML = '<b>Por alimentador</b><br/>'+ lines.join('<br/>');
+      }
+      if (j.session_updated && j.extraction) {
+        const prim = (ex.networks||[]).find(function(n){ return n.ok && n.network_id === j.primary_network_id; })
+          || (ex.networks||[]).find(function(n){ return n.ok; });
+        if (prim) {
+          document.getElementById('mode').value = 'KW_KVAR';
+          if (typeof modeUI === 'function') modeUI();
+          document.getElementById('p_kw').value = Number(prim.P_kW).toFixed(2);
+          document.getElementById('q_kvar').value = Number(prim.Q_kvar||0).toFixed(2);
+          if (prim.Vll_kV!=null && document.getElementById('v_ll')) document.getElementById('v_ll').value = prim.Vll_kV;
+          if (prim.fecha_medicion && document.getElementById('fecha_med')) document.getElementById('fecha_med').value = prim.fecha_medicion;
+          previewHead();
+        }
+      }
+    } else {
+      if (msgEl) { msgEl.textContent = j.error || 'Error máxima demanda multi'; msgEl.className = 'err'; }
+      if (box) box.textContent = j.error || JSON.stringify(j.warnings||[]);
+    }
+    return j;
+  }catch(e){
+    const aborted = (e && (e.name==='AbortError' || /abort/i.test(String(e))));
+    const err = aborted ? 'Tiempo agotado en máxima demanda multi' : String(e);
+    if (msgEl) { msgEl.textContent = err; msgEl.className = 'err'; }
+    if (box) box.textContent = err;
+    return {ok:false, error: err};
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
+async function runTransferVoltageQuality(){
+  const msgEl = document.getElementById('headMsg');
+  const box = document.getElementById('maxDemandMultiMsg');
+  const sel = getContextSelection();
+  if (!sel.study_path || !sel.database_mdb) {
+    if (msgEl) {
+      msgEl.innerHTML = '<span class="err">Seleccione BD y estudio primero.</span>';
+      msgEl.className = 'err';
+    }
+    return {ok:false};
+  }
+  const feeder = sel.feeder || ctxFeederFromStudy(sel.study_path) || '';
+  if (msgEl) {
+    msgEl.textContent = 'Evaluando transferencia por calidad de tensión (pico)…';
+    msgEl.className = 'muted';
+  }
+  if (box) { box.style.display = 'block'; box.textContent = 'LF baseline par transfer_pair…'; }
+  try{
+    const headers = {'Content-Type': 'application/json'};
+    if (feeder) headers['X-Feeder'] = feeder;
+    const r = await fetch('/api/cabecera/transfer-voltage-quality', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify({
+        feeder: feeder,
+        database_mdb: sel.database_mdb,
+        study_path: sel.study_path,
+        ensure_max_demand: false,
+      }),
+    });
+    const j = await r.json();
+    const rec = j.recommendation || {};
+    let msg = (j.ok ? 'OK' : 'AVISO') + ' transferencia · par '+ (j.transfer_pair||[]).join('↔')
+      +' · '+ (rec.action||'') +' · '+ (rec.reason||'');
+    if (msgEl) { msgEl.textContent = msg; msgEl.className = j.ok ? 'ok' : 'err'; }
+    if (box) {
+      const bl = j.baseline_peak || {};
+      box.innerHTML = '<b>Baseline pico</b><br/>'
+        +'Origen: '+ JSON.stringify(bl.source||{}) +'<br/>'
+        +'Destino: '+ JSON.stringify(bl.destination||{}) +'<br/>'
+        +(j.artifact ? ('Artefacto: '+j.artifact) : '');
+    }
+    return j;
+  }catch(e){
+    if (msgEl) { msgEl.textContent = String(e); msgEl.className = 'err'; }
+    return {ok:false, error: String(e)};
   }
 }
 
@@ -4417,6 +4551,24 @@ def _cabecera_payload_from_session(s, sess):
         vll_f = float(vll) if vll not in (None, "") else None
     except Exception:
         vll_f = None
+    # Si no hay Vll en sesión, tomar Nivel Tension de medidoralimentador.xlsx
+    if vll_f is None:
+        try:
+            from core.cabecera_medicion_excel import lookup_feeder_medidor
+            fid = (s.get("feeder_id") or "").strip()
+            if fid:
+                meta = lookup_feeder_medidor(fid, settings=s)
+                if meta.get("Vll_kV") not in (None, ""):
+                    vll_f = float(meta["Vll_kV"])
+        except Exception:
+            pass
+    if vll_f is None:
+        try:
+            v_set = s.get("voltage_ll_kv")
+            if v_set not in (None, ""):
+                vll_f = float(v_set)
+        except Exception:
+            pass
     va = sess.get("Va_kV")
     vb = sess.get("Vb_kV")
     vc = sess.get("Vc_kV")
@@ -4495,9 +4647,14 @@ def api_cabecera_medicion_archivos():
 def api_cabecera_medicion_resolver():
     """Lookup medidor + Vll + Excel candidatos (sin leer series temporales)."""
     try:
-        from core.cabecera_medicion_excel import resolve_cabecera_medicion
+        from core.cabecera_medicion_excel import resolve_cabecera_medicion, _load_medidor_map
         from core.common import load_json
         global_s = load_json("config/settings.json")
+        # Forzar relectura si cambió medidoralimentador.xlsx
+        try:
+            _load_medidor_map(global_s, force=True)
+        except Exception:
+            pass
         if request.method == "POST":
             body = request.get_json(silent=True) or {}
         else:
@@ -4554,6 +4711,100 @@ def api_cabecera_medicion_extraer():
             auto_find_file=auto_find,
         )
         return jsonify(result)
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/cabecera/max-demand-multi", methods=["POST"])
+def api_cabecera_max_demand_multi():
+    """Extrae máxima demanda por red del estudio y escribe SetDemand en cada una."""
+    try:
+        body = request.get_json(silent=True) or {}
+        feeder = (
+            (body.get("feeder") or body.get("feeder_id") or "").strip()
+            or (request.headers.get("X-Feeder") or "").strip()
+            or None
+        )
+        db = (body.get("database_mdb") or "").strip() or None
+        st = (body.get("study_path") or "").strip() or None
+        if db or st or feeder:
+            from core.feeder_context import apply_context_selection
+            try:
+                apply_context_selection(
+                    database_mdb=db, study_path=st, feeder_id=feeder
+                )
+            except Exception as ex_ctx:
+                print("AVISO context max-demand-multi:", ex_ctx)
+        s = load_settings(feeder_id=feeder, synthesize=True) if feeder else _settings()
+        if db:
+            s["database_mdb"] = db
+        if st:
+            s["study_path"] = st
+            s["ui_study_path"] = st
+        from core.cympy_job import run_cympy_job
+        payload = {
+            "job": "max_demand_multi",
+            "feeder_id": s.get("feeder_id"),
+            "study_path": s.get("study_path"),
+            "ui_study_path": s.get("ui_study_path") or s.get("study_path"),
+            "database_mdb": s.get("database_mdb"),
+            "network_id": s.get("network_id"),
+            "network_ids": body.get("network_ids") or s.get("network_ids"),
+            "medicion_file": body.get("medicion_file"),
+            "write_cymdist": body.get("write_cymdist", True),
+            "save": body.get("save", True),
+            "use_com": bool(body.get("use_com")),
+        }
+        job = run_cympy_job("max_demand_multi", payload, settings=s, timeout_sec=540)
+        if not isinstance(job, dict):
+            return jsonify({"ok": False, "error": "Job sin respuesta"})
+        return jsonify(job)
+    except Exception as ex:
+        import traceback as _tb
+        try:
+            _tb.print_exc()
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": str(ex)})
+
+
+@app.route("/api/cabecera/transfer-voltage-quality", methods=["POST"])
+def api_cabecera_transfer_voltage_quality():
+    """Evalúa transferencia por calidad de tensión sobre transfer_pair (pico)."""
+    try:
+        body = request.get_json(silent=True) or {}
+        feeder = (
+            (body.get("feeder") or body.get("feeder_id") or "").strip()
+            or (request.headers.get("X-Feeder") or "").strip()
+            or None
+        )
+        db = (body.get("database_mdb") or "").strip() or None
+        st = (body.get("study_path") or "").strip() or None
+        s = load_settings(feeder_id=feeder, synthesize=True) if feeder else _settings()
+        if db:
+            s["database_mdb"] = db
+        if st:
+            s["study_path"] = st
+        from core.cympy_job import run_cympy_job
+        payload = {
+            "job": "transfer_voltage_quality",
+            "feeder_id": s.get("feeder_id"),
+            "study_path": s.get("study_path"),
+            "database_mdb": s.get("database_mdb"),
+            "network_id": s.get("network_id"),
+            "network_ids": s.get("network_ids"),
+            "transfer_pair": body.get("transfer_pair") or s.get("transfer_pair"),
+            "vmin_limit_pu": body.get("vmin_limit_pu") or 0.95,
+            "vmax_limit_pu": body.get("vmax_limit_pu") or 1.05,
+            "apply_switch": bool(body.get("apply_switch")),
+            "ensure_max_demand": bool(body.get("ensure_max_demand")),
+        }
+        job = run_cympy_job(
+            "transfer_voltage_quality", payload, settings=s, timeout_sec=540
+        )
+        if not isinstance(job, dict):
+            return jsonify({"ok": False, "error": "Job sin respuesta"})
+        return jsonify(job)
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 
@@ -5767,19 +6018,24 @@ def api_informe_rutas():
 
 @app.route("/api/informe/status")
 def api_informe_status():
-    """Checklist de entrega (LF sit/proy + OCR + 4 PNG) sin rellenar doc."""
+    """Checklist de entrega (LF sit/proy + OCR + PNG) sin rellenar doc.
+
+    Query: mode=completo|situacional — gate del informe técnico situacional ED.
+    """
     s = _settings()
     try:
-        return jsonify(delivery_status(s))
+        mode = (request.args.get("mode") or "").strip() or None
+        return jsonify(delivery_status(s, mode=mode))
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
+
 
 @app.route("/api/informe/capturas", methods=["POST"])
 def api_informe_capturas():
     """
     Captura viva CYMDIST (API): LoadFlow situacional/proyectado + coloreo
-    VoltageLevel/LoadingLevel + ExportActiveView/GUI → 4 PNG del informe.
-    Body: {force: bool, open_gui: bool, scenarios: null|'situacional'|'proyectado'}
+    VoltageLevel/LoadingLevel + ExportActiveView/GUI → PNG del informe.
+    Body: {force, open_gui, scenarios, mode: completo|situacional}
     """
     s = _settings()
     body = request.get_json(silent=True) or {}
@@ -5790,6 +6046,11 @@ def api_informe_capturas():
         if open_gui is None:
             open_gui = True
         scenarios = body.get("scenarios")
+        mode = str(body.get("mode") or body.get("informe_mode") or "").strip().lower()
+        if scenarios is None and mode in (
+            "situacional", "sit", "estado_situacional", "diagnostico_situacional"
+        ):
+            scenarios = ["situacional"]
         res = capture_informe_color_views(
             settings=s,
             scenarios=scenarios,
@@ -5803,11 +6064,13 @@ def api_informe_capturas():
 
 @app.route("/api/informe/armar", methods=["POST"])
 def api_informe_armar():
-    """Entrega autonoma del informe completo (punto unico §6).
+    """Entrega autonoma del informe (§6).
 
     Body:
       fill: true (default) — Excel+Word+PDF
-      ensure_lf: true — corre LF §5 si faltan
+      mode / informe_mode: completo (default) | situacional
+        situacional = informe técnico diagnóstico estado situacional Electro Dunas
+      ensure_lf: true — corre LF §5 si faltan (según mode)
       force_captures: true — fuerza capturas CYMDIST
       require_delivery: true (default si fill) — gate estricto
       ocr_review: true (default) — revision OCR hasta 3 rondas
@@ -5816,19 +6079,27 @@ def api_informe_armar():
     s = _settings()
     body = request.get_json(silent=True) or {}
     do_fill = body.get("fill", True)
+    mode = body.get("mode") or body.get("informe_mode") or "completo"
     try:
         if do_fill:
             from pipeline.deliver_informe import deliver_informe
             ocr_review = body.get("ocr_review")
             if ocr_review is None:
                 ocr_review = True
+            scenarios_lf = body.get("scenarios") or body.get("scenarios_lf")
+            if scenarios_lf is None and str(mode).lower() in (
+                "situacional", "sit", "estado_situacional", "diagnostico_situacional"
+            ):
+                scenarios_lf = ("situacional",)
             manifest = deliver_informe(
                 s,
                 ensure_lf=bool(body.get("ensure_lf", False)),
                 force_captures=bool(body.get("force_captures", False)),
                 require_delivery=bool(body.get("require_delivery", True)),
+                scenarios_lf=scenarios_lf,
                 ocr_review=bool(ocr_review),
                 ocr_review_rounds=int(body.get("ocr_rounds") or body.get("ocr_review_rounds") or 3),
+                informe_mode=mode,
             )
         else:
             manifest = assemble_informe(s, overwrite=True)

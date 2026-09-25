@@ -159,7 +159,7 @@ input, select, textarea {
 }
 /* Eleva el stacking context para que la lista no quede debajo del grid de P/Q/S */
 .search-select.open {
-  z-index: 60;
+  z-index: 80;
 }
 .search-select.disabled {
   opacity: 0.55;
@@ -182,7 +182,7 @@ input, select, textarea {
 }
 .search-select-list {
   position: absolute;
-  z-index: 40;
+  z-index: 90;
   left: 0;
   right: 0;
   top: calc(100% + 4px);

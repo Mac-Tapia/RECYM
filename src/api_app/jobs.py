@@ -155,6 +155,70 @@ def _run_action(action, payload, feeder, job_id=None):
         )
         return result
 
+    def _spa_system_diag_payload(result, label):
+        """Normaliza 2.7/2.8 para la SPA (panel sistema/ELD, no tablero feeder)."""
+        out = dict(result or {}) if isinstance(result, dict) else {"ok": False}
+        summary = out.get("summary") if isinstance(out.get("summary"), dict) else {}
+        n_prob = int(summary.get("n_problems") or 0)
+        n_err = int(summary.get("n_errors") or 0)
+        n_warn = int(summary.get("n_warnings") or 0)
+        n_hint = int(summary.get("n_hints") or 0)
+        n_ok = summary.get("n_networks_ok")
+        n_fail = summary.get("n_networks_fail")
+        n_req = summary.get("n_networks_requested") or summary.get("n_networks_loaded")
+        if n_prob == 0 and not (summary.get("errors_by_net") or []):
+            msg = (
+                "%s · DiagnosticTool limpio (0 Error/Warning/Hint) · redes OK=%s/%s"
+                % (label, n_ok, n_req)
+            )
+        else:
+            msg = (
+                "%s · problemas=%s · E=%s W=%s H=%s · redes OK=%s fail=%s"
+                % (label, n_prob, n_err, n_warn, n_hint, n_ok, n_fail)
+            )
+        # per_feeder llega como dict {feeder_id: {...}} → lista ordenada para tablas SPA
+        raw_pf = summary.get("per_feeder") or {}
+        if isinstance(raw_pf, dict):
+            per_feeder_list = []
+            for fid, info in sorted(raw_pf.items(), key=lambda kv: (-int((kv[1] or {}).get("n_problems") or 0), str(kv[0]))):
+                row = dict(info or {})
+                row.setdefault("feeder_id", fid)
+                row.setdefault("NetworkID", row.get("NetworkID") or row.get("network_id"))
+                per_feeder_list.append(row)
+        elif isinstance(raw_pf, list):
+            per_feeder_list = list(raw_pf)
+        else:
+            per_feeder_list = []
+        top = summary.get("top_errors") or []
+        out["ok"] = bool(out.get("ok", True))
+        out["msg"] = msg
+        out["summary"] = summary
+        # Alias tipados para Step2CalidadTablero (no usar tablero.json del feeder)
+        out["system_diag"] = {
+            "scope": summary.get("scope") or ("ELD_study" if "ELD" in label else "system"),
+            "label": label,
+            "n_problems": n_prob,
+            "n_errors": n_err,
+            "n_warnings": n_warn,
+            "n_hints": n_hint,
+            "n_networks_ok": n_ok,
+            "n_networks_fail": n_fail,
+            "n_networks_requested": n_req,
+            "by_code": summary.get("by_code") or {},
+            "per_feeder": per_feeder_list,
+            "top_errors": top,
+            "errors_by_net": summary.get("errors_by_net") or [],
+            "csv": summary.get("csv") or out.get("csv"),
+            "json": summary.get("json") or out.get("json"),
+            "timestamp": summary.get("timestamp"),
+            "ready": bool(
+                summary.get("ready_model_system")
+                if "ready_model_system" in summary
+                else summary.get("ready_model_eld")
+            ),
+        }
+        return out
+
     def _calidad(fn, timeout_sec=180.0):
         def _wrapped():
             print(
@@ -233,6 +297,10 @@ def _run_action(action, payload, feeder, job_id=None):
                     "Diagnóstico OK · %s msgs · problemas=%s · tablero actualizado"
                     % (summary.get("total_messages"), summary.get("n_problems"))
                 )
+                if int(summary.get("n_problems") or 0) == 0:
+                    msg_base = (
+                        "Diagnóstico OK · DiagnosticTool limpio (0 Error/Warning/Hint) · tablero actualizado"
+                    )
                 vopt = summary.get("voltage_opt") or {}
                 if vopt.get("triggered"):
                     msg_base += " · " + str(vopt.get("msg") or "")
@@ -252,34 +320,44 @@ def _run_action(action, payload, feeder, job_id=None):
         def _aplicar_y_tablero():
             applied = apply_corrections(s, fix_voltages=True)
             d = run_network_diagnostic(s, suffix="")
-            summary = (d or {}).get("summary") or {}
+            summary = dict((d or {}).get("summary") or {})
+            summary["empty"] = False
+            summary.setdefault("phase", "after")
             try:
                 from core.feeder_context import output_path
                 import json, os, shutil
                 path = output_path(s, "diagnostics", "dashboard_summary.json")
                 after_path = output_path(s, "diagnostics", "dashboard_summary_after.json")
-                if os.path.isfile(path):
-                    shutil.copyfile(path, after_path)
-                else:
-                    with open(after_path, "w", encoding="utf-8") as f:
-                        json.dump(dict(summary, phase="after"), f, ensure_ascii=False, indent=2)
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(summary, f, ensure_ascii=False, indent=2)
+                shutil.copyfile(path, after_path)
                 build_tablero(s)
             except Exception as ex_t:
                 if isinstance(applied, dict):
                     applied["tablero_error"] = str(ex_t)
             if isinstance(applied, dict):
                 applied["ok"] = applied.get("n_error", 1) == 0
+                applied["summary"] = summary
                 applied["tablero"] = {
                     "before": summary,
                     "after": summary,
                     "n_problems": summary.get("n_problems"),
                     "by_code": summary.get("by_code"),
+                    "top_errors": summary.get("top_errors"),
                     "total_messages": summary.get("total_messages"),
                 }
-                applied["msg"] = (
-                    "Aplicado OK=%s ERR=%s · diag problemas=%s · estudio guardado"
-                    % (applied.get("n_ok"), applied.get("n_error"), summary.get("n_problems"))
-                )
+                n_prob = int(summary.get("n_problems") or 0)
+                if n_prob == 0:
+                    applied["msg"] = (
+                        "Aplicado OK=%s ERR=%s · DiagnosticTool limpio (0 Error/Warning/Hint) · estudio guardado"
+                        % (applied.get("n_ok"), applied.get("n_error"))
+                    )
+                else:
+                    applied["msg"] = (
+                        "Aplicado OK=%s ERR=%s · diag problemas=%s · estudio guardado"
+                        % (applied.get("n_ok"), applied.get("n_error"), n_prob)
+                    )
             return applied
 
         return _calidad(_aplicar_y_tablero)
@@ -321,31 +399,41 @@ def _run_action(action, payload, feeder, job_id=None):
             )
             try:
                 d = run_network_diagnostic(s, suffix="")
-                summary = (d or {}).get("summary") or {}
+                summary = dict((d or {}).get("summary") or {})
+                summary["empty"] = False
+                summary.setdefault("phase", "after")
                 from core.feeder_context import output_path
                 import json, os, shutil
                 path = output_path(s, "diagnostics", "dashboard_summary.json")
                 after_path = output_path(s, "diagnostics", "dashboard_summary_after.json")
-                if os.path.isfile(path):
-                    shutil.copyfile(path, after_path)
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(summary, f, ensure_ascii=False, indent=2)
+                shutil.copyfile(path, after_path)
                 build_tablero(s)
                 if isinstance(result, dict):
+                    result["summary"] = summary
                     result["tablero"] = {
                         "before": summary,
                         "after": summary,
                         "n_problems": summary.get("n_problems"),
                         "by_code": summary.get("by_code"),
+                        "top_errors": summary.get("top_errors"),
                         "ready_model": summary.get("ready_model"),
                         "total_messages": summary.get("total_messages"),
                     }
-                    if summary.get("ready_model"):
+                    if summary.get("ready_model") or int(summary.get("n_problems") or 0) == 0:
                         result["ok"] = True
                         result["ready"] = True
                         result["msg"] = (
-                            "Modelo limpio tras correcciones · problemas=%s · estudio guardado"
-                            % summary.get("n_problems")
+                            "Modelo limpio tras correcciones · DiagnosticTool limpio (0 Error/Warning/Hint) · estudio guardado"
                         )
                         result.pop("error", None)
+                    elif not result.get("msg"):
+                        result["msg"] = (
+                            "2.6 · problemas=%s · msgs=%s · estudio guardado"
+                            % (summary.get("n_problems"), summary.get("total_messages"))
+                        )
             except Exception as ex_t:
                 if isinstance(result, dict):
                     result["tablero_error"] = str(ex_t)
@@ -355,19 +443,29 @@ def _run_action(action, payload, feeder, job_id=None):
 
     if action == "calidad_sistema":
         from pipeline.model_quality_gate import run_system_network_diagnostic
-        return _calidad(lambda: run_system_network_diagnostic(
-            s,
-            limit=int(payload.get("limit") or 0),
-            network_ids=payload.get("networks") or None,
-        ))
+
+        def _sistema():
+            result = run_system_network_diagnostic(
+                s,
+                limit=int(payload.get("limit") or 0),
+                network_ids=payload.get("networks") or None,
+            )
+            return _annotate_study(_spa_system_diag_payload(result, "2.7 Sistema"))
+
+        return _calidad(_sistema, timeout_sec=3600.0)
 
     if action == "calidad_eld":
         from pipeline.model_quality_gate import run_eld_network_diagnostic
-        return _calidad(lambda: run_eld_network_diagnostic(
-            s,
-            limit=int(payload.get("limit") or 0),
-            network_ids=payload.get("networks") or None,
-        ))
+
+        def _eld():
+            result = run_eld_network_diagnostic(
+                s,
+                limit=int(payload.get("limit") or 0),
+                network_ids=payload.get("networks") or None,
+            )
+            return _annotate_study(_spa_system_diag_payload(result, "2.8 ELD"))
+
+        return _calidad(_eld, timeout_sec=3600.0)
 
     if action == "distribucion":
         from pipeline.run_demand_allocation import seed_session_from_excel, run_load_allocation_module
@@ -505,6 +603,9 @@ def _run_action(action, payload, feeder, job_id=None):
                             ensure_lf=False,
                             force_captures=bool(payload.get("force_captures", False)),
                             require_delivery=bool(payload.get("require_delivery", False)),
+                            informe_mode=payload.get("informe_mode")
+                            or payload.get("mode")
+                            or ("situacional" if scenario == "situacional" else "completo"),
                         )
                     else:
                         # Tras 5.1: actualizar cuadros sin re-capturar el par completo

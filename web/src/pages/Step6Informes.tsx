@@ -6,7 +6,10 @@ type Delivery = {
   ok?: boolean;
   ready?: boolean;
   delivery_ready?: boolean;
+  delivery_ready_situacional?: boolean;
   missing?: string[];
+  missing_situacional?: string[];
+  informe_mode?: string;
   checks?: Record<string, boolean>;
   loadflow_situacional?: boolean;
   loadflow_proyectado?: boolean;
@@ -171,9 +174,13 @@ export function Step6Informes() {
     }
   }
 
-  async function fill() {
+  async function fill(mode: "completo" | "situacional" = "completo") {
     setBusy(true);
-    setMsg("Rellenando informes…");
+    const label =
+      mode === "situacional"
+        ? "Informe técnico situacional Electro Dunas…"
+        : "Rellenando informes (completo)…";
+    setMsg(label);
     setValidated(false);
     try {
       const j = await api<{
@@ -181,14 +188,25 @@ export function Step6Informes() {
         error?: string;
         msg?: string;
         missing?: string[];
+        informe_mode?: string;
         needs_preview_confirm?: boolean;
       }>("/api/informe/armar", {
         method: "POST",
-        body: JSON.stringify({ fill: true }),
-        timeoutMs: 180000,
+        body: JSON.stringify({
+          fill: true,
+          mode,
+          informe_mode: mode,
+          force_captures: mode === "situacional" ? true : undefined,
+        }),
+        timeoutMs: 300000,
       });
       if (!j.ok) throw new Error(j.error || `Falta: ${(j.missing || []).join(", ")}`);
-      setMsg((j.msg || "Informes OK") + " · revise la vista preliminar antes de cerrar.");
+      setMsg(
+        (j.msg ||
+          (mode === "situacional"
+            ? "Informe técnico situacional OK (Electro Dunas)"
+            : "Informes OK")) + " · revise la vista preliminar antes de cerrar."
+      );
       await refreshStatus();
       await refreshPaths();
       const prev = await loadPreview();
@@ -286,22 +304,44 @@ export function Step6Informes() {
       <div className="pathbox">
         <b>Checklist entrega</b>{" "}
         <span className={"badge" + (delivery.ready || delivery.delivery_ready ? " ready" : "")}>
-          {delivery.ready || delivery.delivery_ready ? "lista" : "pendiente"}
+          {delivery.ready || delivery.delivery_ready ? "completa lista" : "completa pendiente"}
+        </span>
+        <span
+          className={
+            "badge" + (delivery.delivery_ready_situacional ? " ready" : "")
+          }
+          style={{ marginLeft: 6 }}
+          title="Gate del informe técnico solo estado situacional (Electro Dunas)"
+        >
+          {delivery.delivery_ready_situacional ? "situacional lista" : "situacional pendiente"}
         </span>
         {preview?.closed && <span className="badge ready" style={{ marginLeft: 6 }}>cerrada</span>}
         <ul className="check-list">
           <li><span className={"dot " + (chk("sit") || chk("loadflow_situacional") ? "ok" : "bad")} /> LoadFlow situacional</li>
-          <li><span className={"dot " + (chk("proy") || chk("loadflow_proyectado") ? "ok" : "bad")} /> LoadFlow proyectado</li>
+          <li>
+            <span className={"dot " + (chk("proy") || chk("loadflow_proyectado") ? "ok" : "wait")} />{" "}
+            LoadFlow proyectado <span className="muted">(solo entrega completa)</span>
+          </li>
           <li><span className={"dot " + (chk("meta") || chk("informe_meta_ocr") ? "ok" : "bad")} /> Datos generales PDF OCR</li>
-          <li><span className={"dot " + (chk("img") || chk("lf_images") ? "ok" : "bad")} /> Gráficas LF (4 PNG)</li>
+          <li>
+            <span className={"dot " + (chk("lf_images_situacional") ? "ok" : chk("img") || chk("lf_images") ? "ok" : "bad")} />{" "}
+            Gráficas situacional (2 PNG)
+          </li>
+          <li>
+            <span className={"dot " + (chk("img") || chk("lf_images") ? "ok" : "wait")} />{" "}
+            Gráficas LF 4 PNG <span className="muted">(completa)</span>
+          </li>
           <li><span className={"dot " + (preview?.preview_ok ? "ok" : "bad")} /> Vista preliminar</li>
           <li><span className={"dot " + (preview?.closed ? "ok" : "wait")} /> Entrega cerrada</li>
         </ul>
         <div className="actions">
           <button type="button" className="ghost" onClick={() => refreshStatus()}>6.0 · Actualizar checklist</button>
         </div>
+        {(delivery.missing_situacional || []).length > 0 && (
+          <div className="muted">Situacional falta: {(delivery.missing_situacional || []).join(", ")}</div>
+        )}
         {(delivery.missing || []).length > 0 && (
-          <div className="muted">Falta: {(delivery.missing || []).join(", ")}</div>
+          <div className="muted">Completa falta: {(delivery.missing || []).join(", ")}</div>
         )}
       </div>
 
@@ -328,11 +368,30 @@ export function Step6Informes() {
 
       <h3>6.2 Rellenar Word/Excel</h3>
       <p className="muted">
-        Al rellenar se genera también <code>topologia.png</code>: mapa satélite del nodo donde se conectó la carga nueva (§4).
+        Informe técnico para <b>Electro Dunas</b>: use el botón situacional para el
+        diagnóstico del <b>estado actual</b> (solo §5.1; no exige proyectado ni carga nueva).
+        La entrega completa sigue requiriendo situacional + proyectado.
+        Al rellenar también se intenta <code>topologia.png</code> (mapa satélite de la carga nueva §4, opcional en situacional).
       </p>
       <div className="actions">
         <button type="button" className="ghost" onClick={refreshPaths}>Ver rutas</button>
-        <button type="button" disabled={busy} onClick={fill}>Rellenar informes → doc</button>
+        <button
+          type="button"
+          disabled={busy}
+          title="Informe técnico diagnóstico estado situacional · Electro Dunas (LF §5.1 + 2 PNG)"
+          onClick={() => fill("situacional")}
+        >
+          Informe técnico · estado situacional (Electro Dunas)
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy}
+          title="Entrega completa situacional + proyectado"
+          onClick={() => fill("completo")}
+        >
+          Rellenar informes → doc
+        </button>
         <button type="button" className="secondary" disabled={busy} onClick={regenMap}>
           Mapa ubicación carga nueva
         </button>

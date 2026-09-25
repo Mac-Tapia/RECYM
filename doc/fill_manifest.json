@@ -2,49 +2,68 @@
   "ok": true,
   "delivery_ready": true,
   "missing": [],
-  "filled_at": "2026-09-23T00:22:06",
-  "feeder_id": "PA217",
+  "filled_at": "2026-09-24T15:37:29",
+  "feeder_id": "CA101",
   "meta": {
-    "cliente": "San Fernando S.A (RUC 20100154308)",
-    "ubicacion": "Sector Santa Fe de Lanchas,  Unidad Catastral 72869, distrito de Paracas, provincia de Pisco y departamento de Ica",
-    "solicitud": "Solicitud de factibilidad y punto de diseño en media tensión",
-    "potencia_txt": "1420KW",
-    "potencia_kw": 1420.0,
-    "alimentador": "PA217",
-    "set": "SET Paracas",
-    "tension_kv": 22.9,
-    "transformador": "Transformador SET Paracas · 22.9 kV (inventario CYMDIST)",
-    "expediente": "CARTA G T-SU-966-2026/PO",
+    "cliente": "",
+    "ubicacion": "Electro Dunas",
+    "solicitud": "Factibilidad y Punto de Diseño",
+    "potencia_txt": "—",
+    "potencia_kw": null,
+    "alimentador": "CA101",
+    "set": "SET CA101",
+    "tension_kv": 10.0,
+    "transformador": "Transformador SET CA101 · 10.0 kV (inventario CYMDIST)",
+    "expediente": "RECYM-CA101",
     "meta_source": "pdf",
-    "proyecto": "Planta incubación Sur -San Fernando",
-    "source_pdf": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\solicitud_meta_0._LARQ-ELED-17_GESTIÓN.pdf",
-    "nodo_conexion": "NODE_1080_320357_MI-17145_2",
-    "nodo_conexion_source": "session.json",
     "sistema_electrico": "Electro Dunas",
-    "codigo_se": "PA217"
+    "codigo_se": "CA101"
   },
   "meta_source": "pdf",
   "paths": {
-    "feeder_id": "PA217",
-    "plantilla_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe",
+    "feeder_id": "CA101",
+    "plantilla_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\input\\InformeModelo",
+    "modelo_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\input\\InformeModelo",
     "doc_dir": "D:\\Proyectos\\ELDICA\\RECYM\\doc",
-    "informe_plantilla": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe\\informe.docx",
-    "justificacion_plantilla": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\informe\\justificacion.xlsx",
+    "informe_plantilla": "D:\\Proyectos\\ELDICA\\RECYM\\data\\input\\InformeModelo\\InformeModelo.docx",
+    "justificacion_plantilla": "D:\\Proyectos\\ELDICA\\RECYM\\data\\input\\InformeModelo\\informeModelo.xlsx",
     "informe_doc": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe.docx",
     "justificacion_doc": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\justificacion.xlsx",
-    "loadflow_situacional": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_situacional.json",
-    "loadflow_proyectado": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_proyectado.json",
-    "loadflow_result": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\demand\\loadflow_result.json",
+    "informe_feeder_doc": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe\\informe.docx",
+    "justificacion_feeder_doc": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe\\justificacion.xlsx",
+    "loadflow_situacional": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\demand\\loadflow_situacional.json",
+    "loadflow_proyectado": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\demand\\loadflow_proyectado.json",
+    "loadflow_result": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\demand\\loadflow_result.json",
     "assemble_manifest": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\assemble_manifest.json"
   },
-  "images_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images",
+  "images_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe_images",
   "image_slots": {
-    "topologia.png": "word/media/image1.png",
-    "situacional_tension.png": "word/media/image3.png",
-    "situacional_cargabilidad.png": "word/media/image5.png",
-    "proyectado_tension.png": "word/media/image7.png",
-    "proyectado_cargabilidad.png": "word/media/image9.png",
-    "trafo_cargabilidad.png": "word/media/image10.png"
+    "topologia.png": [
+      "word/media/image1.png"
+    ],
+    "leyenda_tension.png": [
+      "word/media/image2.png",
+      "word/media/image6.png"
+    ],
+    "leyenda_cargabilidad.png": [
+      "word/media/image4.png",
+      "word/media/image8.png"
+    ],
+    "situacional_tension.png": [
+      "word/media/image3.png"
+    ],
+    "situacional_cargabilidad.png": [
+      "word/media/image5.png"
+    ],
+    "proyectado_tension.png": [
+      "word/media/image7.png"
+    ],
+    "proyectado_cargabilidad.png": [
+      "word/media/image9.png"
+    ],
+    "trafo_cargabilidad.png": [
+      "word/media/image10.png"
+    ]
   },
   "required_lf_images": [
     "situacional_tension.png",
@@ -59,71 +78,58 @@
     "skipped": [
       {
         "file": "situacional_tension.png",
-        "reason": "manual_newer_than_lf"
+        "reason": "cymdist_only_no_matplotlib"
       },
       {
         "file": "situacional_cargabilidad.png",
-        "reason": "manual_newer_than_lf"
+        "reason": "cymdist_only_no_matplotlib"
       },
       {
         "file": "proyectado_tension.png",
-        "reason": "manual_newer_than_lf"
+        "reason": "cymdist_only_no_matplotlib"
       },
       {
         "file": "proyectado_cargabilidad.png",
-        "reason": "manual_newer_than_lf"
+        "reason": "cymdist_only_no_matplotlib"
       }
     ],
     "pending": [],
-    "errors": [],
-    "present": [
-      "situacional_tension.png",
-      "situacional_cargabilidad.png",
-      "proyectado_tension.png",
-      "proyectado_cargabilidad.png"
-    ],
-    "missing": [],
-    "images_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images"
+    "errors": []
   },
   "cymdist_captures": null,
   "location_map": {
     "ok": false,
-    "error": "'charmap' codec can't encode character '\\u2192' in position 0: character maps to <undefined>"
+    "error": "No hay carga nueva registrada (SpotLoad §4).",
+    "path": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe_images\\topologia.png",
+    "location": {
+      "ok": false,
+      "error": "No hay carga nueva registrada (SpotLoad §4).",
+      "inventory": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\inventory\\nodes.json"
+    }
   },
   "scenarios_used": {
     "situacional": true,
-    "proyectado": true,
+    "proyectado": false,
     "situacional_metrics": {
-      "kw": 6498.0,
-      "kvar": 1777.0,
-      "kva": 6736.596544249923,
-      "fp_pct": 96.45820344616632,
+      "kw": 3022.0,
+      "kvar": 301.0,
+      "kva": 3036.953242972305,
+      "fp_pct": 99.50762353661824,
       "kw_loss": null,
-      "vpu": 0.9983873650615362,
-      "v_pct_a": 99.83873650615362,
-      "v_pct_b": 99.83873650615362,
-      "v_pct_c": 99.83873650615362,
-      "i_a": 169.84173922465484
+      "vpu": 0.802,
+      "v_pct_a": 80.2,
+      "v_pct_b": 80.2,
+      "v_pct_c": 80.2,
+      "i_a": 175.33857723463674
     },
-    "proyectado_metrics": {
-      "kw": 6498.0,
-      "kvar": 1777.0,
-      "kva": 6736.596544249923,
-      "fp_pct": 96.45820344616632,
-      "kw_loss": null,
-      "vpu": 0.9983873650615362,
-      "v_pct_a": 99.83873650615362,
-      "v_pct_b": 99.83873650615362,
-      "v_pct_c": 99.83873650615362,
-      "i_a": 169.84173922465484
-    }
+    "proyectado_metrics": null
   },
   "excel_notes": [
+    "hojas: Informe, Evaluacion_LINEA DM CONTR., Resultados de escenarios, CALCULOS_LINEA_OK, Clientes por radial_V2, Perdidas_ELDU, Unifilar_Trafo_Cargas_2, INVERSION_VNR_LINEA, 1) Red Actual, 2) Ingreso SU",
     "situacional: perdidas no disponibles (placeholders COM)",
-    "situacional: kW=6498.0 kvar=1777.0 loss=n/d",
-    "proyectado: perdidas no disponibles (placeholders COM)",
-    "proyectado: kW=6498.0 kvar=1777.0 loss=n/d",
-    "cabecera Informe completa (PA217)"
+    "situacional: kW=3022.0 kvar=301.0 loss=n/d",
+    "copia: E32 reparado C5->H5 (columna kW)",
+    "cabecera Informe (CA101) · formulas modelo preservadas"
   ],
   "excel_tables": {
     "mapping": {
@@ -137,10 +143,10 @@
     },
     "situacional": {
       "fuente": {
-        "kw": 6498.0,
-        "kvar": 1777.0,
-        "kva": 6736.6,
-        "fp_pct": 96.46
+        "kw": 3022.0,
+        "kvar": 301.0,
+        "kva": 3036.95,
+        "fp_pct": 99.51
       },
       "loss": {
         "kw": null,
@@ -148,56 +154,56 @@
         "kva": null,
         "fp_pct": null
       },
-      "v_pct_a": 99.83999999999999,
-      "v_pct_b": 99.83999999999999,
-      "v_pct_c": 99.83999999999999,
-      "kw": 6498.0,
-      "kvar": 1777.0,
-      "kva": 6736.6,
-      "vpu": 0.9984,
-      "vll": 22.9,
-      "vln": 13.2,
-      "i_a": 169.8,
+      "v_pct_a": 80.2,
+      "v_pct_b": 80.2,
+      "v_pct_c": 80.2,
+      "kw": 3022.0,
+      "kvar": 301.0,
+      "kva": 3036.95,
+      "vpu": 0.802,
+      "vll": 10.0,
+      "vln": 5.8,
+      "i_a": 175.3,
       "kw_loss": null,
       "mwh_loss": null,
-      "md_kwh": 42122635.2,
+      "md_kwh": 19589812.8,
       "loss_kwh": 0.0,
       "loss_pct": 0.0,
-      "loss_cost": -54419.07486758401,
-      "fp_pct": 96.46,
+      "loss_cost": -33443.336615904,
+      "fp_pct": 99.51,
       "fc": 0.74,
       "from_excel_formulas": true
     },
     "proyectado": {
       "fuente": {
-        "kw": 6498.0,
-        "kvar": 1777.0,
-        "kva": 6736.6,
-        "fp_pct": 96.46
+        "kw": 3233.12,
+        "kvar": 1156.66,
+        "kva": 3433.79,
+        "fp_pct": 94.16
       },
       "loss": {
-        "kw": null,
-        "kvar": null,
-        "kva": null,
-        "fp_pct": null
+        "kw": 51.12,
+        "kvar": 71.09,
+        "kva": 87.56,
+        "fp_pct": 58.38
       },
-      "v_pct_a": 99.83999999999999,
-      "v_pct_b": 99.83999999999999,
-      "v_pct_c": 99.83999999999999,
-      "kw": 6498.0,
-      "kvar": 1777.0,
-      "kva": 6736.6,
-      "vpu": 0.9984,
-      "vll": 22.9,
-      "vln": 13.2,
-      "i_a": 169.8,
-      "kw_loss": null,
-      "mwh_loss": null,
-      "md_kwh": 42122635.2,
-      "loss_kwh": 0.0,
-      "loss_pct": 0.0,
-      "loss_cost": -54419.07486758401,
-      "fp_pct": 96.46,
+      "v_pct_a": 96.52,
+      "v_pct_b": 95.99,
+      "v_pct_c": 96.43,
+      "kw": 3233.12,
+      "kvar": 1156.66,
+      "kva": 3233.12,
+      "vpu": 0.99,
+      "vll": 9.9,
+      "vln": 5.7,
+      "i_a": 199.0,
+      "kw_loss": 157.61,
+      "mwh_loss": 505.5,
+      "md_kwh": 20958377.088000003,
+      "loss_kwh": 505500.0,
+      "loss_pct": 0.02411923394056264,
+      "loss_cost": 80839.12780290814,
+      "fp_pct": 94.16,
       "fc": 0.74,
       "from_excel_formulas": true
     }
@@ -206,84 +212,53 @@
     "replacements": [
       {
         "old": "Ica, 14 de agosto de 2026",
-        "new": "Ica, 23 de septiembre de 2026",
-        "count": 1
-      },
-      {
-        "old": "Carga-Bomba de Agua Residual-juan Santa-430 kW- Cod IGEA-580224223Carga-Bomba de",
-        "new": "Carga-Planta incubación Sur -San Fernando-1420 kW- Nodo NODE_1080_320357_MI-1714",
-        "count": 2
-      },
-      {
-        "old": "De acuerdo con los análisis de cargabilidad y calidad de producto realizados, no",
-        "new": "De acuerdo con los análisis de cargabilidad y calidad de producto realizados sob",
-        "count": 1
-      },
-      {
-        "old": "La solicitud de factibilidad y asignación de punto de diseño presentada por el p",
-        "new": "La solicitud de factibilidad y asignación de punto de diseño presentada por el p",
-        "count": 1
-      },
-      {
-        "old": "Asimismo, se evaluó el estado actual de cargabilidad y calidad de producto del a",
-        "new": "Asimismo, se evaluó el estado actual (sin proyecto) y proyectado (con proyecto) ",
-        "count": 1
-      },
-      {
-        "old": "En consecuencia, para la atención de la demanda requerida por el predio MUNICIPA",
-        "new": "En consecuencia, para la atención de la demanda requerida por el predio San Fern",
+        "new": "Ica, 24 de septiembre de 2026",
         "count": 1
       },
       {
         "old": "IC106",
-        "new": "PA217",
-        "count": 5
+        "new": "CA101",
+        "count": 8
       },
       {
-        "old": "MUNICIPAL DE AGUA POTABLE Y ALCANTARILLADO DE ICA S.A. - EMAPICA",
-        "new": "San Fernando S.A (RUC 20100154308)",
+        "old": "IC107",
+        "new": "CA101",
         "count": 1
       },
       {
         "old": "430 KW",
-        "new": "1420 kW",
+        "new": "—",
         "count": 1
       },
       {
+        "old": "430 kW",
+        "new": "—",
+        "count": 5
+      },
+      {
         "old": "EXP-2026-000434",
-        "new": "CARTA G T-SU-966-2026/PO",
+        "new": "RECYM-CA101",
         "count": 1
       },
       {
         "old": "SET ICA",
-        "new": "SET Paracas",
+        "new": "SET CA101",
         "count": 2
       },
       {
         "old": "SET Ica",
-        "new": "SET Paracas",
-        "count": 1
+        "new": "SET CA101",
+        "count": 4
       },
       {
         "old": "50/30/30 MVA",
-        "new": "Transformador SET Paracas · 22.9 kV (inventario CYMDIST)",
+        "new": "Transformador SET CA101 · 10.0 kV (inventario CYMDIST)",
         "count": 2
       },
       {
-        "old": "ASUNTO…",
-        "new": "ASUNTO: FACTIBILIDAD AMPLIACION DE CARGA, San Fernando S.A (RUC 20100154308).",
-        "count": 1
-      },
-      {
         "old": "antecedentes ubic…",
-        "new": "La Unidad de Proyectos y Obras distribución solicita evaluación de Solicitud de ",
+        "new": "La Unidad de Proyectos y Obras distribución solicita evaluación de Factibilidad ",
         "count": 1
-      },
-      {
-        "old": "MUNICIPAL DE AGUA POTABLE Y ALCANTARILLADO DE ICA S.A. - EMAPICA",
-        "new": "San Fernando S.A (RUC 20100154308)",
-        "count": 1,
-        "where": "header2.xml"
       }
     ],
     "tables_filled": [
@@ -311,17 +286,13 @@
       "proyectado_fuente:fuente.kvar",
       "proyectado_fuente:fuente.kva",
       "proyectado_fuente:fuente.fp",
-      "proyectado_fuente:loss.kw.cleared",
-      "proyectado_fuente:loss.kvar.cleared",
-      "proyectado_fuente:loss.kva.cleared",
-      "proyectado_fuente:loss.fp.cleared",
+      "proyectado_fuente:loss.kw",
+      "proyectado_fuente:loss.kvar",
+      "proyectado_fuente:loss.kva",
+      "proyectado_fuente:loss.fp",
       "punto_diseno:pd.vpu",
       "punto_diseno:pd.vll",
       "punto_diseno:pd.vln",
-      "punto_diseno:pd.i_a",
-      "punto_diseno:pd.kva",
-      "punto_diseno:pd.kw",
-      "punto_diseno:pd.kvar",
       "proyectado_caida:v_pct_a",
       "proyectado_caida:v_pct_b",
       "proyectado_caida:v_pct_c",
@@ -343,29 +314,9 @@
     ],
     "tables_source": "excel",
     "n_tables": 7,
-    "images_replaced": [
-      {
-        "src": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images\\topologia.png",
-        "dst": "word/media/image1.png"
-      },
-      {
-        "src": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images\\situacional_tension.png",
-        "dst": "word/media/image3.png"
-      },
-      {
-        "src": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images\\situacional_cargabilidad.png",
-        "dst": "word/media/image5.png"
-      },
-      {
-        "src": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images\\proyectado_tension.png",
-        "dst": "word/media/image7.png"
-      },
-      {
-        "src": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images\\proyectado_cargabilidad.png",
-        "dst": "word/media/image9.png"
-      }
-    ],
-    "wt_patched": 331,
+    "images_replaced": [],
+    "extent_fixes": [],
+    "wt_patched": 320,
     "xml_targets": [
       "document.xml",
       "header1.xml",
@@ -377,35 +328,96 @@
     ]
   },
   "render": {
-    "ok": false,
-    "error": "skipped",
+    "ok": true,
+    "docx": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe.docx",
+    "pdf": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe.pdf",
+    "pages": 7,
+    "rendered_at": "2026-09-24T15:37:25",
     "notes": [
-      "skipped for layout QA"
-    ]
+      "Word abrio informe.docx",
+      "Fields.Update",
+      "paginas=7",
+      "pdf exportado (1022206 bytes)",
+      "docx preservado (sin Word.Save)",
+      "preview pages: 7"
+    ],
+    "error": null,
+    "preview": {
+      "ok": true,
+      "pages": [
+        {
+          "page": 1,
+          "name": "informe_p01.jpg",
+          "path": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe_preview\\informe_p01.jpg",
+          "bytes": 204466
+        },
+        {
+          "page": 2,
+          "name": "informe_p02.jpg",
+          "path": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe_preview\\informe_p02.jpg",
+          "bytes": 152871
+        },
+        {
+          "page": 3,
+          "name": "informe_p03.jpg",
+          "path": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe_preview\\informe_p03.jpg",
+          "bytes": 151299
+        },
+        {
+          "page": 4,
+          "name": "informe_p04.jpg",
+          "path": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe_preview\\informe_p04.jpg",
+          "bytes": 152719
+        },
+        {
+          "page": 5,
+          "name": "informe_p05.jpg",
+          "path": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe_preview\\informe_p05.jpg",
+          "bytes": 161719
+        },
+        {
+          "page": 6,
+          "name": "informe_p06.jpg",
+          "path": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe_preview\\informe_p06.jpg",
+          "bytes": 239647
+        },
+        {
+          "page": 7,
+          "name": "informe_p07.jpg",
+          "path": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe_preview\\informe_p07.jpg",
+          "bytes": 118369
+        }
+      ],
+      "out_dir": "D:\\Proyectos\\ELDICA\\RECYM\\doc\\informe_preview",
+      "error": null
+    }
   },
-  "lf_images_replaced": [
-    "situacional_tension.png",
-    "situacional_cargabilidad.png",
-    "proyectado_tension.png",
-    "proyectado_cargabilidad.png"
-  ],
+  "lf_images_replaced": [],
   "notes": [
+    "force captura CYMDIST: LF situacional mas nuevo que situacional_tension.png",
     "cymdist live views ya presentes (4 PNG)",
-    "sin fallback topology_render (capturas API OK)",
-    "charts generated: 0 skipped: 4",
-    "topologia.png error: 'charmap' codec can't encode character '\\u2192' in position 0: character maps to <undefined>",
+    "SIN suplir imagenes: faltan capturas CYMDIST live: situacional_tension.png, situacional_cargabilidad.png, proyectado_tension.png, proyectado_cargabilidad.png",
+    "charts: omitidos — informe solo con vistas CYMDIST nativas",
+    "topologia.png omitido: No hay carga nueva registrada (SpotLoad §4).",
+    "hojas: Informe, Evaluacion_LINEA DM CONTR., Resultados de escenarios, CALCULOS_LINEA_OK, Clientes por radial_V2, Perdidas_ELDU, Unifilar_Trafo_Cargas_2, INVERSION_VNR_LINEA, 1) Red Actual, 2) Ingreso SU",
     "situacional: perdidas no disponibles (placeholders COM)",
-    "situacional: kW=6498.0 kvar=1777.0 loss=n/d",
-    "proyectado: perdidas no disponibles (placeholders COM)",
-    "proyectado: kW=6498.0 kvar=1777.0 loss=n/d",
-    "cabecera Informe completa (PA217)",
-    "word replacements: 16",
+    "situacional: kW=3022.0 kvar=301.0 loss=n/d",
+    "copia: E32 reparado C5->H5 (columna kW)",
+    "cabecera Informe (CA101) · formulas modelo preservadas",
+    "word replacements: 10",
     "word tables: situacional_fuente, situacional_caida, proyectado_fuente, punto_diseno, proyectado_caida, osm_alimentador, perdidas_md",
     "word tables source: excel",
-    "images replaced: 5",
-    "aviso render Word: skipped"
+    "images replaced: 0",
+    "copia feeder: D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe",
+    "render Word ok · paginas=7 · pdf=si",
+    "render: Word abrio informe.docx",
+    "render: Fields.Update",
+    "render: paginas=7",
+    "render: pdf exportado (1022206 bytes)",
+    "render: docx preservado (sin Word.Save)",
+    "render: preview pages: 7"
   ],
   "preview_url": "/api/informe/preview",
   "needs_preview_confirm": true,
-  "aviso_imagenes": "Graficas LF desde JSON en D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\PA217\\informe_images. topologia.png = mapa satelite de la carga nueva (nodo de conexion). Valide la vista preliminar (§6.3) antes de cerrar la entrega."
+  "aviso_imagenes": "Graficas LF desde JSON en D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe_images. topologia.png = mapa satelite de la carga nueva (nodo de conexion). Valide la vista preliminar (§6.3) antes de cerrar la entrega."
 }

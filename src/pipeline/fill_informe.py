@@ -33,7 +33,9 @@ from core.feeder_context import load_settings, output_path
 from pipeline.assemble_informe import assemble_informe, informe_paths, TEMPLATE_DIR, DOC_DIR
 from pipeline.generate_informe_charts import (
     REQUIRED_LF_IMAGES,
+    SITUACIONAL_LF_IMAGES,
     generate_informe_charts,
+    required_lf_images_for_mode,
 )
 from pipeline.extract_informe_meta_pdf import (
     load_informe_meta,
@@ -48,18 +50,189 @@ ET.register_namespace("wp", "http://schemas.openxmlformats.org/drawingml/2006/wo
 ET.register_namespace("pic", "http://schemas.openxmlformats.org/drawingml/2006/picture")
 ET.register_namespace("v", "urn:schemas-microsoft-com:vml")
 
-# Plantilla EMAPICA → media a reemplazar si existen capturas nuevas
+# Plantilla ElectroDunas → media a reemplazar si existen capturas nuevas
 IMAGE_MAP = {
     "topologia.png": ("word/media/image1.png",),
-    # image2/4/6/8 = leyendas del modelo Word (no se inventan mapas)
+    # Leyendas estandar (mismo PNG en slots situacional/proyectado)
+    "leyenda_tension.png": ("word/media/image2.png", "word/media/image6.png"),
+    "leyenda_cargabilidad.png": ("word/media/image4.png", "word/media/image8.png"),
     "situacional_tension.png": ("word/media/image3.png",),
     "situacional_cargabilidad.png": ("word/media/image5.png",),
     "proyectado_tension.png": ("word/media/image7.png",),
     "proyectado_cargabilidad.png": ("word/media/image9.png",),
-    # image10: solo si existe captura/archivo real; no generar matplotlib
+    "trafo_cargabilidad.png": ("word/media/image10.png",),
 }
 
+# EMU (English Metric Unit): 914400 EMU = 1 inch
+_EMU_PER_INCH = 914400
+
 LF_OK_STATUS = ("ok", "dry_run")
+
+
+def _image_pixel_size(path):
+    """Retorna (w, h) de PNG/JPEG sin dependencias externas, o None."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+        if head.startswith(b"\x89PNG\r\n\x1a\n") and len(head) >= 24:
+            import struct
+            return struct.unpack(">II", head[16:24])
+        if head.startswith(b"\xff\xd8"):
+            import struct
+            with open(path, "rb") as f:
+                f.read(2)
+                while True:
+                    b = f.read(1)
+                    if not b:
+                        return None
+                    while b == b"\xff":
+                        b = f.read(1)
+                    marker = b[0] if isinstance(b[0], int) else ord(b)
+                    if marker in (0xD9, 0xDA):
+                        return None
+                    ln = struct.unpack(">H", f.read(2))[0]
+                    seg = f.read(ln - 2)
+                    if marker in (0xC0, 0xC1, 0xC2) and len(seg) >= 5:
+                        h, w = struct.unpack(">xHH", seg[:5])
+                        return w, h
+    except Exception:
+        return None
+    return None
+
+
+def _fit_display_extent(cx, cy, pix_w, pix_h, max_height_growth=1.15):
+    """
+    Ajusta EMU cx/cy al aspect del PNG, cabiendo en la caja original.
+
+    Preferencia: conservar el ancho del slot (columnas del informe).
+    Si la altura creceria demasiado (p.ej. PNG vertical en caja horizontal),
+    escala para caber dentro del rectangulo original.
+    """
+    try:
+        cx = int(cx)
+        cy = int(cy)
+        pix_w = int(pix_w)
+        pix_h = int(pix_h)
+    except Exception:
+        return cx, cy
+    if cx <= 0 or cy <= 0 or pix_w <= 0 or pix_h <= 0:
+        return cx, cy
+    pix_r = float(pix_w) / float(pix_h)
+    new_cx = cx
+    new_cy = int(round(cx / pix_r))
+    if new_cy < 1:
+        new_cy = 1
+    if new_cy > int(cy * max_height_growth):
+        box_r = float(cx) / float(cy)
+        if pix_r >= box_r:
+            new_cx = cx
+            new_cy = max(1, int(round(cx / pix_r)))
+        else:
+            new_cy = cy
+            new_cx = max(1, int(round(cy * pix_r)))
+    return new_cx, new_cy
+
+
+def _set_extent_attrs(tag_xml, cx, cy):
+    """Reescribe cx/cy en un tag wp:extent o a:ext (self-closing o con cuerpo)."""
+    out = re.sub(r'\bcx="\d+"', 'cx="%d"' % cx, tag_xml, count=1)
+    out = re.sub(r'\bcy="\d+"', 'cy="%d"' % cy, out, count=1)
+    return out
+
+
+def _fix_media_aspect_extents(word_dir, media_rels):
+    """
+    Sincroniza wp:extent y a:ext de drawings cuyo r:embed apunta a media
+    recien reemplazada, para evitar imagenes estiradas en Word/PDF.
+    """
+    fixes = []
+    if not media_rels:
+        return fixes
+    targets = set()
+    for rel in media_rels:
+        name = str(rel).replace("\\", "/")
+        if name.startswith("word/"):
+            name = name[len("word/") :]
+        targets.add(name)  # e.g. media/image3.png
+
+    doc_xml = os.path.join(word_dir, "document.xml")
+    rels_xml = os.path.join(word_dir, "_rels", "document.xml.rels")
+    if not (os.path.isfile(doc_xml) and os.path.isfile(rels_xml)):
+        return fixes
+
+    with open(rels_xml, "r", encoding="utf-8") as f:
+        rels = f.read()
+    rid_to_target = {}
+    for m in re.finditer(r'Id="(rId\d+)"[^>]*Target="([^"]+)"', rels):
+        rid_to_target[m.group(1)] = m.group(2).replace("\\", "/")
+    for m in re.finditer(r'Target="([^"]+)"[^>]*Id="(rId\d+)"', rels):
+        rid_to_target[m.group(2)] = m.group(1).replace("\\", "/")
+
+    target_rids = {
+        rid for rid, tgt in rid_to_target.items() if tgt in targets or tgt.lstrip("./") in targets
+    }
+    if not target_rids:
+        return fixes
+
+    with open(doc_xml, "r", encoding="utf-8") as f:
+        xml = f.read()
+
+    def _repl_drawing(m):
+        block = m.group(0)
+        rid_m = re.search(r'r:embed="(rId\d+)"', block)
+        if not rid_m or rid_m.group(1) not in target_rids:
+            return block
+        rid = rid_m.group(1)
+        tgt = rid_to_target.get(rid) or ""
+        media_path = os.path.join(word_dir, tgt.replace("/", os.sep))
+        sz = _image_pixel_size(media_path)
+        if not sz:
+            return block
+        pix_w, pix_h = sz
+
+        def _upd_ext(em):
+            tag = em.group(0)
+            cx_m = re.search(r'\bcx="(\d+)"', tag)
+            cy_m = re.search(r'\bcy="(\d+)"', tag)
+            if not (cx_m and cy_m):
+                return tag
+            old_cx, old_cy = int(cx_m.group(1)), int(cy_m.group(1))
+            new_cx, new_cy = _fit_display_extent(old_cx, old_cy, pix_w, pix_h)
+            if new_cx == old_cx and new_cy == old_cy:
+                return tag
+            fixes.append({
+                "rid": rid,
+                "media": tgt,
+                "pixels": "%dx%d" % (pix_w, pix_h),
+                "from": "%dx%d" % (old_cx, old_cy),
+                "to": "%dx%d" % (new_cx, new_cy),
+            })
+            return _set_extent_attrs(tag, new_cx, new_cy)
+
+        # Primero wp:extent (caja de display); luego a:ext (mismo tamaño)
+        block2 = re.sub(r"<wp:extent\b[^>]*/>", _upd_ext, block)
+        # Si wp cambio, forzar a:ext al mismo cx/cy final
+        wp_m = re.search(r'<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"', block2)
+        if not wp_m:
+            wp_m = re.search(r'<wp:extent\b[^>]*cy="(\d+)"[^>]*cx="(\d+)"', block2)
+            if wp_m:
+                final_cx, final_cy = int(wp_m.group(2)), int(wp_m.group(1))
+            else:
+                return block2
+        else:
+            final_cx, final_cy = int(wp_m.group(1)), int(wp_m.group(2))
+
+        def _upd_aext(em):
+            return _set_extent_attrs(em.group(0), final_cx, final_cy)
+
+        block3 = re.sub(r"<a:ext\b[^>]*/>", _upd_aext, block2)
+        return block3
+
+    new_xml = re.sub(r"<w:drawing>.*?</w:drawing>", _repl_drawing, xml, flags=re.DOTALL)
+    if new_xml != xml:
+        with open(doc_xml, "w", encoding="utf-8") as f:
+            f.write(new_xml)
+    return fixes
 
 
 def _num(val, default=None):
@@ -368,19 +541,33 @@ def _images_dir(settings):
     return os.path.join(out_base, "informe_images")
 
 
-def _check_delivery_gates(scenarios, meta, img_dir, charts_res=None, settings=None):
-    """Valida requisitos de entrega rigurosa. Retorna (ready, missing).
+def _normalize_informe_mode(mode):
+    m = str(mode or "completo").strip().lower()
+    if m in ("situacional", "sit", "estado_situacional", "diagnostico_situacional"):
+        return "situacional"
+    return "completo"
 
-    Las 4 imagenes de coloreo DEBEN ser capturas live CYMDIST
+
+def _check_delivery_gates(scenarios, meta, img_dir, charts_res=None, settings=None, mode=None):
+    """Valida requisitos de entrega. Retorna (ready, missing).
+
+    mode=completo: LF situacional+proyectado + 4 PNG live + meta OCR
+    mode=situacional: solo LF situacional + 2 PNG situacionales + meta OCR
+      (informe técnico diagnóstico estado situacional Electro Dunas)
+
+    Las imagenes de coloreo DEBEN ser capturas live CYMDIST
     (VoltageLevel/LoadingLevel). No se aceptan matplotlib ni topology_render.
     """
+    mode = _normalize_informe_mode(mode or (settings or {}).get("informe_mode"))
+    req_imgs = required_lf_images_for_mode(mode)
     missing = []
     raw_sit = scenarios.get("raw_situacional")
     raw_proy = scenarios.get("raw_proyectado")
     if not scenarios.get("situacional") or not _lf_status_ok(raw_sit):
         missing.append("loadflow_situacional")
-    if not scenarios.get("proyectado") or not _lf_status_ok(raw_proy):
-        missing.append("loadflow_proyectado")
+    if mode == "completo":
+        if not scenarios.get("proyectado") or not _lf_status_ok(raw_proy):
+            missing.append("loadflow_proyectado")
     ocr_meta = load_informe_meta(settings) if settings is not None else None
     if not meta_is_complete(ocr_meta):
         missing.append("informe_meta_ocr (cliente + potencia_kw via PDF §5)")
@@ -388,7 +575,7 @@ def _check_delivery_gates(scenarios, meta, img_dir, charts_res=None, settings=No
         from pipeline.capture_informe_color_views import is_live_cymdist_view
     except Exception:
         is_live_cymdist_view = None
-    for fname in REQUIRED_LF_IMAGES:
+    for fname in req_imgs:
         path = os.path.join(img_dir, fname)
         if not os.path.isfile(path):
             missing.append("%s (falta captura CYMDIST)" % fname)
@@ -1677,6 +1864,13 @@ def fill_word(docx_path, scenarios, meta, images_dir=None, excel_tables=None):
                     shutil.copy2(src, dst)
                     images_replaced.append({"src": src, "dst": dst_rel})
 
+    # Critico: al copiar PNG nuevos hay que sincronizar wp:extent / a:ext
+    # con el aspect ratio real. Si no, Word estira la imagen al slot viejo
+    # (capturas landscape en cajas del modelo → "estiradas" en DOC/PDF).
+    extent_fixes = _fix_media_aspect_extents(
+        word_dir,
+        [item["dst"] for item in images_replaced],
+    )
 
     out_tmp = docx_path + ".__new.docx"
     if os.path.isfile(out_tmp):
@@ -1696,45 +1890,69 @@ def fill_word(docx_path, scenarios, meta, images_dir=None, excel_tables=None):
         "tables_source": tables_report.get("source"),
         "n_tables": tables_report.get("n_tables"),
         "images_replaced": images_replaced,
+        "extent_fixes": extent_fixes,
         "wt_patched": wt_changed_total,
         "xml_targets": xml_targets,
     }
 
 
-def delivery_status(settings=None):
-    """Estado de gates de entrega sin rellenar Word/Excel ni regenerar charts."""
+def delivery_status(settings=None, mode=None):
+    """Estado de gates de entrega sin rellenar Word/Excel ni regenerar charts.
+
+    mode=completo (default) | situacional — gate del informe técnico situacional ED.
+    Siempre incluye campos situacional_* para el checklist §6.2.
+    """
     s = settings or load_settings()
+    mode = _normalize_informe_mode(mode or s.get("informe_mode"))
     scenarios = _load_scenarios(s)
     meta = _meta_cliente(s)
     ocr = load_informe_meta(s) or {}
     img_dir = _images_dir(s)
     mkdir(img_dir)
-    present = [f for f in REQUIRED_LF_IMAGES if os.path.isfile(os.path.join(img_dir, f))]
-    missing_imgs = [f for f in REQUIRED_LF_IMAGES if f not in present]
-    ready, missing = _check_delivery_gates(scenarios, meta, img_dir, charts_res=None, settings=s)
+    req_imgs = required_lf_images_for_mode(mode)
+    present = [f for f in req_imgs if os.path.isfile(os.path.join(img_dir, f))]
+    missing_imgs = [f for f in req_imgs if f not in present]
+    ready, missing = _check_delivery_gates(
+        scenarios, meta, img_dir, charts_res=None, settings=s, mode=mode
+    )
+    # Gate paralelo solo situacional (UI §6.2 botón Electro Dunas)
+    ready_sit, missing_sit = _check_delivery_gates(
+        scenarios, meta, img_dir, charts_res=None, settings=s, mode="situacional"
+    )
+    sit_imgs = required_lf_images_for_mode("situacional")
+    sit_present = [f for f in sit_imgs if os.path.isfile(os.path.join(img_dir, f))]
     return {
         "ok": True,
+        "informe_mode": mode,
         "delivery_ready": ready,
         "missing": missing,
+        "delivery_ready_situacional": ready_sit,
+        "missing_situacional": missing_sit,
         "feeder_id": s.get("feeder_id"),
         "checks": {
             "loadflow_situacional": bool(scenarios.get("situacional")) and _lf_status_ok(scenarios.get("raw_situacional")),
             "loadflow_proyectado": bool(scenarios.get("proyectado")) and _lf_status_ok(scenarios.get("raw_proyectado")),
             "informe_meta_ocr": meta_is_complete(ocr),
             "lf_images": len(missing_imgs) == 0,
+            "lf_images_situacional": all(
+                os.path.isfile(os.path.join(img_dir, f)) for f in sit_imgs
+            ),
         },
         "meta": {
             "cliente": meta.get("cliente") or "",
             "potencia_kw": meta.get("potencia_kw"),
             "potencia_txt": meta.get("potencia_txt") or "",
             "alimentador": meta.get("alimentador") or "",
+            "ubicacion": meta.get("ubicacion") or s.get("region") or "Electro Dunas",
             "meta_source": meta.get("meta_source"),
             "complete_ocr": meta_is_complete(ocr),
         },
         "images_dir": img_dir,
         "images_present": present,
         "images_missing": missing_imgs,
-        "required_lf_images": list(REQUIRED_LF_IMAGES),
+        "images_present_situacional": sit_present,
+        "required_lf_images": list(req_imgs),
+        "required_lf_images_situacional": list(sit_imgs),
         "scenarios": {
             "situacional": bool(scenarios.get("situacional")),
             "proyectado": bool(scenarios.get("proyectado")),
@@ -1943,28 +2161,41 @@ def confirm_informe_entrega(settings=None, note="", force=False):
     return payload
 
 
-def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
+def fill_informe(settings=None, overwrite_copy=True, require_delivery=True, informe_mode=None):
     """
     Copia plantilla → doc/ y rellena Excel + Word con LoadFlow.
 
-    require_delivery=True (default): exige ambos LF, meta OCR minima y 4 PNG LF.
-    Si faltan, no toca doc/ y retorna ok=False + missing[].
+    informe_mode: completo (default) | situacional
+      situacional = informe técnico diagnóstico estado situacional Electro Dunas
+                    (solo LF situacional + 2 PNG; no exige proyectado).
+
+    require_delivery=True: exige gates del modo; si faltan, no toca doc/.
     """
-    s = settings or load_settings()
+    s = dict(settings or load_settings())
+    mode = _normalize_informe_mode(informe_mode or s.get("informe_mode"))
+    s["informe_mode"] = mode
     scenarios = _load_scenarios(s)
+    if mode == "situacional":
+        scenarios["proyectado"] = None
+        scenarios["raw_proyectado"] = None
+        notes = ["informe_mode=situacional · diagnóstico estado situacional Electro Dunas"]
+    else:
+        notes = []
     meta = _meta_cliente(s)
+    if not (meta.get("ubicacion") or "").strip():
+        meta["ubicacion"] = s.get("region") or "Electro Dunas"
     # Persistir meta completa (SET/trafo/etc.) para UI §6.1
     try:
         from pipeline.extract_informe_meta_pdf import save_informe_meta
         save_informe_meta(s, meta)
     except Exception as ex:
-        notes = ["aviso save meta: %s" % ex]
-    else:
-        notes = []
+        notes.append("aviso save meta: %s" % ex)
     paths = scenarios["paths"]
     img_dir = _images_dir(s)
     mkdir(img_dir)
     charts_res = None
+    req_imgs = required_lf_images_for_mode(mode)
+    capture_scenarios = ("situacional",) if mode == "situacional" else ("situacional", "proyectado")
 
     # Preferir capturas CYMDIST vivas (API: coloreo VoltageLevel/LoadingLevel).
     # NUNCA suplir con matplotlib ni topology_render inventados: el informe
@@ -1982,10 +2213,15 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     if not force_cap:
         try:
             from pipeline.generate_informe_charts import _mtime
-            for scen_name, fname in (
-                ("situacional", "situacional_tension.png"),
-                ("proyectado", "proyectado_tension.png"),
-            ):
+            check_pairs = (
+                (("situacional", "situacional_tension.png"),)
+                if mode == "situacional"
+                else (
+                    ("situacional", "situacional_tension.png"),
+                    ("proyectado", "proyectado_tension.png"),
+                )
+            )
+            for scen_name, fname in check_pairs:
                 lf_p = paths.get("loadflow_%s" % scen_name)
                 png_p = os.path.join(img_dir, fname)
                 if lf_p and _mtime(lf_p) > _mtime(png_p) + 1.0:
@@ -2005,17 +2241,17 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
             )
 
             missing_live = [
-                f for f in REQUIRED_LF_IMAGES
+                f for f in req_imgs
                 if not is_live_cymdist_view(os.path.join(img_dir, f))
             ]
             if auto_capture and (missing_live or force_cap):
                 notes.append(
-                    "captura CYMDIST nativa: VoltageLevel/LoadingLevel "
-                    "situacional+proyectado (force=%s) — sin imagenes inventadas…"
-                    % force_cap
+                    "captura CYMDIST nativa: VoltageLevel/LoadingLevel %s (force=%s)"
+                    % ("+".join(capture_scenarios), force_cap)
                 )
                 capture_res = capture_informe_color_views(
                     settings=s,
+                    scenarios=list(capture_scenarios),
                     open_gui=bool(s.get("informe_capture_open_gui", True)),
                     force=bool(force_cap or missing_live),
                 )
@@ -2036,10 +2272,13 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
                 for err in (capture_res.get("errors") or [])[:6]:
                     notes.append("capture: %s" % err)
             else:
-                notes.append("cymdist live views ya presentes (4 PNG)")
+                notes.append(
+                    "cymdist live views ya presentes (%d PNG modo %s)"
+                    % (len(req_imgs), mode)
+                )
 
             still_missing = [
-                f for f in REQUIRED_LF_IMAGES
+                f for f in req_imgs
                 if not is_live_cymdist_view(os.path.join(img_dir, f))
             ]
             if still_missing:
@@ -2048,7 +2287,9 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
                     % ", ".join(still_missing)
                 )
             else:
-                notes.append("4 capturas CYMDIST live OK (sin fallback inventado)")
+                notes.append(
+                    "%d capturas CYMDIST live OK (modo %s)" % (len(req_imgs), mode)
+                )
         except Exception as ex:
             notes.append("cymdist color omitido: %s" % ex)
 
@@ -2057,7 +2298,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     charts_res = {
         "ok": True,
         "generated": [],
-        "skipped": [{"file": f, "reason": "cymdist_only_no_matplotlib"} for f in REQUIRED_LF_IMAGES],
+        "skipped": [{"file": f, "reason": "cymdist_only_no_matplotlib"} for f in req_imgs],
         "pending": [],
         "errors": [],
     }
@@ -2079,21 +2320,31 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
         notes.append("topologia.png error: %s" % ex)
 
     delivery_ready, missing = _check_delivery_gates(
-        scenarios, meta, img_dir, charts_res, settings=s
+        scenarios, meta, img_dir, charts_res, settings=s, mode=mode
     )
 
     scenarios_used = _metric_snapshot(scenarios)
+    scenarios_used["informe_mode"] = mode
 
     if require_delivery and not delivery_ready:
-        err = (
-            "Informe incompleto para entrega. Falta: %s. "
-            "Requiere: PDF OCR §5 (cliente+potencia), LoadFlow situacional + proyectado, "
-            "y 4 capturas CYMDIST live (VoltageLevel/LoadingLevel) — sin imagenes inventadas."
-            % (", ".join(missing) if missing else "requisitos")
-        )
+        if mode == "situacional":
+            err = (
+                "Informe situacional incompleto. Falta: %s. "
+                "Requiere: PDF OCR (cliente+potencia), LoadFlow situacional (§5.1) "
+                "y 2 capturas CYMDIST live (tension/cargabilidad situacional)."
+                % (", ".join(missing) if missing else "requisitos")
+            )
+        else:
+            err = (
+                "Informe incompleto para entrega. Falta: %s. "
+                "Requiere: PDF OCR §5 (cliente+potencia), LoadFlow situacional + proyectado, "
+                "y 4 capturas CYMDIST live (VoltageLevel/LoadingLevel) — sin imagenes inventadas."
+                % (", ".join(missing) if missing else "requisitos")
+            )
         manifest = {
             "ok": False,
             "delivery_ready": False,
+            "informe_mode": mode,
             "error": err,
             "missing": missing,
             "filled_at": datetime.now().isoformat(timespec="seconds"),
@@ -2103,7 +2354,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
             "paths": paths,
             "images_dir": img_dir,
             "image_slots": IMAGE_MAP,
-            "required_lf_images": list(REQUIRED_LF_IMAGES),
+            "required_lf_images": list(req_imgs),
             "charts_generated": (charts_res or {}).get("generated") or [],
             "charts": charts_res,
             "cymdist_captures": capture_res,
@@ -2111,10 +2362,10 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
             "scenarios_used": scenarios_used,
             "notes": notes,
             "aviso_imagenes": (
-                "Solo capturas nativas CYMDIST (VoltageLevel/LoadingLevel) sin/con proyecto. "
-                "No se suplira con matplotlib ni topology_render. Directorio: %s."
-                % img_dir
+                "Solo capturas nativas CYMDIST. Modo %s. Directorio: %s."
+                % (mode, img_dir)
             ),
+            "msg": err,
         }
         man_path = os.path.join(paths["doc_dir"], "fill_manifest.json")
         mkdir(paths["doc_dir"])
@@ -2167,7 +2418,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     replaced_names = [
         os.path.basename(x.get("src") or "") for x in (wres.get("images_replaced") or [])
     ]
-    lf_replaced = [n for n in REQUIRED_LF_IMAGES if n in replaced_names]
+    lf_replaced = [n for n in req_imgs if n in replaced_names]
 
     # Render final Word: campos, paginado y PDF de entrega
     # (omitible si el ciclo OCR corrige Word primero y exporta PDF aparte)
@@ -2194,6 +2445,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
     manifest = {
         "ok": True,
         "delivery_ready": True,
+        "informe_mode": mode,
         "missing": [],
         "filled_at": datetime.now().isoformat(timespec="seconds"),
         "feeder_id": s.get("feeder_id"),
@@ -2202,7 +2454,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True):
         "paths": paths,
         "images_dir": img_dir,
         "image_slots": IMAGE_MAP,
-        "required_lf_images": list(REQUIRED_LF_IMAGES),
+        "required_lf_images": list(req_imgs),
         "charts_generated": (charts_res or {}).get("generated") or [],
         "charts": charts_res,
         "cymdist_captures": capture_res,

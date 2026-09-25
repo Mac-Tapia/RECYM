@@ -238,8 +238,10 @@ def job_deliver_informe(payload):
         ensure_lf=bool(payload.get("ensure_lf", True)),
         force_captures=bool(payload.get("force_captures", False)),
         require_delivery=bool(payload.get("require_delivery", True)),
+        scenarios_lf=payload.get("scenarios") or payload.get("scenarios_lf"),
         ocr_review=bool(ocr_review),
         ocr_review_rounds=int(payload.get("ocr_rounds") or payload.get("ocr_review_rounds") or 3),
+        informe_mode=payload.get("mode") or payload.get("informe_mode") or "completo",
     )
 
 
@@ -259,8 +261,69 @@ def job_review_informe_ocr(payload):
     )
 
 
+def job_max_demand_multi(payload):
+    """Extrae y escribe máxima demanda en todas las redes del estudio (p.ej. CA101V2)."""
+    from core.feeder_context import load_settings, resolve_writable_study_path
+    from pipeline.apply_max_demand_multi import apply_max_demand_multi
+
+    feeder = (payload.get("feeder_id") or "").strip() or None
+    s = load_settings(feeder_id=feeder, synthesize=True)
+    for k in ("study_path", "database_mdb", "network_id", "ui_study_path",
+              "database_connection_name", "network_ids"):
+        if payload.get(k):
+            s[k] = payload[k]
+    ui_sp = (payload.get("ui_study_path") or payload.get("study_path") or "").strip()
+    if ui_sp and os.path.isfile(ui_sp):
+        s["ui_study_path"] = ui_sp
+    sp = s.get("study_path") or ui_sp or ""
+    if sp:
+        alt = resolve_writable_study_path(sp, s)
+        if alt and alt != sp:
+            s["ui_study_path"] = s.get("ui_study_path") or sp
+            s["study_path"] = alt
+            s["study_file"] = os.path.basename(alt)
+    s["skip_db_project_save"] = False
+    s["persist_cabecera_to_db"] = True
+    return apply_max_demand_multi(
+        s,
+        network_ids=payload.get("network_ids"),
+        medicion_file=payload.get("medicion_file"),
+        write_cymdist=payload.get("write_cymdist", True) is not False,
+        save=payload.get("save", True) is not False,
+        use_com=bool(payload.get("use_com")),
+        run_allocation=payload.get("run_allocation", True) is not False,
+    )
+
+
+def job_transfer_voltage_quality(payload):
+    """Evalúa transferencia por calidad de tensión sobre transfer_pair (pico)."""
+    from core.feeder_context import load_settings, resolve_writable_study_path
+    from pipeline.transfer_voltage_quality import evaluate_transfer_voltage_quality
+
+    feeder = (payload.get("feeder_id") or "").strip() or None
+    s = load_settings(feeder_id=feeder, synthesize=True)
+    for k in ("study_path", "database_mdb", "network_id", "ui_study_path",
+              "database_connection_name", "network_ids", "transfer_pair"):
+        if payload.get(k):
+            s[k] = payload[k]
+    sp = s.get("study_path") or ""
+    if sp:
+        alt = resolve_writable_study_path(sp, s)
+        if alt:
+            s["study_path"] = alt
+    return evaluate_transfer_voltage_quality(
+        s,
+        vmin_limit_pu=float(payload.get("vmin_limit_pu") or 0.95),
+        vmax_limit_pu=float(payload.get("vmax_limit_pu") or 1.05),
+        apply_switch=bool(payload.get("apply_switch")),
+        ensure_max_demand=bool(payload.get("ensure_max_demand")),
+    )
+
+
 JOBS = {
     "cabecera": job_cabecera,
+    "max_demand_multi": job_max_demand_multi,
+    "transfer_voltage_quality": job_transfer_voltage_quality,
     "loadallocation_com": job_loadallocation_com,
     "loadflow_com": job_loadflow_com,
     "capture_informe_color": job_capture_informe_color,

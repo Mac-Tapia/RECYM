@@ -33,6 +33,79 @@ type Board = {
   };
 };
 
+/** Resultado 2.7 / 2.8 — no alimenta el tablero por feeder. */
+type SystemDiag = {
+  scope?: string;
+  label?: string;
+  n_problems?: number;
+  n_errors?: number;
+  n_warnings?: number;
+  n_hints?: number;
+  n_networks_ok?: number;
+  n_networks_fail?: number;
+  n_networks_requested?: number;
+  by_code?: Record<string, number>;
+  per_feeder?: Json[];
+  top_errors?: Json[];
+  errors_by_net?: Record<string, unknown>;
+  csv?: string;
+  json?: string;
+  timestamp?: string;
+  ready?: boolean;
+};
+
+function systemDiagFromResult(result: Json): SystemDiag | null {
+  const sd = result?.system_diag;
+  if (sd && typeof sd === "object") {
+    const raw = sd as SystemDiag & { per_feeder?: unknown };
+    return {
+      ...raw,
+      per_feeder: normalizePerFeeder(raw.per_feeder),
+    };
+  }
+  const summary = result?.summary;
+  if (!summary || typeof summary !== "object") return null;
+  const s = summary as SystemDiag & Json;
+  return {
+    scope: String(s.scope || ""),
+    label: String(result?.msg || "").slice(0, 40),
+    n_problems: Number(s.n_problems ?? 0),
+    n_errors: Number(s.n_errors ?? 0),
+    n_warnings: Number(s.n_warnings ?? 0),
+    n_hints: Number(s.n_hints ?? 0),
+    n_networks_ok: Number(s.n_networks_ok ?? 0),
+    n_networks_fail: Number(s.n_networks_fail ?? 0),
+    n_networks_requested: Number(
+      s.n_networks_requested ?? s.n_networks_loaded ?? 0
+    ),
+    by_code: (s.by_code as Record<string, number>) || {},
+    per_feeder: normalizePerFeeder(s.per_feeder),
+    top_errors: Array.isArray(s.top_errors) ? s.top_errors : [],
+    errors_by_net: (s.errors_by_net as Record<string, unknown>) || {},
+    csv: s.csv ? String(s.csv) : undefined,
+    json: s.json ? String(s.json) : undefined,
+    timestamp: s.timestamp ? String(s.timestamp) : undefined,
+    ready: Boolean(s.ready_model_system ?? s.ready_model_eld ?? s.ready),
+  };
+}
+
+/** per_feeder llega como dict {id: info} o lista. */
+function normalizePerFeeder(raw: unknown): Json[] {
+  if (Array.isArray(raw)) return raw as Json[];
+  if (raw && typeof raw === "object") {
+    return Object.entries(raw as Record<string, Json>)
+      .map(([fid, info]) => ({
+        ...(typeof info === "object" && info ? info : {}),
+        feeder_id: fid,
+      }))
+      .sort(
+        (a, b) =>
+          Number((b as Json).n_problems || 0) - Number((a as Json).n_problems || 0)
+      );
+  }
+  return [];
+}
+
 function truthy(v: unknown) {
   return v === true || v === "True" || v === "true" || v === "1" || v === 1;
 }
@@ -121,6 +194,7 @@ export function Step2CalidadTablero() {
   const [busy, setBusy] = useState("");
   const [gate, setGate] = useState<Json | null>(null);
   const [board, setBoard] = useState<Board | null>(null);
+  const [systemDiag, setSystemDiag] = useState<SystemDiag | null>(null);
   const [activo, setActivo] = useState<Record<string, boolean>>({});
 
   const studyFile = (studyPath || "").split(/[/\\]/).pop() || "";
@@ -156,7 +230,25 @@ export function Step2CalidadTablero() {
       timeoutMs: refreshDiag || seedLoads ? 300000 : 120000,
     });
     if (!j.ok && j.error) throw new Error(String(j.error));
-    setBoard({ ...j });
+    setBoard((prev) => {
+      // No pisar diagnóstico fresco del job 2.1 si el disco aún aparece vacío
+      if (
+        !clear &&
+        j.before?.empty === true &&
+        prev?.has_diagnostic &&
+        prev?.before &&
+        prev.before.empty !== true
+      ) {
+        return {
+          ...j,
+          before: prev.before,
+          after: prev.after || prev.before,
+          has_diagnostic: true,
+          voltage_opt: prev.voltage_opt || j.voltage_opt,
+        };
+      }
+      return { ...j };
+    });
     const map: Record<string, boolean> = {};
     for (const r of j.clientes?.rows || []) {
       const key = `${String(r.Suministro || "").trim()}|${String(r.SED || "").trim()}`;
@@ -247,9 +339,16 @@ export function Step2CalidadTablero() {
             (result?.summary as Json)?.total_messages ??
             0
         );
+        const nProb = Number(
+          (result?.summary as Json)?.n_problems ??
+            (result?.tablero as Json)?.before?.n_problems ??
+            0
+        );
         setMsg(
           String(result?.msg || "") ||
-            `Diagnóstico listo · ${n} msgs · tablero actualizado`
+            (nProb === 0
+              ? "Diagnóstico listo · DiagnosticTool limpio (0 Error/Warning/Hint) · tablero actualizado"
+              : `Diagnóstico listo · ${n} msgs · tablero actualizado`)
         );
         await refreshGate();
         // 2) Releer tablero.json regenerado (tablas definitivas en disco)
@@ -259,20 +358,33 @@ export function Step2CalidadTablero() {
           if (vopt) {
             setBoard((prev) => ({ ...(prev || j || {}), ...(j || {}), voltage_opt: vopt }));
           }
-          if (j?.before?.empty !== true) {
-            const recMsg = vopt && (vopt as Json).triggered
-              ? `\n${String((vopt as Json).msg || "")}`
-              : "";
-            setMsg(
-              `2.1 OK · antes=${j?.before?.total_messages ?? n} · después=${j?.after?.total_messages ?? n} · tablas actualizadas${recMsg}`
-            );
-          } else {
-            // Disco vacío pero job trajo datos → mantener snapshot del job
+          // Si el disco quedó vacío, refreshBoard ya preservó el snapshot del job
+          const msgs = j?.before?.empty === true ? n : (j?.before?.total_messages ?? n);
+          const recMsg = vopt && (vopt as Json).triggered
+            ? `\n${String((vopt as Json).msg || "")}`
+            : "";
+          setMsg(
+            msgs === 0 && nProb === 0
+              ? `2.1 OK · DiagnosticTool limpio (0 problemas) · tablas actualizadas${recMsg}`
+              : `2.1 OK · antes=${j?.before?.total_messages ?? n} · después=${j?.after?.total_messages ?? n} · tablas actualizadas${recMsg}`
+          );
+          if (j?.before?.empty === true) {
             setBoard((prev) => applyDiagResult(prev, result));
           }
         } catch {
           setBoard((prev) => applyDiagResult(prev, result));
         }
+      } else if (action === "calidad_sistema" || action === "calidad_eld") {
+        // 2.7 / 2.8: panel sistema/ELD — NO pisar tablero del alimentador
+        const sd = systemDiagFromResult(result);
+        setSystemDiag(sd);
+        setMsg(
+          String(result?.msg || "") ||
+            (sd && Number(sd.n_problems || 0) === 0
+              ? `${label} · DiagnosticTool limpio (0 Error/Warning/Hint)`
+              : `${label} · problemas=${sd?.n_problems ?? "?"}`)
+        );
+        await refreshGate();
       } else if (action === "calidad_convergencia") {
         const conv = String(result?.converge || "—").toUpperCase();
         const line =
@@ -295,6 +407,7 @@ export function Step2CalidadTablero() {
             JSON.stringify(result, null, 2).slice(0, 1500)
         );
         await refreshGate();
+        // Preservar diagnóstico: refreshBoard mergea si disco vacío
         await refreshBoard(1, false, false);
       }
     } catch (e) {
@@ -425,6 +538,13 @@ export function Step2CalidadTablero() {
   const voptTriggered = Boolean(vopt.triggered);
   const voptRecs = (Array.isArray(vopt.recommendations) ? vopt.recommendations : []) as Json[];
 
+  const sysCodes = useMemo(() => {
+    if (!systemDiag?.by_code) return [] as string[];
+    return Object.keys(systemDiag.by_code).sort();
+  }, [systemDiag]);
+  const sysTop = (systemDiag?.top_errors || []).slice(0, 40);
+  const sysFeeders = (systemDiag?.per_feeder || []).slice(0, 40);
+
   async function runOptFromRec(rec: Json) {
     const action = String(rec.action || "");
     const step = String(rec.step || "");
@@ -455,11 +575,18 @@ export function Step2CalidadTablero() {
       <section className="panel">
         <h2>2 · Calidad del modelo + Tablero</h2>
         <p className="muted">
-          Vinculado al <b>estudio y BD de §1</b>. Cada acción activa esa BD en CYMDIST,
-          abre ese estudio y analiza solo ese alimentador. Gate antes de §3.
+          Vinculado al <b>estudio y BD de §1</b>. 2.1–2.6 analizan el alimentador activo
+          con DiagnosticTool (códigos CYMDIST). 2.7/2.8 diagnostican todo el sistema o ELD
+          y muestran un panel aparte — no el tablero del feeder.
+        </p>
+        <p className="muted" style={{ marginTop: 0 }}>
+          <b>Gate LISTO</b> = calidad/convergencia del alimentador (listo para §3),{" "}
+          <em>no</em> cargabilidad ni perfiles de tensión. Esas vistas
+          (VoltageLevel / LoadingLevel) se generan en{" "}
+          <a href="/5">§5 LoadFlow</a> e informe.
         </p>
         <div className="hdr-bar">
-          <span className={"badge" + (ready ? " ready" : "")}>
+          <span className={"badge" + (ready ? " ready" : "")} title="Calidad/convergencia del alimentador activo — no implica perfiles LF">
             {ready ? "Gate LISTO" : "Gate pendiente"}
           </span>
           <span className="muted" title={studyPath || ""}>
@@ -537,8 +664,146 @@ export function Step2CalidadTablero() {
         )}
       </section>
 
+      {systemDiag && (
+        <section className="panel">
+          <h2>
+            Diagnóstico sistema / ELD
+            {systemDiag.scope ? ` · ${systemDiag.scope}` : ""}
+          </h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Resultado de 2.7/2.8 (DiagnosticTool multi-red). No modifica el tablero del
+            alimentador activo arriba. Cargabilidad y perfiles de tensión →{" "}
+            <a href="/5">§5 LoadFlow</a>.
+          </p>
+          <div className="cards">
+            <div className="card">
+              Problemas
+              <b className={Number(systemDiag.n_problems || 0) > 0 ? "bad" : ""}>
+                {systemDiag.n_problems ?? 0}
+              </b>
+            </div>
+            <div className="card">Errores<b>{systemDiag.n_errors ?? 0}</b></div>
+            <div className="card">Warnings<b>{systemDiag.n_warnings ?? 0}</b></div>
+            <div className="card">Hints<b>{systemDiag.n_hints ?? 0}</b></div>
+            <div className="card">
+              Redes OK
+              <b>
+                {systemDiag.n_networks_ok ?? 0}
+                {systemDiag.n_networks_requested != null
+                  ? ` / ${systemDiag.n_networks_requested}`
+                  : ""}
+              </b>
+            </div>
+            <div className="card">Redes fail<b>{systemDiag.n_networks_fail ?? 0}</b></div>
+          </div>
+          {Number(systemDiag.n_problems || 0) === 0 && (
+            <p className="muted">DiagnosticTool limpio (0 Error/Warning/Hint).</p>
+          )}
+          {systemDiag.timestamp ? (
+            <p className="muted" style={{ marginTop: 4 }}>
+              {systemDiag.timestamp}
+              {systemDiag.csv ? ` · ${String(systemDiag.csv).split(/[/\\]/).pop()}` : ""}
+            </p>
+          ) : null}
+
+          <h3>Códigos (sistema)</h3>
+          <div className="wrap">
+            <table>
+              <thead>
+                <tr><th>Código</th><th>Cantidad</th></tr>
+              </thead>
+              <tbody>
+                {sysCodes.length === 0 && (
+                  <tr><td colSpan={2}>Sin códigos</td></tr>
+                )}
+                {sysCodes.map((c) => (
+                  <tr key={c}>
+                    <td>{c}</td>
+                    <td>{systemDiag.by_code?.[c] ?? 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Problemas por red / alimentador</h3>
+          <div className="wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Red / Feeder</th>
+                  <th>Problemas</th>
+                  <th>Msgs</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sysFeeders.length === 0 && (
+                  <tr><td colSpan={4}>Sin desglose por red</td></tr>
+                )}
+                {sysFeeders.map((f, i) => (
+                  <tr key={i}>
+                    <td>
+                      {String(f.feeder_id || f.Feeder || f.network_id || f.NetworkID || "")}
+                    </td>
+                    <td>{String(f.n_problems ?? f.problems ?? "")}</td>
+                    <td>{String(f.n_messages ?? f.total_messages ?? "")}</td>
+                    <td>
+                      {f.error
+                        ? String(f.error)
+                        : Number(f.n_problems || 0) > 0
+                          ? "con problemas"
+                          : "OK"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Muestra de errores (sistema)</h3>
+          <div className="wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Red</th>
+                  <th>Código</th>
+                  <th>Tipo</th>
+                  <th>ID</th>
+                  <th>Mensaje</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sysTop.length === 0 && (
+                  <tr>
+                    <td colSpan={5}>
+                      {Number(systemDiag.n_problems || 0) === 0
+                        ? "Sin errores (limpio)"
+                        : "Sin muestra"}
+                    </td>
+                  </tr>
+                )}
+                {sysTop.map((e, i) => (
+                  <tr key={i}>
+                    <td>{String(e.Feeder || e.Network || e.feeder_id || e.NetworkID || "")}</td>
+                    <td>{String(e.Codigo || "")}</td>
+                    <td>{String(e.Tipo || "")}</td>
+                    <td>{String(e.ID_CYMDIST || "")}</td>
+                    <td>{String(e.Mensaje || "").slice(0, 180)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       <section className="panel">
         <h2>Tablero dinámico</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Solo alimentador activo · DiagnosticTool. Para cargabilidad / perfiles de
+          tensión en todos los alimentadores use <a href="/5">§5 LoadFlow</a>.
+        </p>
         <div className="actions">
           <button type="button" {...btnProps("tablero")}
             onClick={() =>
@@ -556,7 +821,9 @@ export function Step2CalidadTablero() {
         <p className="muted" style={{ marginTop: 4 }}>
           {!showDiag
             ? "Sin diagnóstico — valores en 0. Pulse 2.1 · Diagnosticar para cargar códigos y muestra de errores en las tablas."
-            : `Actualizado: ${board?.refreshed_at || board?.generated_at || before.timestamp || after.timestamp || "—"}`}
+            : Number(before.n_problems || 0) === 0 && Number(before.total_messages || 0) === 0
+              ? `DiagnosticTool limpio (0 problemas) · Actualizado: ${board?.refreshed_at || board?.generated_at || before.timestamp || "—"}`
+              : `Actualizado: ${board?.refreshed_at || board?.generated_at || before.timestamp || after.timestamp || "—"}`}
           {showDiag && (after.timestamp || before.timestamp)
             ? ` · diag: ${after.timestamp || before.timestamp}`
             : ""}

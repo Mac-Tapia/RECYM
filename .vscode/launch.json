@@ -1,6 +1,8 @@
 {
   "version": "0.2.0",
   "configurations": [
+    
+
     {
       "name": "RECYM: check environment",
       "type": "python",
@@ -11,11 +13,21 @@
       "console": "integratedTerminal"
     },
     {
-      "name": "RECYM: pipeline PA217",
+      "name": "RECYM: pipeline CA101",
       "type": "python",
       "request": "launch",
       "program": "${workspaceFolder}/src/pipeline/run_all.py",
-      "args": ["--feeder", "PA217"],
+      "args": ["--feeder", "CA101"],
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.tools/python37-win32/python.exe",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "RECYM: max demand multi CA101V2",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/pipeline/apply_max_demand_multi.py",
+      "args": ["--feeder", "CA101"],
       "cwd": "${workspaceFolder}",
       "python": "${workspaceFolder}/.tools/python37-win32/python.exe",
       "console": "integratedTerminal"
@@ -34,7 +46,7 @@
       "type": "python",
       "request": "launch",
       "program": "${workspaceFolder}/src/core/test_cymdist_connection.py",
-      "args": ["--feeder", "PA217"],
+      "args": ["--feeder", "CA101"],
       "cwd": "${workspaceFolder}",
       "python": "${workspaceFolder}/.tools/python37-win32/python.exe",
       "console": "integratedTerminal"

@@ -138,19 +138,8 @@ function asLabel(item: unknown): string {
   return "";
 }
 
-function feederFromStudy(path: string): string {
-  const base = (path || "").split(/[/\\]/).pop() || "";
-  const stem = base.replace(/\.(zxst|zsxst|sxst|xst)$/i, "");
-  if (!stem || stem.toUpperCase() === "ELD") return "";
-  return stem;
-}
-
 function normPath(p: string): string {
   return (p || "").replace(/\//g, "\\").toLowerCase();
-}
-
-function studyBasename(path: string): string {
-  return ((path || "").split(/[/\\]/).pop() || "").toLowerCase();
 }
 
 /** Código en medidoralimentador: PA217V2 → PA217 */
@@ -159,134 +148,6 @@ function mapCodeForFeeder(fid: string): string {
   if (!u) return "";
   const m = u.match(/^([A-Z]{1,3}\d{2,4})V\d+$/);
   return m ? m[1] : u;
-}
-
-function studyStem(pathOrLabel: string): string {
-  return (pathOrLabel || "")
-    .split(/[/\\]/)
-    .pop()!
-    .replace(/\.(zxst|sxst|zsxst|xst)$/i, "")
-    .toUpperCase();
-}
-
-/** Familia del alimentador: PA217, PA217V2, PA217_ALT → PA217 */
-function feederFamily(fid: string): string {
-  const u = (fid || "").trim().toUpperCase();
-  if (!u) return "";
-  const base = mapCodeForFeeder(u);
-  // PA217_ALT / PA217-2 → PA217
-  const m = base.match(/^([A-Z]{1,3}\d{2,4})/);
-  return m ? m[1] : base;
-}
-
-function studyBelongsToFeeder(studyPath: string, fid: string): boolean {
-  const stem = feederFromStudy(studyPath);
-  if (!stem || !fid) return false;
-  const fu = fid.toUpperCase();
-  const su = stem.toUpperCase();
-  if (su === fu) return true;
-  return feederFamily(su) === feederFamily(fu);
-}
-
-/** Todos los estudios del mismo alimentador (puede haber varios: PA217.zxst, PA217v2.xst…). */
-function listStudiesForFeeder(fid: string, files: CtxFiles): string[] {
-  const id = (fid || "").trim();
-  if (!id) return [];
-  const fam = feederFamily(id);
-  const out: { path: string; score: number }[] = [];
-  for (const s of files.studies || []) {
-    const p = asPath(s);
-    const stem = studyStem(asLabel(s) || p);
-    if (!stem || stem === "ELD") continue;
-    if (feederFamily(stem) !== fam && stem !== id.toUpperCase()) continue;
-    let score = 50;
-    if (stem === id.toUpperCase()) score = 0;
-    else if (stem === fam) score = 1;
-    else if (stem.startsWith(fam)) score = 2;
-    out.push({ path: p, score });
-  }
-  out.sort((a, b) => a.score - b.score || a.path.localeCompare(b.path));
-  // únicos por path
-  const seen = new Set<string>();
-  const paths: string[] = [];
-  for (const it of out) {
-    const k = normPath(it.path);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    paths.push(it.path);
-  }
-  return paths;
-}
-
-/**
- * Elige un estudio por defecto para el alimentador.
- * Si preferPath ya es de la familia, lo conserva (varios estudios por alim.).
- */
-function resolveStudyForFeeder(
-  fid: string,
-  files: CtxFiles,
-  preferPath?: string
-): string {
-  const related = listStudiesForFeeder(fid, files);
-  if (!related.length) {
-    const eld = (files.studies || []).find((s) => {
-      const n = asLabel(s).toUpperCase();
-      return n === "ELD.ZXST" || n.startsWith("ELD.");
-    });
-    return eld ? asPath(eld) : "";
-  }
-  if (preferPath && related.some((p) => normPath(p) === normPath(preferPath))) {
-    return preferPath;
-  }
-  // Preferir match exacto de stem, luego el primero de la familia
-  const idU = fid.toUpperCase();
-  const exact = related.find((p) => studyStem(p) === idU);
-  return exact || related[0];
-}
-
-/**
- * Estudio → alimentador BD: preferir la red de la BD (con network_id),
- * no la entrada huérfana «solo estudio» (PA217v2.xst → PA217 en BD).
- */
-function resolveFeederForStudy(studyPath: string, files: CtxFiles): string {
-  const stem = feederFromStudy(studyPath);
-  if (!stem) return "";
-  const feeders = files.feeders || [];
-  const fam = feederFamily(stem);
-  const stemU = stem.toUpperCase();
-
-  const hasNet = (f: { network_id?: string; label?: string }) =>
-    Boolean(String(f.network_id || "").trim()) &&
-    !String(f.label || "").toLowerCase().includes("solo estudio");
-
-  // 1) Misma familia con red BD (p.ej. PA217)
-  const bdFam = feeders.find(
-    (f) => feederFamily(f.feeder_id) === fam && hasNet(f)
-  );
-  if (bdFam) return bdFam.feeder_id;
-
-  // 2) Stem exacto con red BD
-  const exactBd = feeders.find(
-    (f) => String(f.feeder_id).toUpperCase() === stemU && hasNet(f)
-  );
-  if (exactBd) return exactBd.feeder_id;
-
-  // 3) Cualquier entrada con red en la familia
-  const anyBd = feeders.find(
-    (f) =>
-      (String(f.feeder_id).toUpperCase() === stemU ||
-        feederFamily(f.feeder_id) === fam) &&
-      String(f.network_id || "").trim()
-  );
-  if (anyBd) return anyBd.feeder_id;
-
-  // 4) Huérfano / solo estudio
-  const orphan = feeders.find(
-    (f) => String(f.feeder_id).toUpperCase() === stemU
-  );
-  if (orphan) return orphan.feeder_id;
-
-  return stem;
 }
 
 export function Step1Contexto() {
@@ -318,6 +179,18 @@ export function Step1Contexto() {
   const [cymdistSyncNote, setCymdistSyncNote] = useState("");
   const extractSeq = useRef(0);
   const skipCabeceraReload = useRef(false);
+  /** Excel medicioncabecera elegido por el usuario (siempre al día; evita stale closure) */
+  const medicionFileRef = useRef("");
+
+  function setMedicionFileKeep(name: string) {
+    const v = (name || "").trim();
+    medicionFileRef.current = v;
+    setMedicionFile(v);
+  }
+
+  useEffect(() => {
+    medicionFileRef.current = medicionFile || "";
+  }, [medicionFile]);
 
   function applyCabeceraToForm(j: CabeceraSess | Extraccion) {
     setPKw(fmtNum(j.P_kW));
@@ -326,7 +199,10 @@ export function Step1Contexto() {
     setPAvg(fmtNum(j.P_avg_kW));
     setFactorCarga(fmtNum(j.factor_carga_pct));
     if ("medidor" in j && j.medidor) setMedidor(String(j.medidor));
-    if ("medicion_file" in j && j.medicion_file) setMedicionFile(String(j.medicion_file));
+    // No pisar el Excel que el usuario ya eligió (Chincha, etc.)
+    if ("medicion_file" in j && j.medicion_file && !medicionFileRef.current) {
+      setMedicionFileKeep(String(j.medicion_file));
+    }
     const vll = normalizeVll(j.Vll_kV);
     setVLl(vll);
     setFecha(String(j.fecha_medicion || ""));
@@ -373,9 +249,17 @@ export function Step1Contexto() {
     return j.files || [];
   }
 
-  async function loadFiles(opts?: { database_mdb?: string; refresh?: boolean }) {
+  async function loadFiles(opts?: {
+    database_mdb?: string;
+    refresh?: boolean;
+    /** true = no tocar alimentador/estudio elegidos (botón Actualizar listas) */
+    preserveSelection?: boolean;
+  }) {
     const mdb = (opts?.database_mdb || "").trim();
     const refresh = Boolean(opts?.refresh);
+    const preserve = Boolean(opts?.preserveSelection);
+    const prevStudy = (study || "").trim();
+    const prevFeeder = (feederPick || feeder || "").trim();
     const qs = new URLSearchParams();
     if (mdb) qs.set("database_mdb", mdb);
     if (refresh) qs.set("refresh", "1");
@@ -386,54 +270,86 @@ export function Step1Contexto() {
     if (!j.ok && j.error) throw new Error(j.error);
     setFiles(j);
     if (mdb) setDb(mdb);
-    else if (j.current_database) setDb(j.current_database);
+    else if (!preserve && j.current_database) setDb(j.current_database);
 
     const feedersList = j.feeders || [];
     const fids = new Set(feedersList.map((f) => String(f.feeder_id).toUpperCase()));
-    let fid = (feederPick || j.current_feeder || feederFromStudy(j.current_study || "") || "").trim();
-    // Al cambiar de BD: no conservar alimentador que no esté en el catálogo nuevo
-    if (mdb) {
+    const studyList = j.studies || [];
+
+    const studyStillThere = (path: string) => {
+      if (!path) return false;
+      const want = normPath(path);
+      const wantBase = want.split(/[/\\]/).pop() || want;
+      return studyList.some((s) => {
+        const p = normPath(asPath(s));
+        const base = p.split(/[/\\]/).pop() || p;
+        return p === want || base === wantBase;
+      });
+    };
+
+    let fid = prevFeeder;
+    if (!preserve) {
       if (fid && !fids.has(fid.toUpperCase())) fid = "";
-      if (!feedersList.length) fid = "";
-    } else if (fid && !fids.has(fid.toUpperCase())) {
-      fid = "";
+      if (mdb && !feedersList.length) fid = "";
+      if (!fid && feedersList.length === 1) {
+        fid = feedersList[0].feeder_id;
+      }
     }
-    if (!fid && feedersList.length === 1) {
-      fid = feedersList[0].feeder_id;
-    }
+    // preserve=true: no cambiar fid aunque el catálogo aún no lo liste
     setFeederPick(fid);
-    let resolvedStudy = "";
-    if (fid) {
+    if (fid && fids.has(fid.toUpperCase())) {
       const row = feedersList.find(
         (f) => String(f.feeder_id).toUpperCase() === fid.toUpperCase()
       );
       setFeeder(fid, row?.network_id || j.current_network || undefined);
-      const resolved = resolveStudyForFeeder(fid, j);
-      resolvedStudy = resolved || j.current_study || "";
-      setStudy(resolvedStudy);
-    } else if (!mdb) {
-      const st = j.current_study || "";
-      resolvedStudy = st;
-      setStudy(st);
-    } else {
-      const eldPath =
-        (j.studies || [])
-          .map((s) => asPath(s))
-          .find((p) => studyBasename(p).startsWith("eld.")) || "";
-      resolvedStudy = eldPath || "";
-      setStudy(resolvedStudy);
     }
-    const dbPath = mdb || j.current_database || "";
+
+    // Estudio INDEPENDIENTE: al refrescar NUNCA sustituir por current_study del server
+    let resolvedStudy = prevStudy;
+    if (preserve) {
+      if (prevStudy && studyStillThere(prevStudy)) {
+        resolvedStudy = prevStudy;
+      } else if (prevStudy) {
+        // Mantener valor UI aunque el path exacto no matchee (evita salto a CA101)
+        resolvedStudy = prevStudy;
+      }
+      // no llamar setStudy — conserva CA101V2.sxst tal cual
+    } else if (mdb) {
+      if (prevStudy && studyStillThere(prevStudy)) {
+        resolvedStudy = prevStudy;
+      } else {
+        resolvedStudy = "";
+      }
+    } else {
+      // Carga inicial: preferir selección previa, luego server
+      if (prevStudy && studyStillThere(prevStudy)) {
+        resolvedStudy = prevStudy;
+      } else {
+        resolvedStudy = j.current_study || prevStudy || "";
+      }
+      if (resolvedStudy && resolvedStudy !== study) setStudy(resolvedStudy);
+    }
+
+    const dbPath = mdb || (preserve ? db : "") || j.current_database || "";
     setContext({
       feeder: fid || "",
-      network: j.current_network || "",
-      studyPath: resolvedStudy || j.current_study || "",
+      network:
+        (feedersList.find(
+          (f) => String(f.feeder_id).toUpperCase() === (fid || "").toUpperCase()
+        )?.network_id ||
+          j.current_network ||
+          "") ||
+        "",
+      studyPath: resolvedStudy || "",
       databaseMdb: dbPath,
     });
     if (mdb && feedersList.length) {
       setMsg(
         `BD ${mdb.split(/[/\\]/).pop()} · ${feedersList.length} alimentadores` +
-          (j.networks_source ? ` (${j.networks_source})` : "")
+          (j.networks_source ? ` (${j.networks_source})` : "") +
+          (preserve && prevStudy
+            ? ` · estudio ${(prevStudy.split(/[/\\]/).pop() || "")}`
+            : "")
       );
     }
     return j;
@@ -471,27 +387,36 @@ export function Step1Contexto() {
       );
       let fid = "";
       let st = "";
+      // Independientes: conservar cada uno si sigue existiendo en el catálogo nuevo
+      if (prevFeeder && fids.has(prevFeeder.toUpperCase())) {
+        fid = prevFeeder;
+      }
       if (prevStudy && studyPaths.has(normPath(prevStudy))) {
         st = prevStudy;
-        fid = feederFromStudy(st) || "";
-        if (fid && !fids.has(fid.toUpperCase())) {
-          // estudio huérfano aún listable
-        }
       }
-      if (!fid && prevFeeder && fids.has(prevFeeder.toUpperCase())) {
-        fid = prevFeeder;
-        st = resolveStudyForFeeder(fid, catalog) || st;
-      }
-      if (fid || st) {
+      // Sidebar: reflejar YA la BD nueva (aunque aún falte 1.1)
+      setContext({
+        feeder: fid || "",
+        network: "",
+        studyPath: st || "",
+        databaseMdb: path,
+      });
+      if (fid) {
         await syncFeederStudyCabecera({
           feederId: fid,
           studyPath: st,
-          fromStudy: Boolean(st && feederFromStudy(st)),
+          keepStudy: true,
           extract: true,
+        });
+      } else if (st) {
+        await syncFeederStudyCabecera({
+          studyPath: st,
+          keepFeeder: true,
+          extract: false,
         });
       } else {
         setMsg(
-          `BD ${dbName} · ${(catalog.feeders || []).length} alimentadores · ${(catalog.studies || []).length} estudios · elija alimentador o estudio`
+          `BD ${dbName} · ${(catalog.feeders || []).length} alimentadores · ${(catalog.studies || []).length} estudios · elija alimentador y estudio (independientes)`
         );
       }
     } catch (e) {
@@ -511,10 +436,12 @@ export function Step1Contexto() {
     return j;
   }
 
-  function clearMedicionFields() {
+  function clearMedicionFields(opts?: { keepExcel?: boolean }) {
     setMedidor("");
     setCodigoAlimentador("");
-    setMedicionFile("");
+    if (!opts?.keepExcel) {
+      setMedicionFileKeep("");
+    }
     setPKw("");
     setQKvar("");
     setSKva("");
@@ -542,9 +469,11 @@ export function Step1Contexto() {
     // Lookup medidor/Excel: preferir código de medidoralimentador
     const mapCode = (opts?.mapCode || codigoAlimentador || "").trim();
     const fid = (mapCode || fidBd).trim();
-    // Al cambiar de alimentador no reutilizar Excel anterior (evita datos de PA217 en IN112)
+    // Preferir Excel explícito / seleccionado (ref); no reutilizar vacío por stale state
     let file =
-      opts?.file !== undefined ? opts.file || "" : medicionFile || "";
+      opts?.file !== undefined
+        ? (opts.file || "").trim()
+        : (medicionFileRef.current || medicionFile || "").trim();
     const chosenFile = file;
     const autoFind = opts?.autoFind !== false;
     const keepFileOnError = Boolean(opts?.keepFileOnError);
@@ -567,21 +496,14 @@ export function Step1Contexto() {
         const res = await resolverMedicion(fid);
         if (seq !== extractSeq.current) return null;
         if (mapCode) {
-          applyMapMedidor(mapCode);
+          applyMapMedidor(mapCode, { applyVll: false });
         } else if (res.medidor) {
           setMedidor(res.medidor);
         }
-        const vllMap = normalizeVll(res.Vll_kV);
-        if (vllMap && !mapCode) {
-          setVLl(vllMap);
-          const vln = phaseFromVll(vllMap);
-          setVaKv(vln);
-          setVbKv(vln);
-          setVcKv(vln);
-        }
+        applyVllFromApi(res.Vll_kV);
         if (res.suggested_file) {
           file = res.suggested_file;
-          setMedicionFile(file);
+          setMedicionFileKeep(file);
         } else {
           throw new Error(
             res.error ||
@@ -596,8 +518,8 @@ export function Step1Contexto() {
         method: "POST",
         body: JSON.stringify({
           feeder: fid,
-          medicion_file: file,
-          auto_find_file: autoFind,
+          medicion_file: file || null,
+          auto_find_file: Boolean(autoFind),
         }),
         timeoutMs: 180000,
       });
@@ -609,24 +531,19 @@ export function Step1Contexto() {
         );
       }
       applyCabeceraToForm(j);
-      // Reafirmar medidor del código Excel
+      // Reafirmar medidor del código; Vll desde API (mapa)
       if (mapCode) {
-        applyMapMedidor(mapCode);
+        applyMapMedidor(mapCode, { applyVll: false });
       } else if (j.medidor) {
         setMedidor(j.medidor);
       }
-      if (j.medicion_file) setMedicionFile(j.medicion_file);
-      if (!mapCode) {
-        const vll = normalizeVll(j.Vll_kV);
-        if (vll) {
-          setVLl(vll);
-          const vln = phaseFromVll(vll);
-          setVaKv(vln);
-          setVbKv(vln);
-          setVcKv(vln);
-        } else {
-          throw new Error(`Sin Vll para ${fid} en medidoralimentador`);
-        }
+      // Mostrar SIEMPRE el Excel usado (el elegido por el usuario)
+      const usedFile = String(j.medicion_file || chosenFile || file || "").trim();
+      if (usedFile) setMedicionFileKeep(usedFile);
+      else if (chosenFile) setMedicionFileKeep(chosenFile);
+      const vll = applyVllFromApi(j.Vll_kV);
+      if (!vll) {
+        throw new Error(`Sin Vll para ${fid} en medidoralimentador`);
       }
       const warn =
         j.warnings && j.warnings.length
@@ -642,24 +559,38 @@ export function Step1Contexto() {
       return j;
     } catch (e) {
       if (seq === extractSeq.current) {
-        if (keepFileOnError) {
-          setPKw("");
-          setQKvar("");
-          setSKva("");
-          setPAvg("");
-          setFactorCarga("");
-          setFecha("");
-          setCabAdjNote("");
-          if (chosenFile) setMedicionFile(chosenFile);
-          if (mapCode) applyMapMedidor(mapCode);
-        } else {
-          clearMedicionFields();
-          if (mapCode) {
-            setCodigoAlimentador(mapCode);
-            applyMapMedidor(mapCode);
-          }
+        // Conservar código/medidor/Vll/Excel; solo limpiar P/Q/S si falló
+        setPKw("");
+        setQKvar("");
+        setSKva("");
+        setPAvg("");
+        setFactorCarga("");
+        setFecha("");
+        setCabAdjNote("");
+        if (chosenFile || keepFileOnError) {
+          setMedicionFileKeep(chosenFile || medicionFileRef.current || "");
         }
-        setMsg(String(e));
+        if (mapCode) applyMapMedidor(mapCode, { applyVll: false });
+        let hint = "";
+        try {
+          const res = await resolverMedicion(fid);
+          const names = (res.candidate_files || [])
+            .map((c) => c.name)
+            .filter(Boolean);
+          if (names.length) {
+            hint = ` · hoja ${res.medidor || "?"} está en: ${names.join(", ")}`;
+          }
+        } catch {
+          /* sin hint */
+        }
+        const err = String(e || "Error extracción");
+        setMsg(
+          err.replace(/^Error:\s*/i, "") +
+            (chosenFile || medicionFileRef.current
+              ? ` · Excel: ${chosenFile || medicionFileRef.current}`
+              : " · elija Excel medicioncabecera") +
+            hint
+        );
       }
       return null;
     } finally {
@@ -699,18 +630,9 @@ export function Step1Contexto() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feederPick]);
 
-  // Catálogo de estudios: solo auto-elegir si no hay estudio o no pertenece a la familia
-  useEffect(() => {
-    const fid = (feederPick || "").trim();
-    if (!fid || !(files.studies || []).length) return;
-    if (study && studyBelongsToFeeder(study, fid)) return; // varios estudios OK
-    const resolved = resolveStudyForFeeder(fid, files, study || undefined);
-    if (!resolved) return;
-    if (normPath(resolved) !== normPath(study)) setStudy(resolved);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [files.studies, files.feeders, feederPick]);
+  // NOTA: no auto-vincular estudio ↔ alimentador. Un estudio puede tener N redes.
 
-  function applyMapMedidor(fid: string) {
+  function applyMapMedidor(fid: string, opts?: { applyVll?: boolean }) {
     const code = (fid || "").trim().toUpperCase();
     if (!code) return null;
     const row =
@@ -722,43 +644,10 @@ export function Step1Contexto() {
     if (!row) return null;
     setCodigoAlimentador(String(row.feeder_id));
     if (row.medidor) setMedidor(String(row.medidor));
-    const vll = normalizeVll(row.Vll_kV);
-    if (vll) {
-      setVLl(vll);
-      const vln = phaseFromVll(vll);
-      setVaKv(vln);
-      setVbKv(vln);
-      setVcKv(vln);
-    }
-    return row;
-  }
-
-  /** Código alimentador → medidor + buscar en hojas del Excel medicioncabecera */
-  async function onPickCodigoAlimentador(code: string) {
-    setCodigoAlimentador(code);
-    if (!code) {
-      setMedidor("");
-      return;
-    }
-    // Limpiar magnitudes previas (evitar residuales PA217 al cambiar a AL107)
-    setPKw("");
-    setQKvar("");
-    setSKva("");
-    setPAvg("");
-    setFactorCarga("");
-    setFecha("");
-    setCabAdjNote("");
-
-    const local = applyMapMedidor(code);
-    if (local?.medidor) setMedidor(String(local.medidor));
-
-    let mid = local?.medidor || "";
-    try {
-      const res = await resolverMedicion(code);
-      mid = String(res.medidor || mid).trim();
-      if (mid) setMedidor(mid);
-      setCodigoAlimentador(String(res.map_code || res.feeder_id || code));
-      const vll = normalizeVll(res.Vll_kV);
+    // Vll: por defecto sí; tras resolver/extraer API pasar applyVll:false
+    // para no pisar el valor fresco de medidoralimentador.xlsx con caché SPA.
+    if (opts?.applyVll !== false) {
+      const vll = normalizeVll(row.Vll_kV);
       if (vll) {
         setVLl(vll);
         const vln = phaseFromVll(vll);
@@ -766,12 +655,59 @@ export function Step1Contexto() {
         setVbKv(vln);
         setVcKv(vln);
       }
-      if (res.suggested_file && !medicionFile) {
-        setMedicionFile(res.suggested_file);
-      }
-      setMsg(
-        `Código ${res.map_code || code} → medidor ${mid || "?"} · buscando en medicioncabecera…`
-      );
+    }
+    return row;
+  }
+
+  function applyVllFromApi(raw: unknown) {
+    const vll = normalizeVll(raw);
+    if (!vll) return "";
+    setVLl(vll);
+    const vln = phaseFromVll(vll);
+    setVaKv(vln);
+    setVbKv(vln);
+    setVcKv(vln);
+    return vll;
+  }
+
+  /**
+   * Código → medidor + Vll. Si hay Excel, extrae (auto-localiza archivo correcto
+   * si el elegido no tiene la hoja del medidor, p.ej. Pisco→Chincha para CA101).
+   */
+  async function onPickCodigoAlimentador(code: string) {
+    setCodigoAlimentador(code);
+    if (!code) {
+      setMedidor("");
+      setVLl("");
+      setVaKv("");
+      setVbKv("");
+      setVcKv("");
+      return;
+    }
+    setPKw("");
+    setQKvar("");
+    setSKva("");
+    setPAvg("");
+    setFactorCarga("");
+    setFecha("");
+    setCabAdjNote("");
+    setVLl("");
+
+    const keepExcel = (medicionFileRef.current || medicionFile || "").trim();
+    if (keepExcel) setMedicionFileKeep(keepExcel);
+
+    const local = applyMapMedidor(code);
+    if (local?.medidor) setMedidor(String(local.medidor));
+
+    let mid = local?.medidor || "";
+    let suggested = "";
+    try {
+      const res = await resolverMedicion(code);
+      mid = String(res.medidor || mid).trim();
+      if (mid) setMedidor(mid);
+      setCodigoAlimentador(String(res.map_code || res.feeder_id || code));
+      applyVllFromApi(res.Vll_kV);
+      suggested = String(res.suggested_file || "").trim();
     } catch (e) {
       if (!mid) {
         setMsg(String(e));
@@ -779,53 +715,78 @@ export function Step1Contexto() {
       }
     }
 
-    // Extraer P/Q/S: busca el medidor en cada hoja del Excel (auto-cambia archivo si hace falta)
+    const excel = keepExcel || suggested;
+    if (!excel) {
+      setMsg(
+        `Código ${code} · medidor ${mid || "?"} · elija Excel (Chincha / Ica / Nasca / Pisco)`
+      );
+      return;
+    }
+    if (excel) setMedicionFileKeep(excel);
+
     skipCabeceraReload.current = true;
     await extraerMedicion({
       feeder: code,
       mapCode: code,
-      file: medicionFile || "",
+      file: excel,
+      autoFind: true,
+      keepFileOnError: true,
+    });
+  }
+
+  /** Al elegir Excel: extraer; si no tiene la hoja, auto-pasa al SISTEMA correcto. */
+  async function onPickMedicionExcel(fileName: string) {
+    const name = (fileName || "").trim();
+    setMedicionFileKeep(name);
+    if (!name) {
+      setMsg("Excel desseleccionado · elija Chincha / Ica / Nasca / Pisco");
+      return;
+    }
+    const code = (codigoAlimentador || feederPick || "").trim();
+    if (!code) {
+      setMsg(`Excel ${name} · elija código alimentador y pulse Extraer máximos`);
+      return;
+    }
+    skipCabeceraReload.current = true;
+    await extraerMedicion({
+      feeder: code,
+      mapCode: codigoAlimentador || undefined,
+      file: name,
       autoFind: true,
       keepFileOnError: true,
     });
   }
 
   /**
-   * Vínculo BD ↔ alimentador ↔ estudio(s) ↔ cabecera.
-   * Un alimentador puede tener VARIOS estudios (PA217.zxst, PA217v2.xst…):
-   * no se pisa el estudio elegido si pertenece a la misma familia.
+   * Actualiza cabecera/contexto SIN cruzar alimentador ↔ estudio.
+   * Un mismo estudio (p.ej. CA101V2.sxst) puede tener varios alimentadores;
+   * la selección de cada uno es independiente.
    */
   async function syncFeederStudyCabecera(opts: {
     feederId?: string;
     studyPath?: string;
     extract?: boolean;
-    fromStudy?: boolean;
-    /** Conservar estudio actual si es de la familia del alimentador */
-    keepStudyIfRelated?: boolean;
+    /** Si true, no tocar el alimentador actual (solo estudio). */
+    keepFeeder?: boolean;
+    /** Si true, no tocar el estudio actual (solo alimentador). */
+    keepStudy?: boolean;
   }) {
-    let fid = (opts.feederId || "").trim();
-    let stPath = (opts.studyPath !== undefined ? opts.studyPath : study).trim();
+    const keepFeeder = Boolean(opts.keepFeeder);
+    const keepStudy = Boolean(opts.keepStudy);
 
-    if (opts.fromStudy && stPath) {
-      // Estudio manda el archivo; alimentador BD = red de la familia si existe
-      fid = resolveFeederForStudy(stPath, files) || feederFromStudy(stPath);
-    } else if (fid) {
-      const related = listStudiesForFeeder(fid, files);
-      const keep =
-        opts.keepStudyIfRelated !== false &&
-        stPath &&
-        studyBelongsToFeeder(stPath, fid);
-      if (keep) {
-        // varios estudios: conservar el que ya eligió el usuario
-        stPath = stPath;
-      } else if (!stPath || !studyBelongsToFeeder(stPath, fid)) {
-        stPath = resolveStudyForFeeder(fid, files, stPath) || "";
-      }
-      void related;
+    let fid = keepFeeder
+      ? (feederPick || feeder || "").trim()
+      : (opts.feederId !== undefined ? String(opts.feederId || "").trim() : (feederPick || "").trim());
+    let stPath = keepStudy
+      ? (study || "").trim()
+      : (opts.studyPath !== undefined ? String(opts.studyPath || "").trim() : (study || "").trim());
+
+    if (!keepFeeder && opts.feederId !== undefined) {
+      setFeederPick(fid);
     }
-
-    setFeederPick(fid);
-    setStudy(stPath || "");
+    if (!keepStudy && opts.studyPath !== undefined) {
+      setStudy(stPath || "");
+    }
 
     const row = (files.feeders || []).find(
       (f) => String(f.feeder_id).toUpperCase() === fid.toUpperCase()
@@ -836,54 +797,60 @@ export function Step1Contexto() {
       studyPath: stPath || "",
       databaseMdb: db || "",
     });
-    if (fid) setFeeder(fid, row?.network_id);
-    else setFeeder("", undefined);
+    if (!keepFeeder) {
+      if (fid) setFeeder(fid, row?.network_id);
+      else setFeeder("", undefined);
+    }
 
-    clearMedicionFields();
-    const mapCode = mapCodeForFeeder(fid) || mapCodeForFeeder(feederFromStudy(stPath));
-    if (mapCode) applyMapMedidor(mapCode);
+    if (!keepFeeder) {
+      clearMedicionFields({ keepExcel: true });
+      const mapCode = mapCodeForFeeder(fid);
+      if (mapCode) applyMapMedidor(mapCode);
+    }
 
     if (!fid && !stPath) {
-      setMsg("Elija alimentador o estudio");
+      setMsg("Elija alimentador y estudio (independientes)");
       return;
     }
 
-    const nStudies = fid ? listStudiesForFeeder(fid, files).length : 0;
+    if (!keepFeeder) {
+      skipCabeceraReload.current = true;
+      try {
+        if (fid) await loadCabecera(fid);
+      } catch {
+        /* sin sesión previa */
+      }
+      const mapCode = mapCodeForFeeder(fid);
+      if (mapCode) applyMapMedidor(mapCode);
 
-    skipCabeceraReload.current = true;
-    try {
-      if (fid) await loadCabecera(fid);
-    } catch {
-      /* sin sesión previa */
+      const keepExcel = (medicionFileRef.current || "").trim();
+      if (opts.extract !== false && (fid || mapCode)) {
+        await extraerMedicion({
+          feeder: fid || mapCode,
+          mapCode: mapCode || undefined,
+          file: keepExcel,
+          autoFind: !keepExcel,
+          keepFileOnError: true,
+        });
+        return;
+      }
     }
-    if (mapCode) applyMapMedidor(mapCode);
 
-    if (opts.extract !== false && (fid || mapCode)) {
-      await extraerMedicion({
-        feeder: fid || mapCode,
-        mapCode: mapCode || undefined,
-        file: "",
-        autoFind: true,
-        keepFileOnError: true,
-      });
-    } else {
-      setMsg(
-        `Contexto · ${fid || "—"}` +
-          (stPath ? ` · ${(stPath.split(/[/\\]/).pop() || "")}` : "") +
-          (nStudies > 1 ? ` · ${nStudies} estudios disponibles` : "")
-      );
-    }
+    const stName = (stPath || "").split(/[/\\]/).pop() || "—";
+    setMsg(
+      `Contexto · alimentador ${fid || "—"} · estudio ${stName}` +
+        (db ? ` · BD ${(db.split(/[/\\]/).pop() || "")}` : "") +
+        " · independientes · pulse 1.1"
+    );
   }
 
   function onPickFeeder(fid: string, opts?: { extract?: boolean }) {
     setCymdistReady(false);
     setCymdistSyncNote("");
+    // Solo alimentador: no cambiar ni filtrar el estudio elegido
     void syncFeederStudyCabecera({
       feederId: fid,
-      // Conservar estudio si ya es de esta familia (p.ej. PA217v2 con alim. PA217)
-      studyPath: study,
-      keepStudyIfRelated: true,
-      fromStudy: false,
+      keepStudy: true,
       extract: opts?.extract !== false,
     });
   }
@@ -891,17 +858,11 @@ export function Step1Contexto() {
   function onPickStudy(path: string) {
     setCymdistReady(false);
     setCymdistSyncNote("");
-    const stem = feederFromStudy(path);
-    if (!stem) {
-      setStudy(path);
-      setMsg("Estudio ELD · se mantiene el alimentador BD elegido · pulse 1.1 para conectar en CYMDIST");
-      return;
-    }
+    // Solo estudio: no cambiar el alimentador (un .sxst puede tener N redes)
     void syncFeederStudyCabecera({
-      feederId: resolveFeederForStudy(path, files) || stem,
       studyPath: path,
-      fromStudy: true,
-      extract: true,
+      keepFeeder: true,
+      extract: false,
     });
   }
 
@@ -911,15 +872,17 @@ export function Step1Contexto() {
     setCymdistReady(false);
     setCymdistSyncNote("");
     try {
-      const fid = (feederPick || feederFromStudy(study) || feeder || "").trim();
-      const stPath = study || resolveStudyForFeeder(fid, files) || "";
+      const fid = (feederPick || feeder || "").trim();
+      const stPath = (study || "").trim();
       if (!db) {
         throw new Error("Seleccione la base de datos (.mdb) antes de 1.1");
+      }
+      if (!fid) {
+        throw new Error("Seleccione el alimentador (BD) antes de 1.1");
       }
       if (!stPath) {
         throw new Error("Seleccione el estudio (.zxst/.xst) antes de 1.1");
       }
-      if (stPath !== study) setStudy(stPath);
 
       const j = await api<{
         ok?: boolean;
@@ -1002,7 +965,7 @@ export function Step1Contexto() {
       await syncFeederStudyCabecera({
         feederId: resolved,
         studyPath: uiStudy,
-        fromStudy: false,
+        keepStudy: false,
         extract: true,
       });
       setMsg(
@@ -1030,8 +993,11 @@ export function Step1Contexto() {
     setBusy(true);
     setMsg(previewOnly ? "Recalculando P/Q…" : "Cargando en la fuente…");
     try {
-      const fid = (feederPick || feederFromStudy(study) || feeder || "").trim();
-      if (fid) setFeeder(fid);
+      const fid = (feederPick || feeder || "").trim();
+      if (!fid) {
+        throw new Error("Seleccione el alimentador (BD) antes de cargar cabecera");
+      }
+      setFeeder(fid);
       if (!previewOnly && !vLl) {
         throw new Error(
           "Falta Vll: extraiga medición (Vll viene de medidoralimentador) o verifique el mapeo del alimentador"
@@ -1150,37 +1116,17 @@ export function Step1Contexto() {
     label: a.feeder_raw || a.feeder_id,
     searchText: `${a.feeder_id} ${a.feeder_raw || ""} ${a.medidor || ""} ${a.siglas || ""}`,
   }));
-  const studiesForFeeder = feederPick
-    ? listStudiesForFeeder(feederPick, files)
-    : [];
-  const studyOptions = (() => {
-    const relatedSet = new Set(studiesForFeeder.map((p) => normPath(p)));
-    const idU = (feederPick || "").toUpperCase();
-    const fam = feederFamily(feederPick);
-    const score = (path: string) => {
-      if (relatedSet.has(normPath(path))) {
-        const stem = studyStem(path);
-        if (stem === idU) return 0;
-        if (stem === fam) return 1;
-        return 2;
-      }
-      if (studyStem(path) === "ELD") return 90;
-      return 50;
-    };
-    return studies
-      .map((s) => {
-        const p = asPath(s);
-        // Solo el nombre del estudio (sin “· de PA217”)
-        return {
-          value: p,
-          label: asLabel(s),
-          searchText: `${p} ${asLabel(s)} ${fam}`,
-          _s: score(p),
-        };
-      })
-      .sort((a, b) => a._s - b._s || a.label.localeCompare(b.label))
-      .map(({ value, label, searchText }) => ({ value, label, searchText }));
-  })();
+  // Todos los estudios del catálogo (no filtrar ni priorizar por alimentador)
+  const studyOptions = studies
+    .map((s) => {
+      const p = asPath(s);
+      return {
+        value: p,
+        label: asLabel(s),
+        searchText: `${p} ${asLabel(s)}`,
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label));
   const medicionOptions = medicionFiles.map((f) => ({
     value: f.name,
     label: f.size_mb != null ? `${f.name} (${f.size_mb} MB)` : f.name,
@@ -1191,7 +1137,8 @@ export function Step1Contexto() {
     <section className="panel">
       <h2>1 · Contexto + cabecera</h2>
       <p className="muted">
-        1) Elija <b>base .mdb</b>, <b>alimentador</b> y <b>estudio</b>. 2) Pulse{" "}
+        1) Elija <b>base .mdb</b>, <b>alimentador</b> y <b>estudio</b>{" "}
+        <i>(independientes: un estudio puede tener varios alimentadores)</i>. 2) Pulse{" "}
         <b>1.1</b>: RECYM verifica si esa BD ya está en CYMDIST — si <b>no</b> existe
         la crea y la vincula; si <b>sí</b> existe solo la conecta — y activa el
         estudio. 3) Luego cargue mediciones y pulse <b>1.2</b> para escribir en la
@@ -1233,38 +1180,28 @@ export function Step1Contexto() {
         <div>
           <label>
             Estudio (.zxst/.xst)
-            {studiesForFeeder.length > 1
-              ? ` · ${studiesForFeeder.length} opciones`
-              : ""}
+            {studies.length ? ` · ${studies.length}` : ""}
           </label>
           <SearchableSelect
             value={study}
             options={studyOptions}
             disabled={busy}
             onChange={(v) => onPickStudy(v)}
-            placeholder={
-              studiesForFeeder.length > 1
-                ? "Varios estudios — elija uno…"
-                : "Buscar estudio…"
-            }
+            placeholder="Buscar estudio…"
             emptyLabel="—"
           />
           <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
             {(() => {
               const name = (study || "").split(/[/\\]/).pop() || "";
-              const viaEld = studyBasename(study).startsWith("eld.");
-              const n = studiesForFeeder.length;
               if (!study) {
-                return n > 1
-                  ? `${n} estudios para este alimentador — elija uno.`
-                  : "Elija el estudio; luego 1.1 para conectar en CYMDIST.";
+                return "Elija el estudio (independiente del alimentador); luego 1.1.";
               }
-              if (viaEld) {
-                return `${name} (ELD) · pulse 1.1 para activar en CYMDIST.`;
-              }
-              return `${name}` +
+              return (
+                `${name}` +
+                (feederPick ? ` · alim. ${feederPick}` : "") +
                 (db ? ` · BD ${(db.split(/[/\\]/).pop() || "")}` : "") +
-                " · pulse 1.1 antes de cargar cabecera.";
+                " · pulse 1.1 antes de cargar cabecera."
+              );
             })()}
           </p>
         </div>
@@ -1296,17 +1233,45 @@ export function Step1Contexto() {
           type="button"
           className="ghost"
           disabled={busy}
-          onClick={() =>
-            Promise.all([
-              loadFiles({ database_mdb: db || undefined, refresh: true }),
-              loadMedicionFiles(),
-            ])
-              .then(([catalog]) => {
-                const fid = feederPick || catalog.current_feeder || "";
-                return loadCabecera(fid || undefined);
-              })
-              .catch((e) => setMsg(String(e)))
-          }
+          title="Solo refresca código alimentador / Excel medicioncabecera / Vll (no toca BD, alimentador ni estudio de arriba)"
+            onClick={async () => {
+            const keepCode = (codigoAlimentador || "").trim();
+            const keepExcel = (medicionFileRef.current || medicionFile || "").trim();
+            setBusy(true);
+            setMsg("Actualizando listas de medición (abajo)…");
+            try {
+              const files = await loadMedicionFiles();
+              // Reaplicar código → medidor + Vll frescos desde medidoralimentador.xlsx
+              if (keepCode) {
+                setCodigoAlimentador(keepCode);
+                try {
+                  const res = await resolverMedicion(keepCode);
+                  if (res.medidor) setMedidor(String(res.medidor));
+                  applyVllFromApi(res.Vll_kV);
+                  // Excel independiente: solo conservar el elegido; nunca imponer suggested_file
+                  if (keepExcel) setMedicionFileKeep(keepExcel);
+                  setMsg(
+                    `Medición actualizada · ${keepCode} · medidor ${res.medidor || "?"} · Vll ${normalizeVll(res.Vll_kV) || "?"} kV` +
+                      (keepExcel ? ` · Excel ${keepExcel}` : " · elija Excel") +
+                      ` · ${files.length} archivo(s)`
+                  );
+                } catch (e) {
+                  applyMapMedidor(keepCode);
+                  if (keepExcel) setMedicionFileKeep(keepExcel);
+                  setMsg(`Listas medición OK · aviso lookup: ${String(e)}`);
+                }
+              } else {
+                if (keepExcel) setMedicionFileKeep(keepExcel);
+                setMsg(
+                  `Listas medición OK · ${files.length} Excel · elija código alimentador`
+                );
+              }
+            } catch (e) {
+              setMsg(String(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
         >
           Actualizar listas
         </button>
@@ -1314,9 +1279,10 @@ export function Step1Contexto() {
 
       <h3>Medición de cabecera</h3>
       <p className="muted">
-        Primero complete <b>1.1</b> (BD + estudio activos en CYMDIST). Luego elija{" "}
-        <b>código alimentador</b> para rellenar medidor y datos del Excel{" "}
-        <code>medicioncabecera</code>. Pulse <b>1.2</b> para escribir en la fuente.
+        Primero complete <b>1.1</b>. Elija <b>código alimentador</b> (medidor/Vll) y
+        luego <b>uno de los 4 Excel</b> medicioncabecera (Chincha / Ica / Nasca /
+        Pisco): al seleccionarlo se extraen P/Q/S de la hoja del medidor. También
+        puede pulsar <b>Extraer máximos</b>. Luego <b>1.2</b> escribe en la fuente.
       </p>
 
       <div className="grid">
@@ -1350,25 +1316,23 @@ export function Step1Contexto() {
           />
         </div>
         <div>
-          <label>Excel medicioncabecera</label>
+          <label>
+            Excel medicioncabecera
+            {medicionFiles.length ? ` · ${medicionFiles.length}` : " · sin archivos"}
+          </label>
           <SearchableSelect
             value={medicionFile}
             options={medicionOptions}
-            disabled={busy}
-            placeholder="Buscar SISTEMA…"
-            emptyLabel="— auto / elegir —"
+            disabled={false}
+            allowEmpty={false}
+            placeholder={
+              medicionFiles.length
+                ? "Elegir SISTEMA Chincha / Ica / Nasca / Pisco…"
+                : "Sin Excel — pulse Actualizar listas"
+            }
+            emptyLabel="— elegir Excel —"
             onChange={(v) => {
-              setMedicionFile(v);
-              const code = (codigoAlimentador || feederPick || "").trim();
-              if (code && v) {
-                extraerMedicion({
-                  feeder: code,
-                  mapCode: codigoAlimentador || undefined,
-                  file: v,
-                  autoFind: false,
-                  keepFileOnError: true,
-                });
-              }
+              void onPickMedicionExcel(v);
             }}
           />
         </div>
@@ -1377,13 +1341,28 @@ export function Step1Contexto() {
             type="button"
             className="ghost"
             disabled={busy || !(codigoAlimentador || feederPick)}
-            onClick={() =>
-              extraerMedicion({
-                feeder: codigoAlimentador || feederPick,
+            title="Extrae Pmáx/Q/S desde el Excel seleccionado (hoja = medidor)"
+            onClick={() => {
+              const code = (codigoAlimentador || feederPick || "").trim();
+              const file = (medicionFileRef.current || medicionFile || "").trim();
+              if (!file) {
+                setMsg(
+                  "Seleccione uno de los 4 Excel (Chincha / Ica / Nasca / Pisco) para Extraer máximos"
+                );
+                return;
+              }
+              if (!code) {
+                setMsg("Elija código alimentador antes de Extraer máximos");
+                return;
+              }
+              void extraerMedicion({
+                feeder: code,
                 mapCode: codigoAlimentador || undefined,
+                file,
                 autoFind: true,
-              })
-            }
+                keepFileOnError: true,
+              });
+            }}
           >
             Extraer máximos
           </button>

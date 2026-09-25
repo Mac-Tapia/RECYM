@@ -101,6 +101,10 @@ export function SearchableSelect({
     if (disabled) return;
     setOpen(true);
     setQuery("");
+    // Resaltar la opción ya seleccionada (no la vacía) para no desseleccionar por Enter
+    const idx = options.findIndex((o) => o.value === value);
+    const base = allowEmpty ? 1 : 0;
+    setHighlight(idx >= 0 ? base + idx : 0);
     window.setTimeout(() => inputRef.current?.focus(), 0);
   }
 

@@ -1,0 +1,17 @@
+{
+  "name": "PA217v2",
+  "description": "Auto desde BD/estudio (sin config/feeders previa)",
+  "network_id": "NET_PA217v2",
+  "study_file": "PA217v2.xst",
+  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\PA217v2.xst",
+  "via_eld": true,
+  "voltage_ll_kv": 22.9,
+  "region": "",
+  "substation": "",
+  "enabled": true,
+  "control_workbook": "",
+  "catalog_workbook": "",
+  "output_dir": "",
+  "notes": "Sintetizado automáticamente para diagnóstico de red BD",
+  "synthesized": true
+}
