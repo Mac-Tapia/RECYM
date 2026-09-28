@@ -1,4 +1,40 @@
-# Validación integral RECYM — PA217
+# Validación integral RECYM — contexto universal
+
+> La sección histórica PA217 que sigue conserva evidencia de 2026-09-21 y no demuestra por sí sola el estado actual ni otros alimentadores.
+
+## Corte automatizado 2026-09-27
+
+| Puerta | Resultado |
+|---|---:|
+| Python | 57 passed, 5 warnings |
+| Vitest SPA | 8 passed |
+| TypeScript `--noEmit` | PASS |
+| Vite producción | PASS (99 módulos) |
+| Contexto 4 campos + huella | PASS unitario |
+| Rechazo de informe ajeno | PASS unitario |
+| Selector/descubrimiento/1.1 CYMDIST real | PENDIENTE de canario live |
+| Escrituras §§1–7 y guardado físico | PENDIENTE de coordinador y ejecución controlada |
+
+Estas pruebas no se presentan como ejecución real de CYMDIST. El canario
+`scripts/validate_universal_context.py` registra salud, readiness, descubrimiento,
+1.1 opcional, duraciones, identidad y SHA-256 de la evidencia; en modo
+`--skip-apply` no inicia escrituras ni informes.
+
+## Fundamento técnico verificable
+
+- Hasan, tesis de maestría (Boise State, 2023), propone verificar procedencia durante la ejecución mediante hashes: https://doi.org/10.18122/td.2050.boisestate
+- Procko, tesis doctoral (Embry-Riddle, 2025), sustenta la captura automática de trazas entre actividad y artefactos: https://commons.erau.edu/edt/898/
+- Rajbhandari, tesis doctoral (Cardiff, 2007), trata la procedencia como receta para documentar y reejecutar workflows de servicios: https://orca.cardiff.ac.uk/id/eprint/54620/
+- Moreau et al., artículo indexado sobre procedencia de workflows científicos y reproducibilidad: https://arxiv.org/abs/1311.4610
+- Eaton documenta que CYMDIST ofrece flujo de carga, asignación de carga y resultados de tensión, corriente, pérdidas y condiciones anormales; por eso la validación nativa se mantiene separada de las pruebas simuladas: https://www.eaton.com/us/en-us/software/utility-solutions/software-modules/cymdist.html
+
+La aplicación concreta de estas fuentes es: identidad explícita en cada etapa,
+hash de contexto y artefactos, manifiestos append-only/no destructivos, rechazo
+fail-closed y separación estricta entre evidencia automatizada y evidencia nativa.
+
+---
+
+# Validación histórica RECYM — PA217
 
 **Fecha:** 2026-09-21 · **Resultado:** PASS
 
