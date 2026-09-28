@@ -6,6 +6,7 @@ data/output/
 *.log
 web/node_modules/
 web/dist/
+.worktrees/
 
 # Archivos >100MB (limite GitHub); mantener locales
 data/input/common/clientesimportantes/*.xlsb
