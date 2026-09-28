@@ -126,6 +126,28 @@ class TestFeederInputContract(unittest.TestCase):
         self.assertTrue(payload["errors"])
 
 
+class TestContextSelectionContract(unittest.TestCase):
+    def test_explicit_feeder_wins_over_multi_network_study_filename(self):
+        """Evita que PE104 + CA101V2.sxst vuelva silenciosamente a CA101."""
+        import tempfile
+
+        from core.feeder_context import apply_context_selection
+
+        with tempfile.TemporaryDirectory(dir=ROOT) as work:
+            study = os.path.join(work, "CA101V2.sxst")
+            with open(study, "wb") as f:
+                f.write(b"RECYM-TEST" * 256)
+            result = apply_context_selection(
+                study_path=study,
+                feeder_id="PE104",
+                persist=False,
+            )
+
+        self.assertEqual(result["feeder_id"], "PE104")
+        self.assertEqual(result["active_feeder"], "PE104")
+        self.assertEqual(result["network_id"], "NET_2030_184_PE104")
+
+
 class TestSuiteWorkerIsolation(unittest.TestCase):
     ACTIONS = {
         "optimizacion_reclosers": "/api/optimizacion/reclosers",

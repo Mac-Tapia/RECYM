@@ -461,13 +461,11 @@ def apply_context_selection(database_mdb=None, study_path=None, feeder_id=None, 
         sp_write = resolve_writable_study_path(sp, global_s)  # exacto si existe
         stem = os.path.splitext(os.path.basename(sp))[0]
         explicit = (feeder_id or "").strip() or None
-        # Alimentador: si UI envió red BD de la misma familia, conservarla
-        # (PA217v2.xst + feeder PA217 → active_feeder=PA217, no PA217v2)
+        # El alimentador elegido explícitamente en la UI es independiente del
+        # nombre del estudio: un estudio puede contener varias redes.
+        # Solo inferirlo desde el archivo cuando la UI no envió alimentador.
         if stem and stem.upper() != "ELD":
-            if explicit and (
-                explicit.upper() == stem.upper()
-                or feeder_family_code(explicit) == feeder_family_code(stem)
-            ):
+            if explicit:
                 resolved_feeder = explicit
             else:
                 # Preferir red BD de la familia si existe en catálogo
