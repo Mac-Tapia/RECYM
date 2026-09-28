@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Continua: 5.1 → 5.2 → 6.2 (3.3 ya OK)."""
+"""Compatibilidad: continúa 3.4 → 5.1 proyectado → 6.2 (3.3 ya OK)."""
 from __future__ import print_function
 import json
 import os
@@ -53,10 +53,7 @@ def run_job(action, payload, timeout_sec=420, label=None):
 
 def main():
     r51 = run_job(
-        "flujo",
-        {"scenario": "situacional", "update_informe": False},
-        timeout_sec=360,
-        label="5.1 situacional",
+        "flujo_situacional_34", {}, timeout_sec=900, label="3.4 situacional",
     )
     topo51 = ((r51 or {}).get("result") or {}).get("topo") or {}
     notes51 = ((r51 or {}).get("result") or {}).get("new_loads_scenario") or []
@@ -67,7 +64,7 @@ def main():
         "flujo",
         {"scenario": "proyectado", "update_informe": False},
         timeout_sec=360,
-        label="5.2 proyectado",
+        label="5.1 proyectado",
     )
     topo52 = ((r52 or {}).get("result") or {}).get("topo") or {}
     notes52 = ((r52 or {}).get("result") or {}).get("new_loads_scenario") or []

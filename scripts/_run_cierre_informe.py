@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Orquesta 3.3 → 5.1 → 5.2 → 6.2 y verifica cabecera vs informe."""
+"""Compatibilidad: orquesta 3.3 → 3.4 → 5.1 proyectado → 6.2."""
 from __future__ import print_function
 import json
 import os
@@ -60,12 +60,9 @@ def main():
     val = (r33 or {}).get("validation") or {}
     print("  validation ok=", val.get("ok"), "sum_kw=", val.get("sum_kw"), "P_cab=", val.get("P_cabecera_kW"), "balance=", val.get("balance_msg") or val.get("balance_ok"))
 
-    # 5.1 / 5.2 sin rellenar informe intermedio
+    # 3.4 situacional nativo
     r51 = run_job(
-        "flujo",
-        {"scenario": "situacional", "update_informe": False},
-        timeout_sec=360,
-        label="5.1 situacional",
+        "flujo_situacional_34", {}, timeout_sec=900, label="3.4 situacional",
     )
     topo51 = ((r51 or {}).get("result") or {}).get("topo") or {}
     print("  situacional KWTOT=", topo51.get("KWTOT"), "KVARTOT=", topo51.get("KVARTOT"), "KWLOSS=", topo51.get("KWLOSS"))
@@ -74,7 +71,7 @@ def main():
         "flujo",
         {"scenario": "proyectado", "update_informe": False},
         timeout_sec=360,
-        label="5.2 proyectado",
+        label="5.1 proyectado",
     )
     topo52 = ((r52 or {}).get("result") or {}).get("topo") or {}
     notes = ((r52 or {}).get("result") or {}).get("new_loads_scenario") or []

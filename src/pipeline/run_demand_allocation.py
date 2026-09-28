@@ -348,37 +348,58 @@ def apply_cabecera_medicion(settings, p_kw, q_kvar, save=True,
     c = require_cympy(settings)
     a = CymPyAdapter(c, api, settings)
     a.open_study(force_backup=False)
-    info = set_network_demand(c, settings.get("network_id"), p_kw, q_kvar, settings=settings)
+    info = {}
+    requested_values = {"P_kW": float(p_kw), "Q_kvar": float(q_kvar)}
+
+    def _mutate_cabecera():
+        info.update(set_network_demand(c, settings.get("network_id"), p_kw, q_kvar, settings=settings))
+        # Tensiones de fase en fuente/equivalente del alimentador
+        has_ph = all(x not in (None, "") for x in (va_kv, vb_kv, vc_kv))
+        if has_ph or vll_kv not in (None, ""):
+            vll = float(vll_kv) if vll_kv not in (None, "") else None
+            if has_ph:
+                va, vb, vc = float(va_kv), float(vb_kv), float(vc_kv)
+            else:
+                vln = float(vll) / math.sqrt(3.0)
+                va = vb = vc = vln
+            requested_values.update({"Vll_kV": vll, "Va_kV": va, "Vb_kV": vb, "Vc_kV": vc})
+            info["source_voltage"] = set_source_phase_voltages(
+                c, settings.get("network_id"), va, vb, vc, vll_kv=vll
+            )
+        return {"requested_values": dict(requested_values), "domain_result": info}
+
     info["study_path"] = settings.get("study_path")
     info["feeder_id"] = settings.get("feeder_id")
     info["database_mdb"] = settings.get("database_mdb")
 
-    # Tensiones de fase en fuente/equivalente del alimentador
-    has_ph = all(x not in (None, "") for x in (va_kv, vb_kv, vc_kv))
-    if has_ph or vll_kv not in (None, ""):
-        vll = float(vll_kv) if vll_kv not in (None, "") else None
-        if has_ph:
-            va, vb, vc = float(va_kv), float(vb_kv), float(vc_kv)
-        else:
-            vln = float(vll) / math.sqrt(3.0)
-            va = vb = vc = vln
-        try:
-            info["source_voltage"] = set_source_phase_voltages(
-                c, settings.get("network_id"), va, vb, vc, vll_kv=vll
-            )
-        except Exception as ex_v:
-            print("AVISO tensiones fuente:", ex_v)
-            info["source_voltage_error"] = str(ex_v)
-
     if save and settings.get("save_after_fix", True):
-        # Persistencia completa: estudio + BD + proyecto CYME
-        persist = a.persist_study_and_database(force_db=True)
-        info["persist"] = persist
-        info["saved"] = bool(persist.get("study_saved"))
-        info["db_updated"] = bool(persist.get("db_updated"))
-        info["project_saved"] = bool(persist.get("project_saved"))
-        if not info["saved"]:
-            info["save_error"] = persist.get("study_error") or "Save estudio fallo"
+        from core.cymdist_commit import CommitMode, CommitRequest, commit_cymdist_action
+        # save_study() legacy también sincroniza BD; el coordinador separa las
+        # tres llamadas para poder demostrar exactamente una de cada una.
+        a.settings["skip_db_project_save"] = True
+        commit = commit_cymdist_action(
+            CommitRequest(
+                settings=settings,
+                action="cabecera_12",
+                mode=CommitMode.STUDY_AND_DATABASE,
+                adapter=a,
+                manifest_dir=output_path(settings, "commits"),
+                readback=lambda: dict(requested_values),
+                inventory=lambda: {
+                    str(n): True for n in list(c.study.ListNetworks())
+                },
+            ),
+            _mutate_cabecera,
+        )
+        info["commit"] = commit
+        from core.cymdist_commit import record_active_commit
+        record_active_commit(settings, "1.2", commit)
+        info["persist"] = commit
+        info["saved"] = bool(commit.get("ok") and commit.get("save_counts", {}).get("study") == 1)
+        info["db_updated"] = bool(commit.get("ok") and commit.get("save_counts", {}).get("database_update") == 1)
+        info["project_saved"] = bool(commit.get("ok") and commit.get("save_counts", {}).get("project") == 1)
+        if not commit.get("ok"):
+            info["save_error"] = commit.get("error") or commit.get("error_code")
         # Cerrar sin segundo SaveProject (ya persistido)
         try:
             a.close_study(save=False)
@@ -387,6 +408,7 @@ def apply_cabecera_medicion(settings, p_kw, q_kvar, save=True,
             print("AVISO Close tras cabecera:", ex_cl)
             info["closed"] = False
     else:
+        _mutate_cabecera()
         info["saved"] = False
         info["db_updated"] = False
         info["project_saved"] = False

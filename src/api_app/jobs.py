@@ -33,6 +33,102 @@ _LEGACY_JOB_ROUTES = {
 
 _INPUT_REQUIRED_JOB_ACTIONS = frozenset(["suite_sync_equipos", "suite_pipeline"])
 
+PROTECTED_CONTEXT_ACTIONS = frozenset(
+    [
+        "calidad_diagnosticar",
+        "calidad_proponer",
+        "calidad_aplicar",
+        "calidad_convergencia",
+        "calidad_hasta_limpio",
+        "calidad_sistema",
+        "calidad_eld",
+        "distribucion",
+        "flujo_situacional_34",
+        "flujo",
+        "clientes_activo_cymdist",
+    ]
+    + list(_LEGACY_JOB_ROUTES.keys())
+)
+
+
+def _settings_from_explicit_context(payload, feeder=None):
+    """Build per-job settings from the four explicit, immutable identity fields."""
+    from core.context_identity import (
+        ContextIdentityError,
+        build_context_identity,
+        context_fingerprint,
+    )
+    from core.feeder_context import load_settings
+
+    source = dict(payload or {})
+    if not source.get("feeder_id") and source.get("feeder"):
+        source["feeder_id"] = source.get("feeder")
+    if not source.get("feeder_id") and feeder:
+        source["feeder_id"] = feeder
+    identity = build_context_identity(source, require_complete=True)
+    fingerprint = context_fingerprint(identity)
+    supplied = str(source.get("context_fingerprint") or "").strip().lower()
+    if supplied and supplied != fingerprint:
+        raise ContextIdentityError(
+            "CONTEXT_IDENTITY_MISMATCH",
+            "La huella del contexto no corresponde a BD, estudio, alimentador y red",
+            different_fields=["context_fingerprint"],
+            expected={"context_fingerprint": fingerprint},
+            actual={"context_fingerprint": supplied},
+        )
+
+    settings = load_settings(
+        feeder_id=identity["feeder_id"], synthesize=True, persist_synth=False
+    )
+    settings = dict(settings or {})
+    for key in ("database_mdb", "study_path", "feeder_id", "network_id"):
+        settings[key] = identity[key]
+    settings["ui_study_path"] = identity["study_path"]
+    settings["study_file"] = os.path.basename(identity["study_path"])
+    settings["database_connection_name"] = os.path.splitext(
+        os.path.basename(identity["database_mdb"])
+    )[0]
+    settings["context_fingerprint"] = fingerprint
+    settings["run_id"] = str(source.get("run_id") or ("interactive-" + fingerprint))
+    return settings
+
+
+def _annotate_context_result(settings, result):
+    """Echo the requested identity and fail closed on a crossed pipeline result."""
+    from core.context_identity import (
+        ContextIdentityError,
+        assert_same_context,
+        build_context_identity,
+        context_fingerprint,
+    )
+
+    if not isinstance(result, dict):
+        return result
+    try:
+        expected = build_context_identity(settings, require_complete=True)
+        actual_source = dict(expected)
+        for key in ("database_mdb", "study_path", "feeder_id", "network_id"):
+            value = result.get(key)
+            if key == "study_path" and not value:
+                value = result.get("ui_study_path")
+            if value not in (None, ""):
+                actual_source[key] = value
+        actual = build_context_identity(actual_source, require_complete=True)
+        assert_same_context(expected, actual)
+    except ContextIdentityError as ex:
+        return ex.to_dict()
+
+    out = dict(result)
+    for key in ("database_mdb", "study_path", "feeder_id", "network_id"):
+        out[key] = expected[key]
+    out["ui_study_path"] = expected["study_path"]
+    out["study_file"] = os.path.basename(expected["study_path"])
+    out["database_connection_name"] = settings.get("database_connection_name") or os.path.splitext(
+        os.path.basename(expected["database_mdb"])
+    )[0]
+    out["context_fingerprint"] = context_fingerprint(expected)
+    return out
+
 
 def legacy_route_for_action(action):
     """Retorna solo rutas §7 explícitamente aprobadas para el worker."""
@@ -97,40 +193,114 @@ def get_job(job_id):
 def _run_action(action, payload, feeder, job_id=None):
     """Ejecuta acciones conocidas reutilizando pipeline / Flask helpers."""
     payload = payload or {}
-    from core.feeder_context import (
-        load_settings,
-        resolve_writable_study_path,
-        apply_context_selection,
-        feeder_family_code,
-    )
+    if action == "contexto_descubrir_redes":
+        from core.context_identity import canonical_file_path
+        from pipeline.model_quality_gate import list_bd_networks
+
+        requested = str(payload.get("database_mdb") or "").strip()
+        if not requested:
+            return {
+                "ok": False,
+                "error_code": "CONTEXT_INCOMPLETE",
+                "error": "Falta database_mdb para descubrir redes",
+            }
+        requested = os.path.realpath(os.path.abspath(os.path.normpath(requested)))
+        if not os.path.isfile(requested):
+            return {
+                "ok": False,
+                "error_code": "FILE_NOT_FOUND",
+                "error": "Base MDB no encontrada: %s" % requested,
+            }
+        if os.path.splitext(requested)[1].lower() != ".mdb":
+            return {
+                "ok": False,
+                "error_code": "INVALID_FILE_EXTENSION",
+                "error": "La base seleccionada debe tener extensión .mdb",
+            }
+        ephemeral = {
+            "database_mdb": requested,
+            "database_connection_name": os.path.splitext(os.path.basename(requested))[0],
+        }
+        discovered = list_bd_networks(
+            ephemeral,
+            force=True,
+            soft=False,
+            persist_cache=False,
+        )
+        if not isinstance(discovered, dict) or discovered.get("ok") is False:
+            return discovered if isinstance(discovered, dict) else {
+                "ok": False,
+                "error": "Descubrimiento CYMDIST sin respuesta",
+            }
+        by_network = {}
+        for item in discovered.get("networks") or []:
+            network_id = str(item.get("network_id") or "").strip()
+            if not network_id:
+                continue
+            feeder_id = str(item.get("feeder_id") or "").strip()
+            by_network[network_id] = {
+                "feeder_id": feeder_id,
+                "network_id": network_id,
+                "label": str(item.get("label") or "%s · %s" % (feeder_id, network_id)),
+            }
+        feeders = sorted(
+            by_network.values(),
+            key=lambda row: (row["feeder_id"].upper(), row["network_id"].upper()),
+        )
+        if not feeders:
+            return {
+                "ok": False,
+                "error_code": "NO_NETWORKS_FOUND",
+                "error": "CYMDIST no devolvió redes para la MDB seleccionada",
+                "source": discovered.get("source") or "cympy",
+                "database_mdb": requested,
+                "canonical_database_mdb": canonical_file_path(requested),
+                "feeders": [],
+                "n": 0,
+            }
+        return {
+            "ok": True,
+            "source": discovered.get("source") or "cympy",
+            "database_mdb": requested,
+            "canonical_database_mdb": canonical_file_path(requested),
+            "database_key": discovered.get("database_key"),
+            "connection": discovered.get("connection"),
+            "feeders": feeders,
+            "networks": feeders,
+            "n": len(feeders),
+        }
+    from core.feeder_context import load_settings, feeder_family_code
     from pipeline.model_quality_gate import with_cympy_lock
 
-    # Contexto §1 dinámico: BD + estudio del payload (no un alimentador fijo)
-    fid = (feeder or "").strip() or (
+    # En acciones CYMDIST el payload completo manda; no se persiste ni se
+    # reconstruye desde el alimentador global, evitando cruces entre jobs.
+    if action in PROTECTED_CONTEXT_ACTIONS:
+        try:
+            s = _settings_from_explicit_context(payload, feeder)
+        except Exception as ex_context:
+            from core.context_identity import ContextIdentityError
+            if isinstance(ex_context, ContextIdentityError):
+                return ex_context.to_dict()
+            return {
+                "ok": False,
+                "error_code": "CONTEXT_INVALID",
+                "error": str(ex_context),
+            }
+        fid = s.get("feeder_id")
+        db = s.get("database_mdb")
+        st = s.get("study_path")
+    else:
+        s = None
+        fid = str(payload.get("feeder_id") or payload.get("feeder") or feeder or "").strip() or None
+        db = str(payload.get("database_mdb") or "").strip() or None
+        st = str(payload.get("study_path") or payload.get("ui_study_path") or "").strip() or None
+
+    fid = (fid or "").strip() or (
         (payload.get("feeder") or payload.get("feeder_id") or "")
     )
     fid = str(fid or "").strip() or None
-    db = (payload.get("database_mdb") or "").strip() or None
-    st = (
-        (payload.get("study_path") or payload.get("ui_study_path") or "")
-    ).strip() or None
-    # Un feeder aislado selecciona configuración para esta ejecución, pero no
-    # debe reescribir el contexto global. Solo una selección explícita de §1
-    # (BD o estudio) autoriza persistirla.
-    if db or st:
-        try:
-            ctx = apply_context_selection(
-                database_mdb=db,
-                study_path=st,
-                feeder_id=fid,
-                persist=True,
-            )
-            if ctx.get("feeder_id"):
-                fid = ctx.get("feeder_id")
-        except Exception as ex_ctx:
-            print("AVISO apply_context job:", ex_ctx)
-
-    s = load_settings(feeder_id=fid, synthesize=True) if fid else load_settings()
+    if s is None:
+        s = load_settings(feeder_id=fid, synthesize=True, persist_synth=False) if fid else load_settings()
     # Overrides explicitos del job (estudio/BD/red de esta ejecucion)
     if db:
         s["database_mdb"] = db
@@ -143,10 +313,8 @@ def _run_action(action, payload, feeder, job_id=None):
             pass
     if st:
         s["ui_study_path"] = st
-        s["study_path"] = resolve_writable_study_path(st, s)
+        s["study_path"] = st
         s["study_file"] = os.path.basename(s["study_path"])
-    elif s.get("study_path"):
-        s["study_path"] = resolve_writable_study_path(s.get("study_path"), s)
     if payload.get("network_id"):
         s["network_id"] = payload.get("network_id")
     if fid:
@@ -162,15 +330,7 @@ def _run_action(action, payload, feeder, job_id=None):
                 pass
 
     # Acciones que modifican / analizan CYMDIST: exigir BD + estudio del §1
-    if action in (
-        "calidad_diagnosticar",
-        "calidad_proponer",
-        "calidad_aplicar",
-        "calidad_convergencia",
-        "calidad_hasta_limpio",
-        "distribucion",
-        "flujo",
-    ):
+    if action in PROTECTED_CONTEXT_ACTIONS:
         if not (s.get("database_mdb") or "").strip():
             return {
                 "ok": False,
@@ -183,33 +343,28 @@ def _run_action(action, payload, feeder, job_id=None):
             }
         try:
             from core.feeder_context import resolve_cymdist_binding
+            from core.context_identity import assert_same_context
             bind = resolve_cymdist_binding(s)
-            s["study_path"] = bind["study_path"]
-            s["ui_study_path"] = bind.get("ui_study_path") or s.get("ui_study_path")
-            s["database_mdb"] = bind["database_mdb"]
+            assert_same_context(
+                s,
+                {
+                    "database_mdb": bind.get("database_mdb"),
+                    "study_path": bind.get("ui_study_path") or bind.get("study_path"),
+                    "feeder_id": s.get("feeder_id"),
+                    "network_id": s.get("network_id"),
+                },
+            )
             s["database_connection_name"] = bind["database_connection_name"]
             s["_cymdist_binding"] = bind
         except Exception as ex_bind:
+            from core.context_identity import ContextIdentityError
+            if isinstance(ex_bind, ContextIdentityError):
+                return ex_bind.to_dict()
             return {"ok": False, "error": "Enlace estudio/BD CYMDIST: %s" % ex_bind}
 
     def _annotate_study(result):
         """Adjunta BD/estudio §1 al resultado de cualquier acción §2."""
-        if not isinstance(result, dict):
-            return result
-        result.setdefault("feeder_id", s.get("feeder_id"))
-        result.setdefault("network_id", s.get("network_id"))
-        result["study_path"] = s.get("study_path") or result.get("study_path") or ""
-        result["ui_study_path"] = (
-            s.get("ui_study_path") or result.get("ui_study_path") or result["study_path"]
-        )
-        result["study_file"] = os.path.basename(
-            result.get("ui_study_path") or result.get("study_path") or ""
-        )
-        result["database_mdb"] = s.get("database_mdb") or result.get("database_mdb") or ""
-        result["database_connection_name"] = (
-            s.get("database_connection_name") or result.get("database_connection_name") or ""
-        )
-        return result
+        return _annotate_context_result(s, result)
 
     def _spa_system_diag_payload(result, label):
         """Normaliza 2.7/2.8 para la SPA (panel sistema/ELD, no tablero feeder)."""
@@ -349,8 +504,28 @@ def _run_action(action, payload, feeder, job_id=None):
             except Exception as ex_t:
                 if isinstance(result, dict):
                     result["tablero_error"] = str(ex_t)
+            native_evidence = None
+            try:
+                from pipeline.capture_informe_color_views import capture_native_pair_with_restore
+                native_evidence = capture_native_pair_with_restore(
+                    s,
+                    "situacional",
+                    str(s.get("run_id") or ("diag-" + __import__("uuid").uuid4().hex)),
+                    force=True,
+                )
+            except Exception as ex_native:
+                native_evidence = {
+                    "ok": False,
+                    "error_code": "NATIVE_DIAGNOSTIC_CAPTURE_FAILED",
+                    "error": str(ex_native),
+                }
             if isinstance(result, dict):
-                result["ok"] = True
+                result["native_color_evidence"] = native_evidence
+                result["ok"] = bool(native_evidence and native_evidence.get("ok"))
+                if not result["ok"]:
+                    result["error_code"] = (
+                        native_evidence or {}
+                    ).get("error_code") or "NATIVE_DIAGNOSTIC_CAPTURE_FAILED"
                 result["summary"] = summary
                 result["voltage_opt"] = summary.get("voltage_opt")
                 result["tablero"] = {
@@ -407,7 +582,11 @@ def _run_action(action, payload, feeder, job_id=None):
                 if isinstance(applied, dict):
                     applied["tablero_error"] = str(ex_t)
             if isinstance(applied, dict):
-                applied["ok"] = applied.get("n_error", 1) == 0
+                commit_ok = bool((applied.get("commit") or {}).get("reopen_verified"))
+                applied["ok"] = applied.get("n_error", 1) == 0 and commit_ok
+                if not commit_ok:
+                    applied["error_code"] = "COMMIT_NOT_VERIFIED"
+                    applied["error"] = "Correcciones aplicadas sin persistencia/reapertura verificable"
                 applied["summary"] = summary
                 applied["tablero"] = {
                     "before": summary,
@@ -571,12 +750,53 @@ def _run_action(action, payload, feeder, job_id=None):
                 s2["database_connection_name"] = bind["database_connection_name"]
             except Exception as ex_bind:
                 return {"ok": False, "error": "Enlace estudio/BD: %s" % ex_bind}
-            result = run_load_allocation_module(
-                s2,
-                sess,
-                activo_map=payload.get("activo"),
-                restar_map=payload.get("restar_cabecera"),
+            from core.cymdist_commit import (
+                CommitMode,
+                CommitRequest,
+                commit_cymdist_action,
             )
+            from core.feeder_context import output_path
+            domain = {}
+
+            def _allocation_mutation():
+                domain.update(run_load_allocation_module(
+                    s2,
+                    sess,
+                    activo_map=payload.get("activo"),
+                    restar_map=payload.get("restar_cabecera"),
+                ))
+                requested = {
+                    "P_cabecera_kW": domain.get("P_cabecera_kW"),
+                    "Q_cabecera_kvar": domain.get("Q_cabecera_kvar"),
+                    "network_id": s2.get("network_id"),
+                }
+                return {
+                    "requested_values": requested,
+                    "external_engine_saved": bool(domain.get("saved")),
+                }
+
+            commit = commit_cymdist_action(
+                CommitRequest(
+                    settings=s2,
+                    action="distribucion_33",
+                    mode=CommitMode.EXTERNAL_ENGINE_SAVED,
+                    manifest_dir=output_path(s2, "commits"),
+                    readback=lambda: {
+                        "P_cabecera_kW": domain.get("P_cabecera_kW"),
+                        "Q_cabecera_kvar": domain.get("Q_cabecera_kvar"),
+                        "network_id": s2.get("network_id"),
+                    },
+                ),
+                _allocation_mutation,
+            )
+            result = domain
+            result["commit"] = commit
+            from core.cymdist_commit import record_active_commit
+            record_active_commit(s2, "3.3", commit)
+            if not commit.get("ok"):
+                result["ok"] = False
+                result["error_code"] = commit.get("error_code")
+                result["error"] = commit.get("error") or "Persistencia 3.3 no verificada"
             summary = {k: result[k] for k in result if k not in ("scaled", "applied")}
             summary["n_scaled"] = len(result.get("scaled") or [])
             summary["n_applied"] = len(result.get("applied") or [])
@@ -627,6 +847,51 @@ def _run_action(action, payload, feeder, job_id=None):
 
         return _calidad(_run, timeout_sec=300.0)
 
+    if action == "flujo_situacional_34":
+        from core.cymdist_commit import load_active_commits
+        from core.report_provenance import tag_context
+        from pipeline.capture_informe_color_views import (
+            capture_native_pair_with_restore,
+            validate_situational_34_gates,
+        )
+        from pipeline.run_load_flow import run_load_flow
+        from core.feeder_context import output_path
+        import uuid
+
+        def _situational_34():
+            run_id = str(payload.get("run_id") or uuid.uuid4().hex)
+            commits = load_active_commits(s)
+            gates = validate_situational_34_gates(commits, s.get("context_fingerprint"))
+            if not gates.get("ok"):
+                return gates
+            lf = None
+            lf = run_load_flow(dict(s, skip_db_project_save=True), scenario="situacional")
+            if lf.get("status") not in ("ok", "dry_run"):
+                return {"ok": False, "error_code": "LOADFLOW_NOT_CONVERGED", "loadflow": lf}
+            pair = capture_native_pair_with_restore(s, "situacional", run_id, force=True)
+            evidence = pair.get("captures") or []
+            ok = bool(pair.get("ok"))
+            result = tag_context(s, {
+                "ok": ok,
+                "run_id": run_id,
+                "stage": "3.4",
+                "loadflow": lf,
+                "captures": evidence,
+                "commit_gates": gates,
+                "temporary_backup": pair.get("temporary_backup"),
+                "state_restored": pair.get("state_restored"),
+                "restore_error": pair.get("restore_error"),
+                "error_code": None if ok else "NATIVE_SITUATIONAL_EVIDENCE_FAILED",
+            })
+            path = output_path(s, "demand", "loadflow_situacional_34.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(result, handle, indent=2, ensure_ascii=False, default=str)
+            result["saved_to"] = path
+            return result
+
+        return _calidad(_situational_34, timeout_sec=900.0)
+
     if action == "flujo":
         from pipeline.run_load_flow import run_load_flow
         from pipeline.deliver_informe import deliver_informe
@@ -642,8 +907,8 @@ def _run_action(action, payload, feeder, job_id=None):
                 try:
                     jid = job_id or payload.get("_job_id")
                     if jid:
-                        label = "5.1" if scenario == "situacional" else (
-                            "5.2" if scenario == "proyectado" else "5"
+                        label = "3.4" if scenario == "situacional" else (
+                            "5.1" if scenario == "proyectado" else "5"
                         )
                         _set_job(jid, message="%s · %s" % (label, msg))
                 except Exception:

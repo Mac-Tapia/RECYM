@@ -5,6 +5,7 @@ from __future__ import print_function
 import os
 import sys
 import unittest
+from unittest import mock
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -123,6 +124,55 @@ class TestApiContract(unittest.TestCase):
         r = c.get("/api/tablero", headers={"X-Api-Key": self.api_key})
         # Puede ser 200 con datos o error de negocio; no 401
         self.assertNotEqual(r.status_code, 401)
+
+    def test_context_picker_route_success_and_cancel(self):
+        c = self.Client(self.app)
+        headers = {"X-Api-Key": self.api_key}
+        selected = {
+            "ok": True,
+            "cancelled": False,
+            "kind": "database",
+            "path": r"D:\bases\redes.mdb",
+            "canonical_path": r"d:\bases\redes.mdb",
+        }
+        with mock.patch("api_app.routers.context.require_loopback", return_value=True), \
+                mock.patch("api_app.routers.context.pick_context_file", return_value=selected):
+            response = c.post(
+                "/api/contexto/examinar", headers=headers, json={"kind": "database"}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), selected)
+        self.assertNotIn("contents", response.json())
+
+        with mock.patch("api_app.routers.context.require_loopback", return_value=True), \
+                mock.patch(
+                    "api_app.routers.context.pick_context_file",
+                    return_value={"ok": True, "cancelled": True, "kind": "study"},
+                ):
+            cancelled = c.post(
+                "/api/contexto/examinar", headers=headers, json={"kind": "study"}
+            )
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertTrue(cancelled.json()["cancelled"])
+
+    def test_context_picker_route_rejects_invalid_kind_and_non_loopback(self):
+        c = self.Client(self.app)
+        headers = {"X-Api-Key": self.api_key}
+        with mock.patch("api_app.routers.context.require_loopback", return_value=True):
+            invalid = c.post(
+                "/api/contexto/examinar", headers=headers, json={"kind": "image"}
+            )
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.json()["error_code"], "INVALID_PICKER_KIND")
+
+        with mock.patch(
+            "api_app.routers.context.require_loopback",
+            side_effect=__import__("fastapi").HTTPException(status_code=403),
+        ):
+            remote = c.post(
+                "/api/contexto/examinar", headers=headers, json={"kind": "database"}
+            )
+        self.assertEqual(remote.status_code, 403)
 
     def test_bootstrap_non_loopback_forbidden(self):
         c = self.Client(self.app)

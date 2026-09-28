@@ -45,6 +45,7 @@ from starlette.middleware.wsgi import WSGIMiddleware
 from api_app.jobs import router as jobs_router
 from api_app.routers.tablero import router as tablero_router
 from api_app.routers.campaign import router as campaign_router
+from api_app.routers.context import router as context_router
 from api_app.security import (
     API_KEY_COOKIE,
     auth_enabled,
@@ -120,6 +121,7 @@ app.add_middleware(ApiKeyMiddleware)
 app.include_router(jobs_router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(tablero_router, prefix="/api", tags=["tablero"])
 app.include_router(campaign_router)
+app.include_router(context_router, prefix="/api", tags=["contexto"])
 
 
 @app.on_event("startup")
@@ -236,7 +238,7 @@ async def bridge_flask_api(path: str, request: Request):
     """Reenvía /api/* al Flask legacy excepto rutas ya definidas en FastAPI."""
     from starlette.responses import Response
 
-    if path == "tablero" or path == "spa/meta" or path == "jobs" or path.startswith("jobs/") or path == "health" or path.startswith("health/") or path.startswith("auth/") or path.startswith("v2/"):
+    if path == "tablero" or path == "spa/meta" or path == "jobs" or path.startswith("jobs/") or path == "health" or path.startswith("health/") or path.startswith("auth/") or path.startswith("contexto/") or path.startswith("v2/"):
         return JSONResponse({"ok": False, "error": "ruta FastAPI nativa"}, status_code=404)
 
     body = await request.body()

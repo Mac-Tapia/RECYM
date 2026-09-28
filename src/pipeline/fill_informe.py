@@ -30,6 +30,15 @@ from openpyxl import load_workbook
 
 from core.common import mkdir, p
 from core.feeder_context import load_settings, output_path
+from core.report_provenance import (
+    assert_report_context,
+    assert_run_provenance,
+    copy_audit_artifacts,
+    require_matching_manifest,
+    sha256_file,
+    tag_context,
+    validate_report_sources,
+)
 from pipeline.assemble_informe import assemble_informe, informe_paths, TEMPLATE_DIR, DOC_DIR
 from pipeline.generate_informe_charts import (
     REQUIRED_LF_IMAGES,
@@ -385,11 +394,49 @@ def _read_json(path):
         return json.load(f)
 
 
+def _persist_fill_manifest(settings, paths, manifest):
+    tagged = tag_context(settings, manifest)
+    audit = copy_audit_artifacts(
+        settings,
+        paths["audit_dir"],
+        [
+            paths.get("informe_doc"),
+            paths.get("justificacion_doc"),
+            os.path.join(paths.get("doc_dir") or "", "informe.pdf"),
+            settings.get("run_evidence_path"),
+        ],
+    )
+    if settings.get("run_evidence_path"):
+        tagged["execution_annex"] = {
+            "source": settings.get("run_evidence_path"),
+            "included_in_audit": any(
+                os.path.basename(str(settings.get("run_evidence_path")))
+                == os.path.basename(str(item.get("path") or ""))
+                for item in (audit.get("artifacts") or [])
+            ),
+        }
+    tagged["audit"] = audit
+    man_path = os.path.join(paths["doc_dir"], "fill_manifest.json")
+    mkdir(paths["doc_dir"])
+    with open(man_path, "w", encoding="utf-8") as handle:
+        json.dump(tagged, handle, indent=2, ensure_ascii=False, default=str)
+    mkdir(paths["audit_dir"])
+    with open(paths["audit_fill_manifest"], "w", encoding="utf-8") as handle:
+        json.dump(tagged, handle, indent=2, ensure_ascii=False, default=str)
+    tagged["fill_manifest"] = man_path
+    return tagged
+
+
 def _load_scenarios(settings):
     paths = informe_paths(settings)
     sit = _read_json(paths["loadflow_situacional"])
     proy = _read_json(paths["loadflow_proyectado"])
     gen = _read_json(paths["loadflow_result"])
+    for artifact in (sit, proy, gen):
+        if artifact is not None:
+            assert_report_context(settings, artifact)
+            if settings.get("run_id"):
+                assert_run_provenance(settings, artifact, settings.get("run_id"))
     # Fallback: un solo flujo general alimenta situacional
     if sit is None and gen and gen.get("status") in ("ok", "dry_run"):
         sit = dict(gen)
@@ -2003,6 +2050,37 @@ def build_informe_preview(settings=None):
     scenarios = _load_scenarios(s)
     meta = _meta_cliente(s)
     paths = scenarios["paths"]
+    provenance_seed = tag_context(s, {})
+    s["run_id"] = str(s.get("run_id") or provenance_seed["run_id"])
+    from core.cymdist_commit import load_active_commits
+    active_commits = load_active_commits(s)
+    sources = {
+        "1.2": active_commits.get("1.2"),
+        "3.2": active_commits.get("3.2"),
+        "3.3": active_commits.get("3.3"),
+    }
+    situational_34_path = output_path(s, "demand", "loadflow_situacional_34.json")
+    sources["3.4"] = _read_json(situational_34_path)
+    required_sources = ("1.2", "3.2", "3.3", "3.4")
+    if mode != "situacional":
+        sources["4"] = active_commits.get("4")
+        sources["5.1"] = scenarios.get("raw_proyectado")
+        required_sources += ("4", "5.1")
+    report_sources_gate = validate_report_sources(
+        s, sources, s["run_id"], required_stages=required_sources
+    )
+    if not report_sources_gate.get("ok"):
+        manifest = tag_context(s, {
+            "ok": False,
+            "delivery_ready": False,
+            "error_code": "REPORT_PROVENANCE_INCOMPLETE",
+            "error": "El informe rechaza fuentes faltantes, ajenas o no verificadas",
+            "report_sources": report_sources_gate,
+            "paths": paths,
+            "filled_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        return _persist_fill_manifest(s, paths, manifest)
+    s["_report_sources_gate"] = report_sources_gate
     img_dir = _images_dir(s)
     mkdir(img_dir)
 
@@ -2076,10 +2154,17 @@ def build_informe_preview(settings=None):
     else:
         man = {}
 
+    if man:
+        gate = require_matching_manifest(s, man_path)
+        if not gate.get("ok"):
+            gate["preview_ok"] = False
+            gate["can_close"] = False
+            return tag_context(s, gate)
+
     scenarios_used = man.get("scenarios_used") or _metric_snapshot(scenarios)
     render_info = man.get("render") or {}
 
-    return {
+    return tag_context(s, {
         "ok": True,
         "preview_ok": preview_ok,
         "can_close": preview_ok and not bool((confirm or {}).get("confirmed")),
@@ -2102,6 +2187,7 @@ def build_informe_preview(settings=None):
             "meta_source": meta.get("meta_source"),
         },
         "scenarios_used": scenarios_used,
+        "report_sources": man.get("report_sources") or {},
         "images": images,
         "images_dir": img_dir,
         "docs": docs,
@@ -2118,7 +2204,7 @@ def build_informe_preview(settings=None):
             if preview_ok else
             "Informe incompleto: rellene §6.2 (Word/Excel + 4 gráficas LF)."
         ),
-    }
+    })
 
 
 def confirm_informe_entrega(settings=None, note="", force=False):
@@ -2128,6 +2214,8 @@ def confirm_informe_entrega(settings=None, note="", force=False):
     """
     s = settings or load_settings()
     preview = build_informe_preview(s)
+    if preview.get("error_code") == "CONTEXT_IDENTITY_MISMATCH":
+        return preview
     if not preview.get("preview_ok") and not force:
         return {
             "ok": False,
@@ -2153,6 +2241,17 @@ def confirm_informe_entrega(settings=None, note="", force=False):
             "filled_at": preview.get("filled_at"),
         },
     }
+    docs = preview.get("docs") or {}
+    payload["delivered_hashes"] = {}
+    for name in ("informe", "justificacion", "pdf"):
+        path_value = (docs.get(name) or {}).get("path")
+        if path_value and os.path.isfile(path_value):
+            payload["delivered_hashes"][name] = {
+                "path": path_value,
+                "sha256": sha256_file(path_value),
+                "bytes": os.path.getsize(path_value),
+            }
+    payload = tag_context(s, payload)
     path = _confirm_path(paths)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
@@ -2360,6 +2459,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True, info
             "cymdist_captures": capture_res,
             "location_map": map_res,
             "scenarios_used": scenarios_used,
+            "report_sources": report_sources_gate,
             "notes": notes,
             "aviso_imagenes": (
                 "Solo capturas nativas CYMDIST. Modo %s. Directorio: %s."
@@ -2367,11 +2467,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True, info
             ),
             "msg": err,
         }
-        man_path = os.path.join(paths["doc_dir"], "fill_manifest.json")
-        mkdir(paths["doc_dir"])
-        with open(man_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False, default=str)
-        manifest["fill_manifest"] = man_path
+        manifest = _persist_fill_manifest(s, paths, manifest)
         print("[fill] INCOMPLETO:", err)
         return manifest
 
@@ -2460,6 +2556,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True, info
         "cymdist_captures": capture_res,
         "location_map": map_res,
         "scenarios_used": scenarios_used,
+        "report_sources": report_sources_gate,
         "excel_notes": xnotes,
         "excel_tables": {
             "mapping": (excel_tables or {}).get("mapping"),
@@ -2479,10 +2576,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True, info
             % img_dir
         ),
     }
-    man_path = os.path.join(paths["doc_dir"], "fill_manifest.json")
-    with open(man_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False, default=str)
-    manifest["fill_manifest"] = man_path
+    manifest = _persist_fill_manifest(s, paths, manifest)
     print("[fill] Excel+Word actualizados en", paths["doc_dir"])
     return manifest
 

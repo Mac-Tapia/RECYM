@@ -27,8 +27,8 @@ def _load_corrections(s):
     return read_rows(catalog, "Correcciones")
 
 
-def main():
-    s = load_settings()
+def main(settings=None, adapter=None, save=True):
+    s = dict(settings or load_settings())
     api = load_json("config/cympy_api_map.json")
     rows = [r for r in _load_corrections(s) if truthy(r.get("Activo"))]
     limit = s.get("max_corrections")
@@ -38,13 +38,14 @@ def main():
     print("[%s] Correcciones activas: %s | dry_run=%s" % (
         s["feeder_id"], len(rows), s.get("dry_run")))
 
-    a = None
+    a = adapter
     if not s.get("dry_run"):
-        c = require_cympy(s)
-        a = CymPyAdapter(c, api, s)
-        a.ensure_study()
-        if not a._study_open:
-            a.open_study()
+        if a is None:
+            c = require_cympy(s)
+            a = CymPyAdapter(c, api, s)
+            a.ensure_study()
+            if not a._study_open:
+                a.open_study()
 
     ok = err = skipped = 0
     lf_warnings_done = False
@@ -156,7 +157,7 @@ def main():
     print("OK:", ok, "ERROR:", err, "SKIP:", skipped)
     print("Preview:", out)
 
-    if not s.get("dry_run") and a is not None and s.get("save_after_fix", True):
+    if save and not s.get("dry_run") and a is not None and s.get("save_after_fix", True):
         try:
             a.save_study()
             print("Estudio guardado.")

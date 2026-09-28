@@ -56,6 +56,7 @@ def deliver_informe(
     ocr_review: tras fill, revision OCR rigurosa (imagenes/cuadros) hasta N rondas.
     """
     from core.feeder_context import load_settings
+    from core.report_provenance import assert_report_context, tag_context
     from pipeline.assemble_informe import informe_paths
     from pipeline.fill_informe import fill_informe, delivery_status, _normalize_informe_mode
     from pipeline.run_load_flow import run_load_flow
@@ -89,9 +90,11 @@ def deliver_informe(
                 try:
                     with open(path, "r", encoding="utf-8") as f:
                         data = json.load(f) or {}
+                    assert_report_context(s, data)
                     need = str(data.get("status") or "").lower() not in ("ok", "dry_run")
-                except Exception:
+                except Exception as ex_existing:
                     need = True
+                    notes.append("LF %s no reutilizable: %s" % (scen, ex_existing))
             if not need:
                 notes.append("LF %s ya OK → omitido" % scen)
                 continue
@@ -136,6 +139,8 @@ def deliver_informe(
                 s.get("informe_ocr_review_rounds") or ocr_review_rounds or 3
             ))
             ocr = review_and_correct_informe(s, max_rounds=int(s.get("informe_ocr_review_rounds") or ocr_review_rounds or 3))
+            if isinstance(ocr, dict):
+                ocr = tag_context(s, ocr)
             manifest["ocr_review"] = ocr
             manifest["notes"].append(
                 "ocr_review: passed=%s rounds=%s errors_final=%s"
@@ -169,7 +174,7 @@ def deliver_informe(
             manifest["delivery_ready"] = True
     except Exception as ex:
         manifest.setdefault("notes", []).append("aviso delivery_status: %s" % ex)
-    return manifest
+    return tag_context(s, manifest)
 
 
 def main(argv=None):

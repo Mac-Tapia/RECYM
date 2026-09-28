@@ -21,7 +21,7 @@ def _out(path, data):
 
 
 def job_cabecera(payload):
-    from core.feeder_context import load_settings, resolve_writable_study_path
+    from core.feeder_context import load_settings
     from core.cymdist_com import set_network_demand_com, open_cymdist_gui
     from pipeline.run_demand_allocation import apply_cabecera_medicion
 
@@ -29,21 +29,18 @@ def job_cabecera(payload):
     s = load_settings(feeder_id=feeder, synthesize=True)
     # Override rutas si vienen del UI
     for k in ("study_path", "database_mdb", "network_id", "ui_study_path",
-              "database_connection_name"):
+              "database_connection_name", "run_id", "context_fingerprint"):
         if payload.get(k):
             s[k] = payload[k]
     # Conservar elección UI exacta (.xst) para OpenStudy COM / GUI
     ui_sp = (payload.get("ui_study_path") or payload.get("study_path") or "").strip()
     if ui_sp and os.path.isfile(ui_sp):
         s["ui_study_path"] = ui_sp
-    sp = s.get("study_path") or ui_sp or ""
+    sp = ui_sp or s.get("study_path") or ""
     if sp:
-        alt = resolve_writable_study_path(sp, s)
-        if alt and alt != sp:
-            print("Cabecera: estudio UI %s -> CymPy %s" % (sp, alt))
-            s["ui_study_path"] = s.get("ui_study_path") or sp
-            s["study_path"] = alt
-            s["study_file"] = os.path.basename(alt)
+        s["ui_study_path"] = sp
+        s["study_path"] = sp
+        s["study_file"] = os.path.basename(sp)
     # Obligatorio: persistir en estudio + MDB para reabrir desde CYMDIST
     s["skip_db_project_save"] = False
     s["isolated_work_study"] = False
@@ -55,19 +52,17 @@ def job_cabecera(payload):
     vb = payload.get("Vb_kV")
     vc = payload.get("Vc_kV")
 
-    # 1) COM en Cyme vivo (misma GUI §1): sync BD+estudio + SetDemand fases + Save
-    #    No matar Cyme: CreateObject reutiliza el proceso visible.
+    # 1) Cerrar/pausar GUI antes del commit: el backup debe existir antes de la
+    #    primera escritura y no puede haber un Save COM previo no auditado.
     try:
-        open_cymdist_gui(s, kill_existing=False, reason="cabecera_sync")
+        from core.cymdist_com import pause_cymdist_for_cympy
+        pause_cymdist_for_cympy(s)
     except Exception as ex:
-        print("AVISO sync Cyme cabecera:", ex)
-    info_com = set_network_demand_com(
-        s, p, q, leave_open=True, kill_existing=False
-    )
-    print("Cabecera COM:", info_com.get("ok"), info_com.get("msg") or info_com.get("error"))
+        print("AVISO pause Cyme cabecera:", ex)
+    info_com = {"ok": False, "skipped": True, "reason": "coordinated_cympy_commit"}
 
     # 2) CymPy opcional: tensiones fuente + persistencia MDB (sin matar Cyme si COM ok)
-    info = dict(info_com or {})
+    info = {}
     info["com"] = info_com
     cympy_err = None
     try:
@@ -78,6 +73,7 @@ def job_cabecera(payload):
             vll_kv=vll, va_kv=va, vb_kv=vb, vc_kv=vc,
         )
         info["cympy"] = info_py
+        info["commit"] = info_py.get("commit")
         if info_py.get("saved"):
             info["saved"] = True
         if info_py.get("db_updated"):
@@ -91,7 +87,12 @@ def job_cabecera(payload):
         print("AVISO CymPy cabecera (COM ya escribió GUI):", ex_py)
         info["cympy_error"] = cympy_err
 
-    ok = bool(info_com.get("ok") or info.get("saved"))
+    try:
+        open_cymdist_gui(s, kill_existing=False, reason="cabecera_post_commit")
+    except Exception as ex_gui:
+        info["gui_reopen_error"] = str(ex_gui)
+
+    ok = bool((info.get("commit") or {}).get("reopen_verified"))
     persist = (info.get("cympy") or {}).get("persist") or {}
     return {
         "ok": ok,
@@ -111,6 +112,7 @@ def job_cabecera(payload):
         "db_updated": bool(info.get("db_updated")),
         "project_saved": bool(info.get("project_saved")),
         "persist": persist,
+        "commit": info.get("commit"),
         "attach_mode": info_com.get("attach_mode"),
         "P_sum_kW": info_com.get("P_sum_kW"),
         "msg": (

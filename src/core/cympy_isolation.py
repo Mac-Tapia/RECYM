@@ -27,6 +27,7 @@ ISOLATED_ACTIONS = frozenset(
         "calidad_sistema",
         "calidad_eld",
         "distribucion",
+        "flujo_situacional_34",
         "flujo",
         "optimizacion_reclosers",
         "optimizacion_regulators",
@@ -38,8 +39,19 @@ ISOLATED_ACTIONS = frozenset(
         "suite_export_ascii",
         "suite_pipeline",
         "clientes_activo_cymdist",
+        "contexto_descubrir_redes",
     ]
 )
+
+
+def _can_soft_accept_crash(result):
+    """Un AV al cerrar solo conserva un éxito de dominio ya explícito."""
+    return bool(
+        isinstance(result, dict)
+        and result.get("ok") is True
+        and not result.get("error")
+        and not result.get("error_code")
+    )
 
 
 def isolation_enabled():
@@ -213,15 +225,10 @@ def run_job_action_isolated(action, payload=None, feeder=None, timeout=900, prog
         if crashed:
             # CymPy a menudo sale 0xC0000005 al destruir COM tras exito real.
             # Si el worker ya escribio resultado util, conservar OK.
-            had_ok = bool(result.get("ok")) and not result.get("error")
-            meaningful = (
-                result.get("summary")
-                or result.get("tablero")
-                or result.get("csv")
-                or result.get("cymdist")
-                or (result.get("msg") and had_ok)
-            )
-            if had_ok or meaningful:
+            # Un resumen parcial no convierte una compuerta fallida en éxito.
+            # Solo suavizar el AV cuando el dominio ya escribió ok:true.
+            had_ok = _can_soft_accept_crash(result)
+            if had_ok:
                 result["ok"] = True
                 result["crashed_com"] = True
                 result["crash_soft"] = True

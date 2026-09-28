@@ -3752,6 +3752,11 @@ def _settings():
     """
     feeder, network_id = _request_feeder_network()
     body = request.get_json(silent=True) or {}
+    network_id = (
+        (body.get("network_id") or body.get("network") or "").strip()
+        or (request.headers.get("X-Network-Id") or "").strip()
+        or network_id
+    )
     db = (
         (body.get("database_mdb") or "").strip()
         or (request.headers.get("X-Database-Mdb") or "").strip()
@@ -3763,14 +3768,18 @@ def _settings():
         or None
     )
     if feeder:
-        s = load_settings(feeder_id=feeder, network_id=network_id, synthesize=True)
+        s = load_settings(
+            feeder_id=feeder,
+            network_id=network_id,
+            synthesize=True,
+            persist_synth=False,
+        )
     else:
         s = load_settings()
 
     if st:
-        from core.feeder_context import resolve_writable_study_path
         s["ui_study_path"] = st
-        s["study_path"] = resolve_writable_study_path(st, s)
+        s["study_path"] = st
         s["study_file"] = os.path.basename(s["study_path"])
     if db:
         s["database_mdb"] = db
@@ -3783,13 +3792,26 @@ def _settings():
             s["database_connection_name"] = os.path.splitext(os.path.basename(db))[0]
     if body.get("network_id") and not network_id:
         s["network_id"] = body.get("network_id")
+    elif network_id:
+        s["network_id"] = network_id
+
+    supplied_fingerprint = (
+        body.get("context_fingerprint")
+        or request.headers.get("X-Context-Fingerprint")
+        or ""
+    )
+    if db and st and feeder and network_id:
+        from core.context_identity import build_context_identity, context_fingerprint
+        identity = build_context_identity(s, require_complete=True)
+        expected_fingerprint = context_fingerprint(identity)
+        if supplied_fingerprint and str(supplied_fingerprint).lower() != expected_fingerprint:
+            s["_context_identity_error"] = "CONTEXT_IDENTITY_MISMATCH"
+        s["context_fingerprint"] = expected_fingerprint
+        s["run_id"] = str(body.get("run_id") or ("interactive-" + expected_fingerprint))
 
     try:
         from core.feeder_context import resolve_cymdist_binding
         bind = resolve_cymdist_binding(s)
-        s["study_path"] = bind["study_path"]
-        s["ui_study_path"] = bind.get("ui_study_path") or s.get("ui_study_path")
-        s["database_mdb"] = bind["database_mdb"]
         s["database_connection_name"] = bind["database_connection_name"]
         s["_cymdist_binding"] = bind
     except Exception as ex:
@@ -4215,6 +4237,9 @@ def api_contexto_aplicar():
             database_mdb=body.get("database_mdb") or None,
             study_path=body.get("study_path") or None,
             feeder_id=body.get("feeder") or request.headers.get("X-Feeder"),
+            network_id=body.get("network_id") or None,
+            allowed_networks=body.get("allowed_networks") or None,
+            strict=bool(body.get("strict")),
             persist=True,
         )
         try:
@@ -4928,6 +4953,9 @@ def _api_cabecera_impl():
         s["study_path"] = resolve_writable_study_path(ui_sp, s)
     if body.get("database_mdb"):
         s["database_mdb"] = body.get("database_mdb")
+    for _key in ("run_id", "context_fingerprint"):
+        if body.get(_key):
+            s[_key] = str(body.get(_key))
     # Alinear network_id con el feeder del estudio (nunca mezclar IN112 + PA217)
     if ctx and ctx.get("network_id"):
         s["network_id"] = ctx.get("network_id")
@@ -5041,6 +5069,8 @@ def _api_cabecera_impl():
             "ui_study_path": s.get("ui_study_path") or body.get("study_path"),
             "database_mdb": s.get("database_mdb"),
             "database_connection_name": s.get("database_connection_name"),
+            "run_id": s.get("run_id"),
+            "context_fingerprint": s.get("context_fingerprint"),
             "P_kW": p,
             "Q_kvar": q,
             "Vll_kV": sess.get("Vll_kV"),
@@ -5092,6 +5122,7 @@ def _api_cabecera_impl():
         "study_saved": study_saved,
         "db_updated": db_updated,
         "project_saved": project_saved,
+        "commit": job.get("commit") or (job.get("cymdist") or {}).get("commit"),
         "session_saved": True,
         "excel": excel_path,
         "reset_downstream": reset_info,
@@ -5237,6 +5268,12 @@ def _settings_for_clientes(body, fallback=None):
         s["study_path"] = resolve_writable_study_path(st, s)
     if db:
         s["database_mdb"] = db
+    # La configuración específica del radial no debe perder la corrida explícita
+    # que ya validó _settings().
+    for key in ("run_id", "context_fingerprint", "network_id"):
+        value = body.get(key) or (base or {}).get(key)
+        if value:
+            s[key] = str(value)
     try:
         from core.feeder_context import resolve_cymdist_binding
         bind = resolve_cymdist_binding(s)
@@ -5362,12 +5399,31 @@ def api_clientes_tabla():
                 c = require_cympy(s_w)
                 a = CymPyAdapter(c, api, s_w)
                 a.open_study(force_backup=False)
-                released = release_clientes_loads(a, stale, reconnect=True)
+                released = {}
+                commit31 = None
+
+                def _mutate_refresh_31():
+                    nonlocal released
+                    released = release_clientes_loads(a, stale, reconnect=True)
+                    return {"requested_values": {"n_stale": len(stale), "n_liberados": int(released.get("n_liberados") or 0)}}
+
                 if s.get("save_after_write", True):
-                    try:
-                        a.save_study()
-                    except Exception as ex_sv:
-                        print("AVISO save post 3.1 liberar:", ex_sv)
+                    from core.cymdist_commit import CommitMode, CommitRequest, commit_cymdist_action
+                    a.settings["skip_db_project_save"] = True
+                    commit31 = commit_cymdist_action(
+                        CommitRequest(
+                            settings=s,
+                            action="clientes_refresh_31",
+                            mode=CommitMode.STUDY,
+                            adapter=a,
+                            manifest_dir=output_path(s, "commits"),
+                            readback=lambda: {"n_stale": len(stale), "n_liberados": int(released.get("n_liberados") or 0)},
+                            inventory=lambda: {str(n): True for n in list(c.study.ListNetworks())},
+                        ),
+                        _mutate_refresh_31,
+                    )
+                else:
+                    _mutate_refresh_31()
                 try:
                     a.close_study(save=False)
                 except Exception:
@@ -5376,7 +5432,8 @@ def api_clientes_tabla():
                     "skipped": False,
                     "n_liberados": released.get("n_liberados"),
                     "n_stale": len(stale),
-                    "saved": True,
+                    "saved": bool((commit31 or {}).get("ok")) if commit31 is not None else False,
+                    "commit": commit31,
                 }
                 print("[3.1] CYMDIST liberados:", cym_refresh)
             else:
@@ -5515,7 +5572,8 @@ def _sync_incluir_to_cymdist(settings, rows):
     a = CymPyAdapter(c, api, settings)
     a.open_study(force_backup=False)
     report = {"ok": 0, "excluded": 0, "drawn": 0, "capacity_fix": 0, "errors": []}
-    try:
+
+    def _mutate_inclusiones():
         for r in rows:
             lid = str(r.get("LoadID_CYMDIST") or "").strip()
             if not lid:
@@ -5542,13 +5600,43 @@ def _sync_incluir_to_cymdist(settings, rows):
                 report["ok"] += 1
             except Exception as ex:
                 report["errors"].append("%s: %s" % (lid, ex))
+        return {
+            "requested_values": {
+                "n_rows": len(rows),
+                "n_connected": report["ok"],
+                "n_excluded": report["excluded"],
+            }
+        }
+
+    try:
         if settings.get("save_after_fix", True):
-            try:
-                a.save_study()
-                report["saved"] = True
-            except Exception as ex_s:
-                report["saved"] = False
-                report["save_error"] = str(ex_s)
+            from core.cymdist_commit import CommitMode, CommitRequest, commit_cymdist_action
+            a.settings["skip_db_project_save"] = True
+            commit = commit_cymdist_action(
+                CommitRequest(
+                    settings=settings,
+                    action="clientes_inclusiones",
+                    mode=CommitMode.STUDY,
+                    adapter=a,
+                    manifest_dir=output_path(settings, "commits"),
+                    readback=lambda: {
+                        "n_rows": len(rows),
+                        "n_connected": report["ok"],
+                        "n_excluded": report["excluded"],
+                    },
+                    inventory=lambda: {str(n): True for n in list(c.study.ListNetworks())},
+                ),
+                _mutate_inclusiones,
+            )
+            report["commit"] = commit
+            report["saved"] = bool(commit.get("ok"))
+            report["verified"] = bool(commit.get("reopen_verified"))
+            if not commit.get("ok"):
+                report["error_code"] = commit.get("error_code")
+                report["save_error"] = commit.get("error")
+        else:
+            _mutate_inclusiones()
+            report["saved"] = False
     finally:
         try:
             a.close_study(save=False)
@@ -5784,14 +5872,48 @@ def api_clientes_aplicar():
             refresh_clientes_in_cymdist,
         )
         prev_ids = previous_applied_load_ids(s)
-        report, released, keep_ids = refresh_clientes_in_cymdist(
-            a, rows, fp=fp, previous_ids=prev_ids
-        )
+        report = []
+        released = {}
+        keep_ids = set()
+        commit = None
+
+        def _mutate_clientes_32():
+            nonlocal report, released, keep_ids
+            report, released, keep_ids = refresh_clientes_in_cymdist(
+                a, rows, fp=fp, previous_ids=prev_ids
+            )
+            return {
+                "requested_values": {
+                    "n_rows": len(rows),
+                    "n_keep": len(keep_ids or []),
+                    "n_liberados": int((released or {}).get("n_liberados") or 0),
+                }
+            }
+
         if s.get("save_after_write", True):
-            try:
-                a.save_study()
-            except Exception as ex_save:
-                print("AVISO save post EA/Pot:", ex_save)
+            from core.cymdist_commit import CommitMode, CommitRequest, commit_cymdist_action
+            a.settings["skip_db_project_save"] = True
+            commit = commit_cymdist_action(
+                CommitRequest(
+                    settings=s,
+                    action="clientes_aplicar_32",
+                    mode=CommitMode.STUDY,
+                    adapter=a,
+                    manifest_dir=output_path(s, "commits"),
+                    readback=lambda: {
+                        "n_rows": len(rows),
+                        "n_keep": len(keep_ids or []),
+                        "n_liberados": int((released or {}).get("n_liberados") or 0),
+                    },
+                    inventory=lambda: {str(n): True for n in list(c.study.ListNetworks())},
+                ),
+                _mutate_clientes_32,
+            )
+            from core.cymdist_commit import record_active_commit
+            record_active_commit(s, "3.2", commit)
+        else:
+            _mutate_clientes_32()
+            commit = {"ok": False, "error_code": "SAVE_DISABLED", "reopen_verified": False}
         # Ajuste cabecera en SESION (sin SetDemand aqui: evita crash Cyme tras
         # muchas escrituras). SetDemand con P ajustado lo hace 3.3.
         cab_adj = {"skipped": True, "reason": "pending"}
@@ -5904,7 +6026,10 @@ def api_clientes_aplicar():
             msg32 += " · AVISO: sin cabecera §1, no se restó Pot de excluidas"
 
         return jsonify({
-            "ok": True,
+            "ok": bool(commit.get("ok")),
+            "error_code": None if commit.get("ok") else commit.get("error_code"),
+            "error": None if commit.get("ok") else commit.get("error"),
+            "commit": commit,
             "ok_count": ok_count,
             "warn_kwh_count": warn_kwh,
             "excluido_count": excluido_count,
@@ -6112,6 +6237,10 @@ def api_informe_armar():
     """
     s = _settings()
     body = request.get_json(silent=True) or {}
+    if body.get("run_evidence_path"):
+        s["run_evidence_path"] = os.path.realpath(str(body["run_evidence_path"]))
+    if s.get("_context_identity_error"):
+        return jsonify({"ok": False, "error_code": "CONTEXT_IDENTITY_MISMATCH", "error": "Huella de contexto distinta"}), 409
     do_fill = body.get("fill", True)
     mode = body.get("mode") or body.get("informe_mode") or "completo"
     try:
@@ -6139,6 +6268,9 @@ def api_informe_armar():
             manifest = assemble_informe(s, overwrite=True)
         return jsonify(manifest)
     except Exception as ex:
+        from core.context_identity import ContextIdentityError
+        if isinstance(ex, ContextIdentityError):
+            return jsonify(ex.to_dict()), 409
         return jsonify({"ok": False, "error": str(ex)})
 
 
@@ -6167,8 +6299,13 @@ def api_informe_review_ocr():
 def api_informe_preview():
     """Vista preliminar del informe creado (meta + métricas + gráficas) antes de cerrar."""
     s = _settings()
+    if s.get("_context_identity_error"):
+        return jsonify({"ok": False, "error_code": "CONTEXT_IDENTITY_MISMATCH", "error": "Huella de contexto distinta"}), 409
     try:
-        return jsonify(build_informe_preview(s))
+        result = build_informe_preview(s)
+        if result.get("error_code") == "CONTEXT_IDENTITY_MISMATCH":
+            return jsonify(result), 409
+        return jsonify(result)
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 
@@ -6190,6 +6327,8 @@ def api_informe_mapa_ubicacion():
 def api_informe_cerrar():
     """Confirma/cierra entrega solo tras validar la vista preliminar."""
     s = _settings()
+    if s.get("_context_identity_error"):
+        return jsonify({"ok": False, "error_code": "CONTEXT_IDENTITY_MISMATCH", "error": "Huella de contexto distinta"}), 409
     body = request.get_json(silent=True) or {}
     if not body.get("validated"):
         return jsonify({
@@ -6197,11 +6336,14 @@ def api_informe_cerrar():
             "error": "Marque que validó la vista preliminar antes de cerrar la entrega.",
         })
     try:
-        return jsonify(confirm_informe_entrega(
+        result = confirm_informe_entrega(
             s,
             note=body.get("note") or "",
             force=bool(body.get("force")),
-        ))
+        )
+        if result.get("error_code") == "CONTEXT_IDENTITY_MISMATCH":
+            return jsonify(result), 409
+        return jsonify(result)
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 
@@ -6211,6 +6353,11 @@ def api_informe_imagen(name):
     """Sirve PNG de gráficas del informe (vista preliminar)."""
     s = _settings()
     try:
+        from core.report_provenance import require_matching_manifest
+        paths = informe_paths(s)
+        gate = require_matching_manifest(s, os.path.join(paths.get("doc_dir") or "", "fill_manifest.json"))
+        if gate.get("error_code"):
+            return jsonify(gate), 409
         safe = os.path.basename(name or "")
         if not safe.lower().endswith(".png") or ".." in safe:
             return jsonify({"ok": False, "error": "Imagen no permitida"}), 400
@@ -6229,6 +6376,10 @@ def api_informe_archivo(kind):
     s = _settings()
     try:
         paths = informe_paths(s)
+        from core.report_provenance import require_matching_manifest
+        gate = require_matching_manifest(s, os.path.join(paths.get("doc_dir") or "", "fill_manifest.json"))
+        if gate.get("error_code"):
+            return jsonify(gate), 409
         key = (kind or "").strip().lower()
         if key in ("informe", "docx", "word"):
             path = paths.get("informe_doc")
@@ -6260,6 +6411,10 @@ def api_informe_pagina(name):
         if not safe or ".." in safe:
             return jsonify({"ok": False, "error": "nombre invalido"}), 400
         paths = informe_paths(s)
+        from core.report_provenance import require_matching_manifest
+        gate = require_matching_manifest(s, os.path.join(paths.get("doc_dir") or "", "fill_manifest.json"))
+        if gate.get("error_code"):
+            return jsonify(gate), 409
         path = os.path.join(paths.get("doc_dir") or "", "informe_preview", safe)
         if not os.path.isfile(path):
             return jsonify({"ok": False, "error": "No existe: %s" % safe}), 404

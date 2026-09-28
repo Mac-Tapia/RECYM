@@ -120,6 +120,15 @@ def client_is_loopback(request):
     return host in ("127.0.0.1", "::1", "localhost")
 
 
+def require_loopback(request):
+    """Reject GUI/local-machine operations when the caller is not loopback."""
+    if client_is_loopback(request):
+        return True
+    from fastapi import HTTPException
+
+    raise HTTPException(status_code=403, detail="operación disponible solo desde localhost")
+
+
 def validate_production_boot():
     """Fallos duros al arrancar en RECYM_ENV=production."""
     errors = []
