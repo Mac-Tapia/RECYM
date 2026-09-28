@@ -4215,6 +4215,9 @@ def api_contexto_aplicar():
             database_mdb=body.get("database_mdb") or None,
             study_path=body.get("study_path") or None,
             feeder_id=body.get("feeder") or request.headers.get("X-Feeder"),
+            network_id=body.get("network_id") or None,
+            allowed_networks=body.get("allowed_networks") or None,
+            strict=bool(body.get("strict")),
             persist=True,
         )
         try:

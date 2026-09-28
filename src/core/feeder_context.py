@@ -409,13 +409,219 @@ def list_database_files(settings=None):
     return out
 
 
-def apply_context_selection(database_mdb=None, study_path=None, feeder_id=None, persist=True):
+def quick_context_catalog(
+    settings=None,
+    selected_database=None,
+    selected_study=None,
+    discovery=None,
+):
+    """Build a filesystem-only catalog; never opens CymPy or infers networks."""
+    from core.context_identity import canonical_file_path
+
+    s = dict(settings or {})
+    selected_database = str(selected_database or s.get("database_mdb") or "").strip()
+    selected_study = str(
+        selected_study or s.get("ui_study_path") or s.get("study_path") or ""
+    ).strip()
+
+    databases = list_database_files(s)
+    studies = list_study_files(s, all_files=True)
+
+    def add_external(rows, path, kind):
+        path = str(path or "").strip()
+        if not path or not os.path.isfile(path):
+            return
+        canonical = canonical_file_path(path)
+        if any(row.get("canonical_path") == canonical for row in rows):
+            return
+        absolute = os.path.realpath(os.path.abspath(path))
+        row = {
+            "name": os.path.basename(absolute),
+            "path": absolute,
+            "dir": os.path.dirname(absolute),
+            "canonical_path": canonical,
+        }
+        if kind == "database":
+            row["connection_name"] = os.path.splitext(row["name"])[0]
+        else:
+            row["feeder_id"] = os.path.splitext(row["name"])[0]
+            row["ext"] = os.path.splitext(row["name"])[1].lower()
+            row["size"] = os.path.getsize(absolute)
+        rows.append(row)
+
+    for row in databases + studies:
+        row["path"] = os.path.realpath(os.path.abspath(row["path"]))
+        row["canonical_path"] = canonical_file_path(row["path"])
+    add_external(databases, selected_database, "database")
+    add_external(studies, selected_study, "study")
+
+    def dedupe(rows):
+        unique = {}
+        for row in rows:
+            unique.setdefault(row["canonical_path"], row)
+        result = list(unique.values())
+        counts = {}
+        for row in result:
+            key = row["name"].casefold()
+            counts[key] = counts.get(key, 0) + 1
+        for row in result:
+            if counts[row["name"].casefold()] > 1:
+                row["label"] = "%s — %s" % (
+                    row["name"],
+                    os.path.basename(os.path.dirname(row["path"])) or row["dir"],
+                )
+            else:
+                row["label"] = row["name"]
+        result.sort(key=lambda item: (item["label"].casefold(), item["canonical_path"]))
+        return result
+
+    feeders = []
+    if isinstance(discovery, dict):
+        discovered_db = canonical_file_path(discovery.get("database_mdb"))
+        if discovered_db and discovered_db == canonical_file_path(selected_database):
+            feeders = list(discovery.get("feeders") or discovery.get("networks") or [])
+
+    return {
+        "ok": True,
+        "databases": dedupe(databases),
+        "studies": dedupe(studies),
+        "feeders": feeders,
+        "current_database": (
+            os.path.realpath(os.path.abspath(selected_database)) if selected_database else ""
+        ),
+        "current_study": (
+            os.path.realpath(os.path.abspath(selected_study)) if selected_study else ""
+        ),
+    }
+
+
+def apply_context_selection(
+    database_mdb=None,
+    study_path=None,
+    feeder_id=None,
+    network_id=None,
+    allowed_networks=None,
+    strict=False,
+    persist=True,
+):
     """Aplica BD y/o estudio elegidos en la UI al settings (y alimentador del estudio).
 
     Si el estudio es IN112.zxst → active_feeder=IN112 y study_path de ese feeder.
     Así «Guardar medición cabecera» escribe en ese estudio/alimentador.
     """
     global_s = load_json("config/settings.json")
+    if strict:
+        from core.context_identity import (
+            ContextIdentityError,
+            build_context_identity,
+            canonical_file_path,
+            context_fingerprint,
+        )
+
+        identity = build_context_identity(
+            {
+                "database_mdb": database_mdb,
+                "study_path": study_path,
+                "feeder_id": feeder_id,
+                "network_id": network_id,
+            },
+            require_complete=True,
+        )
+        mdb = identity["database_mdb"]
+        study = identity["study_path"]
+        if not os.path.isfile(mdb):
+            raise ContextIdentityError("FILE_NOT_FOUND", "Base MDB no encontrada: %s" % mdb)
+        if os.path.splitext(mdb)[1].lower() != ".mdb":
+            raise ContextIdentityError(
+                "INVALID_FILE_EXTENSION", "La base seleccionada debe ser .mdb"
+            )
+        if not os.path.isfile(study):
+            raise ContextIdentityError("FILE_NOT_FOUND", "Estudio no encontrado: %s" % study)
+        if os.path.splitext(study)[1].lower() not in (".zxst", ".sxst", ".zsxst", ".xst"):
+            raise ContextIdentityError(
+                "INVALID_FILE_EXTENSION", "Extensión de estudio no admitida"
+            )
+        if not is_usable_study_file(study):
+            raise ContextIdentityError("STUDY_FILE_INVALID", "Estudio vacío o inválido: %s" % study)
+
+        allowed_payload = allowed_networks or []
+        if isinstance(allowed_payload, dict):
+            discovered_db = canonical_file_path(allowed_payload.get("database_mdb"))
+            if discovered_db and discovered_db != identity["canonical_database_mdb"]:
+                raise ContextIdentityError(
+                    "CONTEXT_IDENTITY_MISMATCH",
+                    "El catálogo descubierto pertenece a otra MDB",
+                    different_fields=["database_mdb"],
+                )
+            allowed_payload = (
+                allowed_payload.get("feeders") or allowed_payload.get("networks") or []
+            )
+        normalized = [
+            (
+                str(row.get("feeder_id") or "").strip().upper(),
+                str(row.get("network_id") or "").strip().upper(),
+            )
+            for row in allowed_payload
+            if isinstance(row, dict)
+        ]
+        requested_pair = (
+            identity["canonical_feeder_id"],
+            identity["canonical_network_id"],
+        )
+        if requested_pair not in normalized:
+            different = []
+            if not any(row[0] == requested_pair[0] for row in normalized):
+                different.append("feeder_id")
+            if not any(row[1] == requested_pair[1] for row in normalized):
+                different.append("network_id")
+            raise ContextIdentityError(
+                "CONTEXT_IDENTITY_MISMATCH",
+                "El alimentador/red no pertenece al catálogo descubierto de la MDB",
+                different_fields=different or ["feeder_id", "network_id"],
+                actual=identity,
+            )
+
+        global_s["database_mdb"] = mdb
+        global_s["database_dir"] = os.path.dirname(mdb)
+        global_s["database_connection_name"] = os.path.splitext(os.path.basename(mdb))[0]
+        global_s["ui_study_path"] = study
+        global_s["ui_study_file"] = os.path.basename(study)
+        global_s["active_feeder"] = identity["feeder_id"]
+        global_s["active_network_id"] = identity["network_id"]
+        if persist:
+            if os.path.isfile(feeder_config_path(identity["feeder_id"])):
+                feeder_config = load_feeder_config(identity["feeder_id"])
+            else:
+                feeder_config = synthesize_feeder_config(
+                    identity["feeder_id"],
+                    network_id=identity["network_id"],
+                    persist=False,
+                    global_s=global_s,
+                )
+            feeder_config["network_id"] = identity["network_id"]
+            feeder_config["study_path"] = study
+            feeder_config["study_file"] = os.path.basename(study)
+            feeder_config["ui_study_path"] = study
+            feeder_config["ui_study_file"] = os.path.basename(study)
+            save_json("config/feeders/%s.json" % identity["feeder_id"], feeder_config)
+            save_json("config/settings.json", global_s)
+        result = {
+            "ok": True,
+            "changed": ["database_mdb", "ui_study_path", "active_feeder", "network_id"],
+            "database_mdb": mdb,
+            "database_connection_name": global_s["database_connection_name"],
+            "study_path": study,
+            "ui_study_path": study,
+            "study_file": os.path.basename(study),
+            "active_feeder": identity["feeder_id"],
+            "feeder_id": identity["feeder_id"],
+            "network_id": identity["network_id"],
+        }
+        result["context_fingerprint"] = context_fingerprint(result)
+        result["msg"] = "Contexto estricto OK · %s · red %s" % (
+            result["feeder_id"], result["network_id"]
+        )
+        return result
     changed = []
     resolved_feeder = (feeder_id or "").strip() or None
 

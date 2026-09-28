@@ -238,7 +238,7 @@ async def bridge_flask_api(path: str, request: Request):
     """Reenvía /api/* al Flask legacy excepto rutas ya definidas en FastAPI."""
     from starlette.responses import Response
 
-    if path == "tablero" or path == "spa/meta" or path == "jobs" or path.startswith("jobs/") or path == "health" or path.startswith("health/") or path.startswith("auth/") or path.startswith("contexto/examinar") or path.startswith("v2/"):
+    if path == "tablero" or path == "spa/meta" or path == "jobs" or path.startswith("jobs/") or path == "health" or path.startswith("health/") or path.startswith("auth/") or path.startswith("contexto/") or path.startswith("v2/"):
         return JSONResponse({"ok": False, "error": "ruta FastAPI nativa"}, status_code=404)
 
     body = await request.body()

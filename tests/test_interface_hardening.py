@@ -90,7 +90,7 @@ class TestFeederInputContract(unittest.TestCase):
         self.assertIn("CONTROL_WORKBOOK_MISSING", codes)
         self.assertIn("CATALOG_WORKBOOK_MISSING", codes)
 
-    def test_context_catalog_reports_capability(self):
+    def test_quick_context_catalog_does_not_invent_feeders(self):
         from fastapi.testclient import TestClient
         from api_app.main import app
         from api_app.security import get_or_create_api_key
@@ -101,13 +101,11 @@ class TestFeederInputContract(unittest.TestCase):
             headers={"X-Api-Key": get_or_create_api_key()},
         )
         self.assertEqual(response.status_code, 200)
-        rows = response.json()["feeders"]
-        ca101 = next(x for x in rows if x["feeder_id"] == "CA101")
-        self.assertIn("operational", ca101)
-        self.assertIn("inputs_ready", ca101)
-        self.assertIn("input_errors", ca101)
-        self.assertTrue(ca101["operational"])
-        self.assertFalse(ca101["inputs_ready"])
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["databases"])
+        self.assertTrue(payload["studies"])
+        self.assertEqual(payload["feeders"], [])
 
     def test_http_validation_rejects_network_mismatch(self):
         from fastapi.testclient import TestClient
