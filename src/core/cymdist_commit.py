@@ -23,6 +23,36 @@ class CommitMode(object):
     ALL = frozenset([READ, STUDY, STUDY_AND_DATABASE, EXTERNAL_ENGINE_SAVED])
 
 
+MUTATING_ACTION_MODES = {
+    "cabecera_12": CommitMode.STUDY_AND_DATABASE,
+    "calidad_aplicar_23": CommitMode.STUDY_AND_DATABASE,
+    "clientes_inclusiones": CommitMode.STUDY,
+    "clientes_refresh_31": CommitMode.STUDY,
+    "clientes_aplicar_32": CommitMode.STUDY,
+    "distribucion_33": CommitMode.EXTERNAL_ENGINE_SAVED,
+    "spotload_4": CommitMode.STUDY,
+}
+
+
+def commit_mode_for_action(action):
+    mode = MUTATING_ACTION_MODES.get(str(action or ""))
+    if not mode:
+        raise ValueError("Acción mutante no registrada: %s" % action)
+    return mode
+
+
+def require_verified_commit(result):
+    commit = (result or {}).get("commit") if isinstance(result, dict) else None
+    if not isinstance(commit, dict) or not commit.get("ok") or not commit.get("reopen_verified"):
+        return {
+            "ok": False,
+            "error_code": "COMMIT_NOT_VERIFIED",
+            "error": "La acción no tiene persistencia y reapertura verificadas",
+            "commit": commit,
+        }
+    return result
+
+
 @dataclass
 class CommitRequest(object):
     settings: dict
@@ -197,4 +227,8 @@ def commit_cymdist_action(request, mutate):
         return manifest
 
 
-__all__ = ["CommitMode", "CommitRequest", "commit_cymdist_action", "study_lock_key"]
+__all__ = [
+    "CommitMode", "CommitRequest", "MUTATING_ACTION_MODES",
+    "commit_cymdist_action", "commit_mode_for_action", "require_verified_commit",
+    "study_lock_key",
+]

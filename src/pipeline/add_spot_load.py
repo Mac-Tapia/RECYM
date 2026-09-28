@@ -208,31 +208,69 @@ def connect_spot_load(settings, node_id, mode, p_kw, q_kvar=None, cosfi=None,
         result["created"] = True
         return result
 
-    write = adapter.add_spot_load(
-        resolved["LoadID"],
-        resolved["SectionID"],
-        p,
-        q,
-        lock=lock,
-        phases="ABC",
-        node_id=resolved.get("NodeID"),
-        from_node=resolved.get("FromNode"),
-        to_node=resolved.get("ToNode"),
-        recreate=bool(recreate),
-        stub=False,
-    )
-    result.update(write)
-    if write.get("StubSectionID"):
-        result["SectionID"] = write["StubSectionID"]
-    result["Estado"] = "OK" if write.get("created") or write.get("pq_after") else "OK_UPDATE"
+    write = {}
+
+    def _mutate_spotload():
+        nonlocal write
+        write = adapter.add_spot_load(
+            resolved["LoadID"],
+            resolved["SectionID"],
+            p,
+            q,
+            lock=lock,
+            phases="ABC",
+            node_id=resolved.get("NodeID"),
+            from_node=resolved.get("FromNode"),
+            to_node=resolved.get("ToNode"),
+            recreate=bool(recreate),
+            stub=False,
+        )
+        result.update(write)
+        if write.get("StubSectionID"):
+            result["SectionID"] = write["StubSectionID"]
+        result["Estado"] = "OK" if write.get("created") or write.get("pq_after") else "OK_UPDATE"
+        return {
+            "requested_values": {
+                "LoadID": resolved["LoadID"],
+                "P_kW": p,
+                "Q_kvar": q,
+                "network_id": settings.get("network_id"),
+            }
+        }
+
     if settings.get("save_after_write", True) and own_adapter and save:
-        adapter.save_study()
-        result["saved"] = True
+        from core.cymdist_commit import CommitMode, CommitRequest, commit_cymdist_action
+        from core.feeder_context import output_path
+        adapter.settings["skip_db_project_save"] = True
+        commit = commit_cymdist_action(
+            CommitRequest(
+                settings=settings,
+                action="spotload_4",
+                mode=CommitMode.STUDY,
+                adapter=adapter,
+                manifest_dir=output_path(settings, "commits"),
+                readback=lambda: {
+                    "LoadID": resolved["LoadID"],
+                    "P_kW": p,
+                    "Q_kvar": q,
+                    "network_id": settings.get("network_id"),
+                },
+            ),
+            _mutate_spotload,
+        )
+        result["commit"] = commit
+        result["saved"] = bool(commit.get("ok"))
+        if not commit.get("ok"):
+            result["Estado"] = "ERROR"
+            result["error_code"] = commit.get("error_code")
+            result["error"] = commit.get("error")
         # Liberar .zxst antes de abrir la GUI
         try:
             adapter.close_study(save=False)
         except Exception:
             pass
+    else:
+        _mutate_spotload()
 
     # Abrir CYMDIST una sola vez para ver el simbolo.
     # Evitar el ciclo kill→COM→kill→CymPy→resume (provoca 0xC0000005 en Cyme.exe).

@@ -5116,6 +5116,7 @@ def _api_cabecera_impl():
         "study_saved": study_saved,
         "db_updated": db_updated,
         "project_saved": project_saved,
+        "commit": job.get("commit") or (job.get("cymdist") or {}).get("commit"),
         "session_saved": True,
         "excel": excel_path,
         "reset_downstream": reset_info,
@@ -5386,12 +5387,31 @@ def api_clientes_tabla():
                 c = require_cympy(s_w)
                 a = CymPyAdapter(c, api, s_w)
                 a.open_study(force_backup=False)
-                released = release_clientes_loads(a, stale, reconnect=True)
+                released = {}
+                commit31 = None
+
+                def _mutate_refresh_31():
+                    nonlocal released
+                    released = release_clientes_loads(a, stale, reconnect=True)
+                    return {"requested_values": {"n_stale": len(stale), "n_liberados": int(released.get("n_liberados") or 0)}}
+
                 if s.get("save_after_write", True):
-                    try:
-                        a.save_study()
-                    except Exception as ex_sv:
-                        print("AVISO save post 3.1 liberar:", ex_sv)
+                    from core.cymdist_commit import CommitMode, CommitRequest, commit_cymdist_action
+                    a.settings["skip_db_project_save"] = True
+                    commit31 = commit_cymdist_action(
+                        CommitRequest(
+                            settings=s,
+                            action="clientes_refresh_31",
+                            mode=CommitMode.STUDY,
+                            adapter=a,
+                            manifest_dir=output_path(s, "commits"),
+                            readback=lambda: {"n_stale": len(stale), "n_liberados": int(released.get("n_liberados") or 0)},
+                            inventory=lambda: {str(n): True for n in list(c.study.ListNetworks())},
+                        ),
+                        _mutate_refresh_31,
+                    )
+                else:
+                    _mutate_refresh_31()
                 try:
                     a.close_study(save=False)
                 except Exception:
@@ -5400,7 +5420,8 @@ def api_clientes_tabla():
                     "skipped": False,
                     "n_liberados": released.get("n_liberados"),
                     "n_stale": len(stale),
-                    "saved": True,
+                    "saved": bool((commit31 or {}).get("ok")) if commit31 is not None else False,
+                    "commit": commit31,
                 }
                 print("[3.1] CYMDIST liberados:", cym_refresh)
             else:
@@ -5539,7 +5560,8 @@ def _sync_incluir_to_cymdist(settings, rows):
     a = CymPyAdapter(c, api, settings)
     a.open_study(force_backup=False)
     report = {"ok": 0, "excluded": 0, "drawn": 0, "capacity_fix": 0, "errors": []}
-    try:
+
+    def _mutate_inclusiones():
         for r in rows:
             lid = str(r.get("LoadID_CYMDIST") or "").strip()
             if not lid:
@@ -5566,13 +5588,43 @@ def _sync_incluir_to_cymdist(settings, rows):
                 report["ok"] += 1
             except Exception as ex:
                 report["errors"].append("%s: %s" % (lid, ex))
+        return {
+            "requested_values": {
+                "n_rows": len(rows),
+                "n_connected": report["ok"],
+                "n_excluded": report["excluded"],
+            }
+        }
+
+    try:
         if settings.get("save_after_fix", True):
-            try:
-                a.save_study()
-                report["saved"] = True
-            except Exception as ex_s:
-                report["saved"] = False
-                report["save_error"] = str(ex_s)
+            from core.cymdist_commit import CommitMode, CommitRequest, commit_cymdist_action
+            a.settings["skip_db_project_save"] = True
+            commit = commit_cymdist_action(
+                CommitRequest(
+                    settings=settings,
+                    action="clientes_inclusiones",
+                    mode=CommitMode.STUDY,
+                    adapter=a,
+                    manifest_dir=output_path(settings, "commits"),
+                    readback=lambda: {
+                        "n_rows": len(rows),
+                        "n_connected": report["ok"],
+                        "n_excluded": report["excluded"],
+                    },
+                    inventory=lambda: {str(n): True for n in list(c.study.ListNetworks())},
+                ),
+                _mutate_inclusiones,
+            )
+            report["commit"] = commit
+            report["saved"] = bool(commit.get("ok"))
+            report["verified"] = bool(commit.get("reopen_verified"))
+            if not commit.get("ok"):
+                report["error_code"] = commit.get("error_code")
+                report["save_error"] = commit.get("error")
+        else:
+            _mutate_inclusiones()
+            report["saved"] = False
     finally:
         try:
             a.close_study(save=False)
@@ -5808,14 +5860,46 @@ def api_clientes_aplicar():
             refresh_clientes_in_cymdist,
         )
         prev_ids = previous_applied_load_ids(s)
-        report, released, keep_ids = refresh_clientes_in_cymdist(
-            a, rows, fp=fp, previous_ids=prev_ids
-        )
+        report = []
+        released = {}
+        keep_ids = set()
+        commit = None
+
+        def _mutate_clientes_32():
+            nonlocal report, released, keep_ids
+            report, released, keep_ids = refresh_clientes_in_cymdist(
+                a, rows, fp=fp, previous_ids=prev_ids
+            )
+            return {
+                "requested_values": {
+                    "n_rows": len(rows),
+                    "n_keep": len(keep_ids or []),
+                    "n_liberados": int((released or {}).get("n_liberados") or 0),
+                }
+            }
+
         if s.get("save_after_write", True):
-            try:
-                a.save_study()
-            except Exception as ex_save:
-                print("AVISO save post EA/Pot:", ex_save)
+            from core.cymdist_commit import CommitMode, CommitRequest, commit_cymdist_action
+            a.settings["skip_db_project_save"] = True
+            commit = commit_cymdist_action(
+                CommitRequest(
+                    settings=s,
+                    action="clientes_aplicar_32",
+                    mode=CommitMode.STUDY,
+                    adapter=a,
+                    manifest_dir=output_path(s, "commits"),
+                    readback=lambda: {
+                        "n_rows": len(rows),
+                        "n_keep": len(keep_ids or []),
+                        "n_liberados": int((released or {}).get("n_liberados") or 0),
+                    },
+                    inventory=lambda: {str(n): True for n in list(c.study.ListNetworks())},
+                ),
+                _mutate_clientes_32,
+            )
+        else:
+            _mutate_clientes_32()
+            commit = {"ok": False, "error_code": "SAVE_DISABLED", "reopen_verified": False}
         # Ajuste cabecera en SESION (sin SetDemand aqui: evita crash Cyme tras
         # muchas escrituras). SetDemand con P ajustado lo hace 3.3.
         cab_adj = {"skipped": True, "reason": "pending"}
@@ -5928,7 +6012,10 @@ def api_clientes_aplicar():
             msg32 += " · AVISO: sin cabecera §1, no se restó Pot de excluidas"
 
         return jsonify({
-            "ok": True,
+            "ok": bool(commit.get("ok")),
+            "error_code": None if commit.get("ok") else commit.get("error_code"),
+            "error": None if commit.get("ok") else commit.get("error"),
+            "commit": commit,
             "ok_count": ok_count,
             "warn_kwh_count": warn_kwh,
             "excluido_count": excluido_count,

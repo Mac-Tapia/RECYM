@@ -689,52 +689,77 @@ def apply_corrections(settings=None, fix_voltages=True):
     from core.equipment_library import fix_defaults_on_network, inventory_library
     from pipeline.build_corrections_from_diagnostic import _catalog_size_hints
 
-    s = settings or load_settings()
+    s = dict(settings or load_settings())
     _pause_gui(s)
-    bulk_main()
-    preview = _read_csv(output_path(s, "preview_changes.csv"))
-    ok_n = sum(1 for r in preview if (r.get("Estado") or "") in ("OK", "DRY_RUN"))
-    err_n = sum(1 for r in preview if (r.get("Estado") or "") == "ERROR")
-
+    preview = []
     volt = None
     defaults_fix = None
-    if not s.get("dry_run"):
+    commit = None
+    if s.get("dry_run"):
+        bulk_main(settings=s, save=False)
+        preview = _read_csv(output_path(s, "preview_changes.csv"))
+    else:
         api = load_json("config/cympy_api_map.json")
         c = require_cympy(s)
         a = CymPyAdapter(c, api, s)
         a.open_study()
-        try:
-            inv = inventory_library(c)
-            hints = _catalog_size_hints(s)
-            defaults_fix = fix_defaults_on_network(
-                a, s, inventory=inv, catalog_hints=hints
-            )
-            n_ok_def = sum(1 for r in (defaults_fix or []) if r.get("Estado") == "OK")
-            print("DEFAULT→equipo real (sección/ficha):", n_ok_def, "de", len(defaults_fix or []))
-        except Exception as ex_def:
-            print("AVISO fix DEFAULT por sección:", ex_def)
-            defaults_fix = [{"Estado": "ERROR", "Detalle": str(ex_def)}]
+        a.settings["skip_db_project_save"] = True
 
-        if fix_voltages:
-            volt = ensure_base_voltages(c, s, a)
-        if s.get("save_after_fix", True):
+        def _mutate_quality():
+            nonlocal preview, volt, defaults_fix
+            bulk_main(settings=s, adapter=a, save=False)
+            preview = _read_csv(output_path(s, "preview_changes.csv"))
             try:
-                a.save_study()
-            except Exception as ex:
-                volt = dict(volt or {})
-                volt["save_error"] = str(ex)
+                inv = inventory_library(c)
+                hints = _catalog_size_hints(s)
+                defaults_fix = fix_defaults_on_network(
+                    a, s, inventory=inv, catalog_hints=hints
+                )
+            except Exception as ex_def:
+                defaults_fix = [{"Estado": "ERROR", "Detalle": str(ex_def)}]
+            if fix_voltages:
+                volt = ensure_base_voltages(c, s, a)
+            return {
+                "requested_values": {
+                    "n_preview": len(preview),
+                    "n_defaults": len(defaults_fix or []),
+                    "network_id": s.get("network_id"),
+                }
+            }
+
+        from core.cymdist_commit import CommitMode, CommitRequest, commit_cymdist_action
+        commit = commit_cymdist_action(
+            CommitRequest(
+                settings=s,
+                action="calidad_aplicar_23",
+                mode=CommitMode.STUDY_AND_DATABASE,
+                adapter=a,
+                manifest_dir=output_path(s, "commits"),
+                readback=lambda: {
+                    "n_preview": len(preview),
+                    "n_defaults": len(defaults_fix or []),
+                    "network_id": s.get("network_id"),
+                },
+                inventory=lambda: {str(n): True for n in list(c.study.ListNetworks())},
+            ),
+            _mutate_quality,
+        )
         try:
             a.close_study(save=False)
         except Exception:
             pass
 
+    ok_n = sum(1 for r in preview if (r.get("Estado") or "") in ("OK", "DRY_RUN"))
+    err_n = sum(1 for r in preview if (r.get("Estado") or "") == "ERROR")
+
     return {
-        "ok": err_n == 0,
+        "ok": err_n == 0 and (s.get("dry_run") or bool((commit or {}).get("ok"))),
         "n_ok": ok_n,
         "n_error": err_n,
         "preview_csv": output_path(s, "preview_changes.csv"),
         "preview": preview[:100],
         "base_voltages": volt,
+        "commit": commit,
         "defaults_by_section": {
             "n": len(defaults_fix or []),
             "n_ok": sum(1 for r in (defaults_fix or []) if r.get("Estado") == "OK"),

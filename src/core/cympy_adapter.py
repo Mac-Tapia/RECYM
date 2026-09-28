@@ -1072,6 +1072,16 @@ class CymPyAdapter(object):
         except Exception as ex:
             print("AVISO db.Update/SaveProject: %s" % ex)
 
+    def update_database(self):
+        """Explicit database half of a coordinated commit (no implicit study save)."""
+        import cympy.db as db
+        db.Update()
+
+    def save_project(self):
+        """Explicit project save used only by the commit coordinator."""
+        import cympy.db as db
+        db.SaveProject()
+
     def persist_study_and_database(self, path="", force_db=False):
         """Guarda estudio (.zxst) y sincroniza BD (Update + SaveProject).
 

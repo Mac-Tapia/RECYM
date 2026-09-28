@@ -560,7 +560,11 @@ def _run_action(action, payload, feeder, job_id=None):
                 if isinstance(applied, dict):
                     applied["tablero_error"] = str(ex_t)
             if isinstance(applied, dict):
-                applied["ok"] = applied.get("n_error", 1) == 0
+                commit_ok = bool((applied.get("commit") or {}).get("reopen_verified"))
+                applied["ok"] = applied.get("n_error", 1) == 0 and commit_ok
+                if not commit_ok:
+                    applied["error_code"] = "COMMIT_NOT_VERIFIED"
+                    applied["error"] = "Correcciones aplicadas sin persistencia/reapertura verificable"
                 applied["summary"] = summary
                 applied["tablero"] = {
                     "before": summary,
@@ -724,12 +728,51 @@ def _run_action(action, payload, feeder, job_id=None):
                 s2["database_connection_name"] = bind["database_connection_name"]
             except Exception as ex_bind:
                 return {"ok": False, "error": "Enlace estudio/BD: %s" % ex_bind}
-            result = run_load_allocation_module(
-                s2,
-                sess,
-                activo_map=payload.get("activo"),
-                restar_map=payload.get("restar_cabecera"),
+            from core.cymdist_commit import (
+                CommitMode,
+                CommitRequest,
+                commit_cymdist_action,
             )
+            from core.feeder_context import output_path
+            domain = {}
+
+            def _allocation_mutation():
+                domain.update(run_load_allocation_module(
+                    s2,
+                    sess,
+                    activo_map=payload.get("activo"),
+                    restar_map=payload.get("restar_cabecera"),
+                ))
+                requested = {
+                    "P_cabecera_kW": domain.get("P_cabecera_kW"),
+                    "Q_cabecera_kvar": domain.get("Q_cabecera_kvar"),
+                    "network_id": s2.get("network_id"),
+                }
+                return {
+                    "requested_values": requested,
+                    "external_engine_saved": bool(domain.get("saved")),
+                }
+
+            commit = commit_cymdist_action(
+                CommitRequest(
+                    settings=s2,
+                    action="distribucion_33",
+                    mode=CommitMode.EXTERNAL_ENGINE_SAVED,
+                    manifest_dir=output_path(s2, "commits"),
+                    readback=lambda: {
+                        "P_cabecera_kW": domain.get("P_cabecera_kW"),
+                        "Q_cabecera_kvar": domain.get("Q_cabecera_kvar"),
+                        "network_id": s2.get("network_id"),
+                    },
+                ),
+                _allocation_mutation,
+            )
+            result = domain
+            result["commit"] = commit
+            if not commit.get("ok"):
+                result["ok"] = False
+                result["error_code"] = commit.get("error_code")
+                result["error"] = commit.get("error") or "Persistencia 3.3 no verificada"
             summary = {k: result[k] for k in result if k not in ("scaled", "applied")}
             summary["n_scaled"] = len(result.get("scaled") or [])
             summary["n_applied"] = len(result.get("applied") or [])
