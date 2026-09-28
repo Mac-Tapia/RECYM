@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api/client";
+import { api, runDetachedJob, type Json } from "../api/client";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { useFeeder } from "../state/feeder";
+import {
+  acceptDiscoveryResult,
+  beginDatabaseSelection,
+  selectFeeder as selectContextFeeder,
+  selectStudy,
+  type SelectionState,
+} from "../context/selection";
 
 type CtxFiles = {
   ok?: boolean;
@@ -180,6 +187,16 @@ export function Step1Contexto() {
   /** true tras 1.1: BD verificada/creada en CYMDIST y estudio activo */
   const [cymdistReady, setCymdistReady] = useState(false);
   const [cymdistSyncNote, setCymdistSyncNote] = useState("");
+  const [selection, setSelection] = useState<SelectionState>({
+    databaseMdb: "",
+    canonicalDatabaseMdb: "",
+    studyPath: "",
+    feederId: "",
+    networkId: "",
+    databaseRequestId: 0,
+    feeders: [],
+  });
+  const selectionRef = useRef(selection);
   const extractSeq = useRef(0);
   const skipCabeceraReload = useRef(false);
   /** Excel medicioncabecera elegido por el usuario (siempre al día; evita stale closure) */
@@ -252,186 +269,120 @@ export function Step1Contexto() {
     return j.files || [];
   }
 
-  async function loadFiles(opts?: {
-    database_mdb?: string;
-    refresh?: boolean;
-    /** true = no tocar alimentador/estudio elegidos (botón Actualizar listas) */
-    preserveSelection?: boolean;
-  }) {
-    const mdb = (opts?.database_mdb || "").trim();
-    const refresh = Boolean(opts?.refresh);
-    const preserve = Boolean(opts?.preserveSelection);
-    const prevStudy = (study || "").trim();
-    const prevFeeder = (feederPick || feeder || "").trim();
+  async function loadFiles(opts?: { database_mdb?: string; study_path?: string }) {
+    const mdb = (opts?.database_mdb || db || "").trim();
     const qs = new URLSearchParams();
     if (mdb) qs.set("database_mdb", mdb);
-    if (refresh) qs.set("refresh", "1");
+    if (opts?.study_path || study) qs.set("study_path", opts?.study_path || study);
     const q = qs.toString() ? `?${qs.toString()}` : "";
-    const j = await api<CtxFiles>(`/api/contexto/archivos${q}`, {
-      timeoutMs: refresh ? 180000 : 30000,
-    });
+    const j = await api<CtxFiles>(`/api/contexto/archivos${q}`, { timeoutMs: 30000 });
     if (!j.ok && j.error) throw new Error(j.error);
-    setFiles(j);
-    if (mdb) setDb(mdb);
-    else if (!preserve && j.current_database) setDb(j.current_database);
-
-    const feedersList = j.feeders || [];
-    const fids = new Set(feedersList.map((f) => String(f.feeder_id).toUpperCase()));
-    const studyList = j.studies || [];
-
-    const studyStillThere = (path: string) => {
-      if (!path) return false;
-      const want = normPath(path);
-      const wantBase = want.split(/[/\\]/).pop() || want;
-      return studyList.some((s) => {
-        const p = normPath(asPath(s));
-        const base = p.split(/[/\\]/).pop() || p;
-        return p === want || base === wantBase;
-      });
-    };
-
-    let fid = prevFeeder;
-    if (!preserve) {
-      if (fid && !fids.has(fid.toUpperCase())) fid = "";
-      if (mdb && !feedersList.length) fid = "";
-      if (!fid && feedersList.length === 1) {
-        fid = feedersList[0].feeder_id;
-      }
-    }
-    // preserve=true: no cambiar fid aunque el catálogo aún no lo liste
-    setFeederPick(fid);
-    if (fid && fids.has(fid.toUpperCase())) {
-      const row = feedersList.find(
-        (f) => String(f.feeder_id).toUpperCase() === fid.toUpperCase()
-      );
-      setFeeder(fid, row?.network_id || j.current_network || undefined);
-    }
-
-    // Estudio INDEPENDIENTE: al refrescar NUNCA sustituir por current_study del server
-    let resolvedStudy = prevStudy;
-    if (preserve) {
-      if (prevStudy && studyStillThere(prevStudy)) {
-        resolvedStudy = prevStudy;
-      } else if (prevStudy) {
-        // Mantener valor UI aunque el path exacto no matchee (evita salto a CA101)
-        resolvedStudy = prevStudy;
-      }
-      // no llamar setStudy — conserva CA101V2.sxst tal cual
-    } else if (mdb) {
-      if (prevStudy && studyStillThere(prevStudy)) {
-        resolvedStudy = prevStudy;
-      } else {
-        resolvedStudy = "";
-      }
-    } else {
-      // Carga inicial: preferir selección previa, luego server
-      if (prevStudy && studyStillThere(prevStudy)) {
-        resolvedStudy = prevStudy;
-      } else {
-        resolvedStudy = j.current_study || prevStudy || "";
-      }
-      if (resolvedStudy && resolvedStudy !== study) setStudy(resolvedStudy);
-    }
-
-    const dbPath = mdb || (preserve ? db : "") || j.current_database || "";
-    setContext({
-      feeder: fid || "",
-      network:
-        (feedersList.find(
-          (f) => String(f.feeder_id).toUpperCase() === (fid || "").toUpperCase()
-        )?.network_id ||
-          j.current_network ||
-          "") ||
-        "",
-      studyPath: resolvedStudy || "",
-      databaseMdb: dbPath,
-      inputsReady: feedersList.find(
-        (f) => String(f.feeder_id).toUpperCase() === (fid || "").toUpperCase()
-      )?.inputs_ready ?? null,
-      inputErrors: (feedersList.find(
-        (f) => String(f.feeder_id).toUpperCase() === (fid || "").toUpperCase()
-      )?.input_errors || []).map((e) => String(e.message || e.code || "Entrada inválida")),
+    setFiles((previous) => ({ ...j, feeders: previous.feeders || [] }));
+    const initialDb = mdb || j.current_database || "";
+    const initialStudy = opts?.study_path || study || j.current_study || "";
+    if (!db && initialDb) setDb(initialDb);
+    if (!study && initialStudy) setStudy(initialStudy);
+    setSelection((current) => {
+      const next = {
+        ...current,
+        databaseMdb: current.databaseMdb || initialDb,
+        canonicalDatabaseMdb: current.canonicalDatabaseMdb || normPath(initialDb),
+        studyPath: current.studyPath || initialStudy,
+      };
+      selectionRef.current = next;
+      return next;
     });
-    if (mdb && feedersList.length) {
-      setMsg(
-        `BD ${mdb.split(/[/\\]/).pop()} · ${feedersList.length} alimentadores` +
-          (j.networks_source ? ` (${j.networks_source})` : "") +
-          (preserve && prevStudy
-            ? ` · estudio ${(prevStudy.split(/[/\\]/).pop() || "")}`
-            : "")
-      );
-    }
     return j;
   }
 
-  async function onPickDatabase(path: string) {
+  async function onPickDatabase(path: string, canonicalPath?: string) {
     setDb(path);
     setCymdistReady(false);
     setCymdistSyncNote("");
     if (!path) {
       setFeederPick("");
-      setStudy("");
       clearMedicionFields();
       setFiles((prev) => ({ ...prev, feeders: [], n_feeders: 0 }));
       return;
     }
     setBusy(true);
-    const prevStudy = study;
-    const prevFeeder = feederPick;
+    const started = beginDatabaseSelection(selectionRef.current, path, canonicalPath);
+    selectionRef.current = started;
+    setSelection(started);
     setFeederPick("");
-    setStudy("");
+    setFeeder("", "");
     clearMedicionFields();
     setFiles((prev) => ({ ...prev, feeders: [], n_feeders: 0 }));
     const dbName = path.split(/[/\\]/).pop() || path;
-    setMsg(`Cargando alimentadores y estudios de ${dbName}…`);
+    setMsg(`Descubriendo redes reales de ${dbName} en CYMDIST…`);
     try {
-      await loadFiles({ database_mdb: path, refresh: false });
-      const catalog = await loadFiles({ database_mdb: path, refresh: true });
-
-      const fids = new Set(
-        (catalog.feeders || []).map((f) => String(f.feeder_id).toUpperCase())
+      await loadFiles({ database_mdb: path, study_path: study });
+      const discovered = await runDetachedJob(
+        "contexto_descubrir_redes",
+        { database_mdb: path },
+        (job) => setMsg(String(job.message || `Descubriendo ${dbName}…`))
       );
-      const studyPaths = new Set(
-        (catalog.studies || []).map((s) => normPath(asPath(s)))
-      );
-      let fid = "";
-      let st = "";
-      // Independientes: conservar cada uno si sigue existiendo en el catálogo nuevo
-      if (prevFeeder && fids.has(prevFeeder.toUpperCase())) {
-        fid = prevFeeder;
-      }
-      if (prevStudy && studyPaths.has(normPath(prevStudy))) {
-        st = prevStudy;
-      }
-      // Sidebar: reflejar YA la BD nueva (aunque aún falte 1.1)
-      setContext({
-        feeder: fid || "",
-        network: "",
-        studyPath: st || "",
-        databaseMdb: path,
-      });
-      if (fid) {
-        await syncFeederStudyCabecera({
-          feederId: fid,
-          studyPath: st,
-          keepStudy: true,
-          extract: true,
-        });
-      } else if (st) {
-        await syncFeederStudyCabecera({
-          studyPath: st,
-          keepFeeder: true,
-          extract: false,
-        });
-      } else {
-        setMsg(
-          `BD ${dbName} · ${(catalog.feeders || []).length} alimentadores · ${(catalog.studies || []).length} estudios · elija alimentador y estudio (independientes)`
+      setSelection(() => {
+        const current = selectionRef.current;
+        const accepted = acceptDiscoveryResult(
+          current,
+          started.databaseRequestId,
+          discovered as Json
         );
-      }
+        if (accepted !== current) {
+          setFiles((previous) => ({
+            ...previous,
+            feeders: accepted.feeders,
+            n_feeders: accepted.feeders.length,
+            networks_source: String(discovered.source || "cympy"),
+          }));
+          setMsg(
+            `BD ${dbName} · ${accepted.feeders.length} alimentadores reales · elija alimentador y estudio`
+          );
+        }
+        selectionRef.current = accepted;
+        return accepted;
+      });
+      setContext({ feeder: "", network: "", studyPath: study, databaseMdb: path });
     } catch (e) {
       setMsg(String(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function browseContextFile(kind: "database" | "study") {
+    setMsg(`Abriendo selector de ${kind === "database" ? "MDB" : "estudio"}…`);
+    try {
+      const current = kind === "database" ? db : study;
+      const result = await api<{
+        ok?: boolean;
+        cancelled?: boolean;
+        error?: string;
+        path?: string;
+        canonical_path?: string;
+      }>("/api/contexto/examinar", {
+        method: "POST",
+        body: JSON.stringify({
+          kind,
+          initial_dir: current ? current.replace(/[\\/][^\\/]+$/, "") : undefined,
+        }),
+        timeoutMs: 610000,
+        detachedContext: true,
+      });
+      if (result.cancelled) {
+        setMsg("Selección cancelada; el contexto no cambió.");
+        return;
+      }
+      if (!result.ok || !result.path) throw new Error(result.error || "Selector sin ruta");
+      if (kind === "database") {
+        await onPickDatabase(result.path, result.canonical_path);
+      } else {
+        onPickStudy(result.path);
+        await loadFiles({ database_mdb: db, study_path: result.path });
+      }
+    } catch (error) {
+      setMsg(String(error));
     }
   }
 
@@ -860,6 +811,17 @@ export function Step1Contexto() {
   function onPickFeeder(fid: string, opts?: { extract?: boolean }) {
     setCymdistReady(false);
     setCymdistSyncNote("");
+    const row = (files.feeders || []).find(
+      (item) => String(item.feeder_id).toUpperCase() === String(fid).toUpperCase()
+    );
+    const networkId = String(row?.network_id || "");
+    setSelection((current) => {
+      const next = selectContextFeeder(current, fid, networkId);
+      selectionRef.current = next;
+      return next;
+    });
+    setFeederPick(fid);
+    setFeeder(fid, networkId);
     // Solo alimentador: no cambiar ni filtrar el estudio elegido
     void syncFeederStudyCabecera({
       feederId: fid,
@@ -871,6 +833,13 @@ export function Step1Contexto() {
   function onPickStudy(path: string) {
     setCymdistReady(false);
     setCymdistSyncNote("");
+    setSelection((current) => {
+      const next = selectStudy(current, path);
+      selectionRef.current = next;
+      return next;
+    });
+    setStudy(path);
+    setContext({ studyPath: path });
     // Solo estudio: no cambiar el alimentador (un .sxst puede tener N redes)
     void syncFeederStudyCabecera({
       studyPath: path,
@@ -887,6 +856,10 @@ export function Step1Contexto() {
     try {
       const fid = (feederPick || feeder || "").trim();
       const stPath = (study || "").trim();
+      const selected = (files.feeders || []).find(
+        (item) => String(item.feeder_id).toUpperCase() === fid.toUpperCase()
+      );
+      const networkId = String(selected?.network_id || network || "").trim();
       if (!db) {
         throw new Error("Seleccione la base de datos (.mdb) antes de 1.1");
       }
@@ -895,6 +868,9 @@ export function Step1Contexto() {
       }
       if (!stPath) {
         throw new Error("Seleccione el estudio (.zxst/.xst) antes de 1.1");
+      }
+      if (!networkId) {
+        throw new Error("El alimentador seleccionado no tiene NetworkID descubierto");
       }
 
       const j = await api<{
@@ -907,6 +883,7 @@ export function Step1Contexto() {
         study_file?: string;
         database_mdb?: string;
         database_connection_name?: string;
+        context_fingerprint?: string;
         msg?: string;
         cymdist_sync?: {
           ok?: boolean;
@@ -923,12 +900,28 @@ export function Step1Contexto() {
       }>("/api/contexto/aplicar", {
         method: "POST",
         body: JSON.stringify({
-          database_mdb: db || null,
-          study_path: stPath || null,
-          feeder: fid || null,
+          database_mdb: db,
+          study_path: stPath,
+          feeder_id: fid,
+          network_id: networkId,
+          allowed_networks: (files.feeders || []).map((item) => ({
+            feeder_id: item.feeder_id,
+            network_id: item.network_id,
+            label: item.label,
+          })),
         }),
       });
       if (!j.ok) throw new Error(j.error || "Error contexto");
+
+      const returnedStudy = j.ui_study_path || j.study_path || "";
+      const identityMatches =
+        normPath(String(j.database_mdb || "")) === normPath(db) &&
+        normPath(returnedStudy) === normPath(stPath) &&
+        String(j.feeder_id || "").toUpperCase() === fid.toUpperCase() &&
+        String(j.network_id || "").toUpperCase() === networkId.toUpperCase();
+      if (!identityMatches) {
+        throw new Error("CONTEXT_IDENTITY_MISMATCH: 1.1 devolvió otro contexto");
+      }
 
       const sync = j.cymdist_sync || {};
       if (j.cymdist_sync_error || (sync && sync.ok === false)) {
@@ -942,16 +935,17 @@ export function Step1Contexto() {
       const resolved = j.feeder_id || fid;
       if (resolved) {
         setFeederPick(resolved);
-        setFeeder(resolved, j.network_id);
+        setFeeder(resolved, j.network_id || networkId);
       }
       // Conservar elección UI (.xst); CYMDIST abre study_path (.zxst) en backend
       const uiStudy = j.ui_study_path || stPath || j.study_path || "";
       if (uiStudy) setStudy(uiStudy);
       setContext({
         feeder: resolved || "",
-        network: j.network_id || "",
+        network: j.network_id || networkId,
         studyPath: uiStudy || j.study_path || "",
         databaseMdb: db || j.database_mdb || "",
+        contextFingerprint: j.context_fingerprint || "",
         inputsReady: (files.feeders || []).find(
           (f) => String(f.feeder_id).toUpperCase() === resolved.toUpperCase()
         )?.inputs_ready ?? null,
@@ -1178,6 +1172,16 @@ export function Step1Contexto() {
             placeholder="Buscar .mdb…"
             emptyLabel="—"
           />
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy}
+            onClick={() => browseContextFile("database")}
+            style={{ marginTop: 6 }}
+          >
+            Examinar MDB…
+          </button>
+          {db && <p className="muted path-full">{db}</p>}
         </div>
         <div>
           <label>
@@ -1212,6 +1216,16 @@ export function Step1Contexto() {
             placeholder="Buscar estudio…"
             emptyLabel="—"
           />
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy}
+            onClick={() => browseContextFile("study")}
+            style={{ marginTop: 6 }}
+          >
+            Examinar estudio…
+          </button>
+          {study && <p className="muted path-full">{study}</p>}
           <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
             {(() => {
               const name = (study || "").split(/[/\\]/).pop() || "";

@@ -79,9 +79,10 @@ export async function ensureApiAuth(): Promise<void> {
   return bootstrapPromise;
 }
 
-function withAuthHeaders(h: Headers) {
+function withAuthHeaders(h: Headers, includeContext = true) {
   const key = getApiKey();
   if (key && !h.has("X-Api-Key")) h.set("X-Api-Key", key);
+  if (!includeContext) return;
   if (activeFeeder) h.set("X-Feeder", activeFeeder);
   if (activeStudyPath && !h.has("X-Study-Path")) h.set("X-Study-Path", activeStudyPath);
   if (activeDatabaseMdb && !h.has("X-Database-Mdb")) {
@@ -110,22 +111,27 @@ function injectContextBody(body: BodyInit | null | undefined): BodyInit | null |
 
 export async function api<T = Json>(
   path: string,
-  opts: RequestInit & { timeoutMs?: number } = {}
+  opts: RequestInit & { timeoutMs?: number; detachedContext?: boolean } = {}
 ): Promise<T> {
   await ensureApiAuth();
-  const { timeoutMs = 120000, headers, ...rest } = opts;
+  const { timeoutMs = 120000, detachedContext = false, headers, ...rest } = opts;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const h = new Headers(headers || {});
   const method = String(rest.method || "GET").toUpperCase();
   let body = rest.body;
-  if (method !== "GET" && method !== "HEAD" && !(body instanceof FormData)) {
+  if (
+    !detachedContext &&
+    method !== "GET" &&
+    method !== "HEAD" &&
+    !(body instanceof FormData)
+  ) {
     body = injectContextBody(body ?? "{}");
   }
   if (!h.has("Content-Type") && body && !(body instanceof FormData)) {
     h.set("Content-Type", "application/json");
   }
-  withAuthHeaders(h);
+  withAuthHeaders(h, !detachedContext);
   try {
     const r = await fetch(path, {
       ...rest,
@@ -221,6 +227,70 @@ export async function runJob(
             const res = (job.result as Json) || {};
             reject(
               new Error(String(res.error || res.msg || job.message || "SSE error"))
+            );
+          }
+        })
+        .catch(reject);
+    };
+  });
+}
+
+export function buildDetachedJobEnvelope(action: string, payload: Json = {}) {
+  return {
+    action,
+    payload: { ...payload },
+  };
+}
+
+/** Job de descubrimiento: no hereda feeder, estudio, red ni MDB activos. */
+export async function runDetachedJob(
+  action: string,
+  payload: Json = {},
+  onUpdate?: (job: Json) => void
+): Promise<Json> {
+  const envelope = buildDetachedJobEnvelope(action, payload);
+  const created = await api<{ ok: boolean; job_id: string; error?: string }>(
+    "/api/jobs",
+    {
+      method: "POST",
+      body: JSON.stringify(envelope),
+      detachedContext: true,
+    }
+  );
+  if (!created.ok || !created.job_id) {
+    throw new Error(created.error || "No se pudo crear job desacoplado");
+  }
+  const jobId = created.job_id;
+  return new Promise((resolve, reject) => {
+    const es = new EventSource(eventsUrl(jobId));
+    es.onmessage = (ev) => {
+      try {
+        const job = JSON.parse(ev.data) as Json;
+        onUpdate?.(job);
+        const status = String(job.status || "");
+        if (status === "ok") {
+          es.close();
+          resolve((job.result as Json) || job);
+        } else if (status === "error") {
+          es.close();
+          const result = (job.result as Json) || {};
+          reject(new Error(String(result.error || result.msg || job.message || "Job falló")));
+        }
+      } catch (error) {
+        es.close();
+        reject(error);
+      }
+    };
+    es.onerror = () => {
+      es.close();
+      api<{ job: Json }>(`/api/jobs/${jobId}`, { detachedContext: true })
+        .then(({ job }) => {
+          onUpdate?.(job || {});
+          if (job?.status === "ok") resolve((job.result as Json) || job);
+          else {
+            const result = (job?.result as Json) || {};
+            reject(
+              new Error(String(result.error || result.msg || job?.message || "SSE error"))
             );
           }
         })
