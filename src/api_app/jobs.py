@@ -43,6 +43,7 @@ PROTECTED_CONTEXT_ACTIONS = frozenset(
         "calidad_sistema",
         "calidad_eld",
         "distribucion",
+        "flujo_situacional_34",
         "flujo",
         "clientes_activo_cymdist",
     ]
@@ -502,8 +503,26 @@ def _run_action(action, payload, feeder, job_id=None):
             except Exception as ex_t:
                 if isinstance(result, dict):
                     result["tablero_error"] = str(ex_t)
+            native_evidence = None
+            try:
+                import uuid
+                from pipeline.capture_informe_color_views import capture_native_pair_with_restore
+                native_evidence = capture_native_pair_with_restore(
+                    s, "situacional", "diag-" + uuid.uuid4().hex, force=True
+                )
+            except Exception as ex_native:
+                native_evidence = {
+                    "ok": False,
+                    "error_code": "NATIVE_DIAGNOSTIC_CAPTURE_FAILED",
+                    "error": str(ex_native),
+                }
             if isinstance(result, dict):
-                result["ok"] = True
+                result["native_color_evidence"] = native_evidence
+                result["ok"] = bool(native_evidence and native_evidence.get("ok"))
+                if not result["ok"]:
+                    result["error_code"] = (
+                        native_evidence or {}
+                    ).get("error_code") or "NATIVE_DIAGNOSTIC_CAPTURE_FAILED"
                 result["summary"] = summary
                 result["voltage_opt"] = summary.get("voltage_opt")
                 result["tablero"] = {
@@ -769,6 +788,8 @@ def _run_action(action, payload, feeder, job_id=None):
             )
             result = domain
             result["commit"] = commit
+            from core.cymdist_commit import record_active_commit
+            record_active_commit(s2, "3.3", commit)
             if not commit.get("ok"):
                 result["ok"] = False
                 result["error_code"] = commit.get("error_code")
@@ -822,6 +843,51 @@ def _run_action(action, payload, feeder, job_id=None):
             }
 
         return _calidad(_run, timeout_sec=300.0)
+
+    if action == "flujo_situacional_34":
+        from core.cymdist_commit import load_active_commits
+        from core.report_provenance import tag_context
+        from pipeline.capture_informe_color_views import (
+            capture_native_pair_with_restore,
+            validate_situational_34_gates,
+        )
+        from pipeline.run_load_flow import run_load_flow
+        from core.feeder_context import output_path
+        import uuid
+
+        def _situational_34():
+            run_id = str(payload.get("run_id") or uuid.uuid4().hex)
+            commits = load_active_commits(s)
+            gates = validate_situational_34_gates(commits, s.get("context_fingerprint"))
+            if not gates.get("ok"):
+                return gates
+            lf = None
+            lf = run_load_flow(dict(s, skip_db_project_save=True), scenario="situacional")
+            if lf.get("status") not in ("ok", "dry_run"):
+                return {"ok": False, "error_code": "LOADFLOW_NOT_CONVERGED", "loadflow": lf}
+            pair = capture_native_pair_with_restore(s, "situacional", run_id, force=True)
+            evidence = pair.get("captures") or []
+            ok = bool(pair.get("ok"))
+            result = tag_context(s, {
+                "ok": ok,
+                "run_id": run_id,
+                "stage": "3.4",
+                "loadflow": lf,
+                "captures": evidence,
+                "commit_gates": gates,
+                "temporary_backup": pair.get("temporary_backup"),
+                "state_restored": pair.get("state_restored"),
+                "restore_error": pair.get("restore_error"),
+                "error_code": None if ok else "NATIVE_SITUATIONAL_EVIDENCE_FAILED",
+            })
+            path = output_path(s, "demand", "loadflow_situacional_34.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(result, handle, indent=2, ensure_ascii=False, default=str)
+            result["saved_to"] = path
+            return result
+
+        return _calidad(_situational_34, timeout_sec=900.0)
 
     if action == "flujo":
         from pipeline.run_load_flow import run_load_flow

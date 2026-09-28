@@ -27,6 +27,7 @@ from datetime import datetime
 from core.common import mkdir, load_json, require_cympy
 from core.feeder_context import load_settings, output_path
 from pipeline.generate_informe_charts import REQUIRED_LF_IMAGES
+from core.report_provenance import assert_report_context, sha256_file, tag_context
 
 # Tipos GUI CYME (cympy.properties.CymeEnums._CymGUIEnum_GUIDisplayLayerType)
 COLOR_VOLTAGE = "VoltageLevel"   # 38 — caida / nivel de tension (%)
@@ -82,6 +83,159 @@ SLOT_JOBS = (
     ("proyectado", "tension", COLOR_VOLTAGE, "proyectado_tension.png"),
     ("proyectado", "cargabilidad", COLOR_LOADING, "proyectado_cargabilidad.png"),
 )
+
+
+def validate_situational_34_gates(manifests, context_fingerprint):
+    required = ("1.2", "3.2", "3.3")
+    failures = []
+    accepted = {}
+    for stage in required:
+        item = (manifests or {}).get(stage)
+        if isinstance(item, str):
+            try:
+                with open(item, "r", encoding="utf-8") as handle:
+                    item = json.load(handle) or {}
+            except Exception as ex:
+                item = {"ok": False, "error": str(ex)}
+        if not isinstance(item, dict):
+            failures.append("%s:missing" % stage)
+            continue
+        if not item.get("ok") or not item.get("reopen_verified"):
+            failures.append("%s:not_verified" % stage)
+            continue
+        if str(item.get("context_fingerprint") or "") != str(context_fingerprint or ""):
+            failures.append("%s:context_mismatch" % stage)
+            continue
+        accepted[stage] = item
+    return {
+        "ok": not failures,
+        "error_code": None if not failures else "SITUATIONAL_34_GATES_FAILED",
+        "failures": failures,
+        "accepted": accepted,
+    }
+
+
+def validate_native_color_evidence(evidence, settings, run_id):
+    item = dict(evidence or {})
+    try:
+        assert_report_context(settings, item)
+    except Exception as ex:
+        return ex.to_dict() if hasattr(ex, "to_dict") else {"ok": False, "error_code": "CONTEXT_IDENTITY_MISMATCH", "error": str(ex)}
+    if item.get("color_type") not in (COLOR_VOLTAGE, COLOR_LOADING):
+        return {"ok": False, "error_code": "INVALID_COLOR_TYPE", "error": str(item.get("color_type"))}
+    if str(item.get("run_id") or "") != str(run_id or ""):
+        return {"ok": False, "error_code": "RUN_ID_MISMATCH"}
+    if str(item.get("capture_method") or "").lower() not in (
+        "exportactiveview", "gui_capture", "com_capture", "cympy"
+    ):
+        return {"ok": False, "error_code": "NATIVE_CAPTURE_REQUIRED"}
+    window = item.get("window_identity") or {}
+    if not window.get("hwnd") or not window.get("pid"):
+        return {"ok": False, "error_code": "CYMDIST_WINDOW_IDENTITY_MISSING"}
+    path = item.get("png_path")
+    if not path or not os.path.isfile(path):
+        return {"ok": False, "error_code": "PNG_MISSING"}
+    if str(item.get("png_sha256") or "") != sha256_file(path):
+        return {"ok": False, "error_code": "PNG_HASH_MISMATCH"}
+    if item.get("color_verified") is not True:
+        return {"ok": False, "error_code": "COLOR_NOT_VERIFIED"}
+    if item.get("loadflow_converged") is not True:
+        return {"ok": False, "error_code": "LOADFLOW_NOT_CONVERGED"}
+    if item.get("state_restored") is not True:
+        return {"ok": False, "error_code": "TEMPORARY_STATE_NOT_RESTORED"}
+    item["ok"] = True
+    return item
+
+
+def _current_cymdist_window_identity():
+    try:
+        from pipeline.capture_study_views import cyme_hwnd
+        hwnd = int(cyme_hwnd() or 0)
+        if not hwnd:
+            return {}
+        import win32process
+        import win32gui
+        _thread, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return {"hwnd": hwnd, "pid": int(pid), "title": win32gui.GetWindowText(hwnd)}
+    except Exception:
+        return {}
+
+
+def capture_native_color_view(settings, color_type, scenario, run_id, state_restored=False, force=True):
+    if color_type not in (COLOR_VOLTAGE, COLOR_LOADING):
+        return {"ok": False, "error_code": "INVALID_COLOR_TYPE", "error": str(color_type)}
+    result = capture_informe_color_views(settings, scenarios=[scenario], open_gui=True, force=force)
+    return native_color_evidence_from_existing(
+        settings, color_type, scenario, run_id,
+        state_restored=state_restored, capture_result=result,
+    )
+
+
+def native_color_evidence_from_existing(
+    settings, color_type, scenario, run_id, state_restored=False, capture_result=None
+):
+    kind = "tension" if color_type == COLOR_VOLTAGE else "cargabilidad"
+    filename = "%s_%s.png" % (scenario, kind)
+    path = os.path.join(_images_dir(settings), filename)
+    sidecar = _read_capture_meta(path) or {}
+    evidence = tag_context(settings, {
+        "ok": bool((capture_result or {}).get("ok")),
+        "run_id": run_id,
+        "scenario": scenario,
+        "color_type": color_type,
+        "capture_method": sidecar.get("export"),
+        "window_identity": _current_cymdist_window_identity(),
+        "png_path": path,
+        "png_sha256": sha256_file(path) if os.path.isfile(path) else "",
+        "color_verified": sidecar.get("color_verified") is True,
+        "loadflow_converged": sidecar.get("lf_converged") is True,
+        "state_restored": bool(state_restored),
+        "capture_result": capture_result or {},
+    })
+    return validate_native_color_evidence(evidence, settings, run_id)
+
+
+def capture_native_pair_with_restore(settings, scenario, run_id, force=True):
+    """Capture both native layers and restore the exact pre-capture study bytes."""
+    import uuid
+    study_path = str(settings.get("study_path") or "")
+    if not study_path or not os.path.isfile(study_path):
+        return {"ok": False, "error_code": "STUDY_NOT_FOUND", "error": study_path}
+    backup = study_path + ".native-capture.%s.%s.bak" % (run_id, uuid.uuid4().hex[:8])
+    shutil.copy2(study_path, backup)
+    capture_result = None
+    restored = False
+    restore_error = None
+    try:
+        capture_result = capture_informe_color_views(
+            settings, scenarios=[scenario], open_gui=True, force=force
+        )
+    finally:
+        try:
+            from core.cymdist_com import pause_cymdist_for_cympy, open_cymdist_gui
+            pause_cymdist_for_cympy(settings)
+            shutil.copy2(backup, study_path)
+            restored = sha256_file(backup) == sha256_file(study_path)
+            open_cymdist_gui(settings, kill_existing=False, reason="native_capture_restored")
+        except Exception as ex:
+            restore_error = str(ex)
+    evidence = [
+        native_color_evidence_from_existing(
+            settings, color_type, scenario, run_id,
+            state_restored=restored, capture_result=capture_result,
+        )
+        for color_type in (COLOR_VOLTAGE, COLOR_LOADING)
+    ]
+    return tag_context(settings, {
+        "ok": bool(restored and all(item.get("ok") for item in evidence)),
+        "run_id": run_id,
+        "scenario": scenario,
+        "captures": evidence,
+        "capture_result": capture_result,
+        "temporary_backup": backup,
+        "state_restored": restored,
+        "restore_error": restore_error,
+    })
 
 
 def _images_dir(settings):

@@ -217,7 +217,7 @@ export async function downloadApiFile(path: string, filename: string): Promise<v
 const PROTECTED_JOB_ACTIONS = new Set([
   "calidad_diagnosticar", "calidad_proponer", "calidad_aplicar",
   "calidad_convergencia", "calidad_hasta_limpio", "calidad_sistema",
-  "calidad_eld", "distribucion", "flujo", "clientes_activo_cymdist",
+  "calidad_eld", "distribucion", "flujo_situacional_34", "flujo", "clientes_activo_cymdist",
   "optimizacion_reclosers", "optimizacion_regulators", "optimizacion_capacitors",
   "suite_conexion", "suite_inventario_cargas", "suite_sync_equipos",
   "suite_fix_default", "suite_export_ascii", "suite_pipeline",

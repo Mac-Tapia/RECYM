@@ -744,6 +744,8 @@ def apply_corrections(settings=None, fix_voltages=True):
             ),
             _mutate_quality,
         )
+        from core.cymdist_commit import record_active_commit
+        record_active_commit(s, "2.3", commit)
         try:
             a.close_study(save=False)
         except Exception:

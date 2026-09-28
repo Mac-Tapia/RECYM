@@ -392,6 +392,8 @@ def apply_cabecera_medicion(settings, p_kw, q_kvar, save=True,
             _mutate_cabecera,
         )
         info["commit"] = commit
+        from core.cymdist_commit import record_active_commit
+        record_active_commit(settings, "1.2", commit)
         info["persist"] = commit
         info["saved"] = bool(commit.get("ok") and commit.get("save_counts", {}).get("study") == 1)
         info["db_updated"] = bool(commit.get("ok") and commit.get("save_counts", {}).get("database_update") == 1)

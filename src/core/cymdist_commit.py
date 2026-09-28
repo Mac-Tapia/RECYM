@@ -53,6 +53,40 @@ def require_verified_commit(result):
     return result
 
 
+def _active_registry_path(settings):
+    from core.feeder_context import output_path
+    return output_path(settings, "commits", "active_commits.json")
+
+
+def load_active_commits(settings):
+    path = _active_registry_path(settings)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle) or {}
+        return payload.get("stages") or {}
+    except Exception:
+        return {}
+
+
+def record_active_commit(settings, stage, commit):
+    if not isinstance(commit, dict) or not commit.get("ok") or not commit.get("reopen_verified"):
+        return False
+    path = _active_registry_path(settings)
+    payload = tag_context(settings, {"ok": True, "stages": load_active_commits(settings)})
+    payload["stages"][str(stage)] = {
+        "ok": True,
+        "reopen_verified": True,
+        "context_fingerprint": commit.get("context_fingerprint"),
+        "manifest_path": commit.get("manifest_path"),
+        "action": commit.get("action"),
+        "commit_mode": commit.get("commit_mode"),
+    }
+    _write_manifest(path, payload)
+    return True
+
+
 @dataclass
 class CommitRequest(object):
     settings: dict
@@ -230,5 +264,5 @@ def commit_cymdist_action(request, mutate):
 __all__ = [
     "CommitMode", "CommitRequest", "MUTATING_ACTION_MODES",
     "commit_cymdist_action", "commit_mode_for_action", "require_verified_commit",
-    "study_lock_key",
+    "load_active_commits", "record_active_commit", "study_lock_key",
 ]

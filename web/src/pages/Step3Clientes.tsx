@@ -3,7 +3,7 @@ import { api, runJob, type Json } from "../api/client";
 import { useFeeder } from "../state/feeder";
 import { ContextBind, useHasSectionContext } from "../components/ContextBind";
 
-type ActionId = "" | "3.1" | "3.2" | "3.3" | "files" | "incluir";
+type ActionId = "" | "3.1" | "3.2" | "3.3" | "3.4" | "files" | "incluir";
 
 function truthy(v: unknown) {
   return v === true || v === "True" || v === "true" || v === "1" || v === 1;
@@ -379,6 +379,26 @@ export function Step3Clientes() {
     }
   }
 
+  async function runSituacional34() {
+    setBusy("3.4");
+    setMsg("3.4 · LoadFlow situacional + capturas nativas VoltageLevel/LoadingLevel…");
+    try {
+      const result = await runJob("flujo_situacional_34", {}, (job) => {
+        if (job.message) setMsg(String(job.message));
+      });
+      const captures = (result.captures as Json[] | undefined) || [];
+      setMsg(
+        `3.4 ${result.ok ? "OK" : "FALLO"} · estado restaurado=${String(result.state_restored)}` +
+          ` · capturas verificadas=${captures.filter((item) => item.ok).length}/2` +
+          (result.saved_to ? `\nEvidencia: ${String(result.saved_to)}` : "")
+      );
+    } catch (error) {
+      setMsg(String(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
   return (
     <section className="panel">
       <h2>3 · Clientes importantes → SED + distribución</h2>
@@ -386,7 +406,8 @@ export function Step3Clientes() {
       <p className="muted">
         <b>3.1</b> cruzar NIS · <b>3.2</b> EA→Consumo(KWH) y Pot Locked ·{" "}
         <b>3.3</b> antes del módulo: desconecta en CYMDIST las no Incluir y resta Pot (Restar
-        cab.) de P máx §1; luego ejecuta solo <b>Load Allocation</b> de CYMDIST.
+        cab.) de P máx §1; luego ejecuta solo <b>Load Allocation</b> de CYMDIST. <b>3.4</b>{" "}
+        genera el estado situacional con coloreo nativo de tensión y cargabilidad y restaura el estudio.
       </p>
 
       <div className="grid">
@@ -424,6 +445,9 @@ export function Step3Clientes() {
         </button>
         <button type="button" {...btnProps("3.3")} disabled={Boolean(busy)} onClick={runDistrib}>
           3.3 · Ejecutar módulo Load Allocation (CYMDIST)
+        </button>
+        <button type="button" {...btnProps("3.4", "secondary")} disabled={Boolean(busy) || !hasCtx} onClick={runSituacional34}>
+          3.4 · Estado situacional + capturas nativas
         </button>
         <button
           type="button"

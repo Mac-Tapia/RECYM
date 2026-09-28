@@ -259,6 +259,8 @@ def connect_spot_load(settings, node_id, mode, p_kw, q_kvar=None, cosfi=None,
             _mutate_spotload,
         )
         result["commit"] = commit
+        from core.cymdist_commit import record_active_commit
+        record_active_commit(settings, "4", commit)
         result["saved"] = bool(commit.get("ok"))
         if not commit.get("ok"):
             result["Estado"] = "ERROR"

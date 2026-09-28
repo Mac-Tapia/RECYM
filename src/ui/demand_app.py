@@ -5897,6 +5897,8 @@ def api_clientes_aplicar():
                 ),
                 _mutate_clientes_32,
             )
+            from core.cymdist_commit import record_active_commit
+            record_active_commit(s, "3.2", commit)
         else:
             _mutate_clientes_32()
             commit = {"ok": False, "error_code": "SAVE_DISABLED", "reopen_verified": False}
