@@ -3752,6 +3752,11 @@ def _settings():
     """
     feeder, network_id = _request_feeder_network()
     body = request.get_json(silent=True) or {}
+    network_id = (
+        (body.get("network_id") or body.get("network") or "").strip()
+        or (request.headers.get("X-Network-Id") or "").strip()
+        or network_id
+    )
     db = (
         (body.get("database_mdb") or "").strip()
         or (request.headers.get("X-Database-Mdb") or "").strip()
@@ -3763,14 +3768,18 @@ def _settings():
         or None
     )
     if feeder:
-        s = load_settings(feeder_id=feeder, network_id=network_id, synthesize=True)
+        s = load_settings(
+            feeder_id=feeder,
+            network_id=network_id,
+            synthesize=True,
+            persist_synth=False,
+        )
     else:
         s = load_settings()
 
     if st:
-        from core.feeder_context import resolve_writable_study_path
         s["ui_study_path"] = st
-        s["study_path"] = resolve_writable_study_path(st, s)
+        s["study_path"] = st
         s["study_file"] = os.path.basename(s["study_path"])
     if db:
         s["database_mdb"] = db
@@ -3783,13 +3792,25 @@ def _settings():
             s["database_connection_name"] = os.path.splitext(os.path.basename(db))[0]
     if body.get("network_id") and not network_id:
         s["network_id"] = body.get("network_id")
+    elif network_id:
+        s["network_id"] = network_id
+
+    supplied_fingerprint = (
+        body.get("context_fingerprint")
+        or request.headers.get("X-Context-Fingerprint")
+        or ""
+    )
+    if db and st and feeder and network_id:
+        from core.context_identity import build_context_identity, context_fingerprint
+        identity = build_context_identity(s, require_complete=True)
+        expected_fingerprint = context_fingerprint(identity)
+        if supplied_fingerprint and str(supplied_fingerprint).lower() != expected_fingerprint:
+            s["_context_identity_error"] = "CONTEXT_IDENTITY_MISMATCH"
+        s["context_fingerprint"] = expected_fingerprint
 
     try:
         from core.feeder_context import resolve_cymdist_binding
         bind = resolve_cymdist_binding(s)
-        s["study_path"] = bind["study_path"]
-        s["ui_study_path"] = bind.get("ui_study_path") or s.get("ui_study_path")
-        s["database_mdb"] = bind["database_mdb"]
         s["database_connection_name"] = bind["database_connection_name"]
         s["_cymdist_binding"] = bind
     except Exception as ex:
@@ -6115,6 +6136,8 @@ def api_informe_armar():
     """
     s = _settings()
     body = request.get_json(silent=True) or {}
+    if s.get("_context_identity_error"):
+        return jsonify({"ok": False, "error_code": "CONTEXT_IDENTITY_MISMATCH", "error": "Huella de contexto distinta"}), 409
     do_fill = body.get("fill", True)
     mode = body.get("mode") or body.get("informe_mode") or "completo"
     try:
@@ -6142,6 +6165,9 @@ def api_informe_armar():
             manifest = assemble_informe(s, overwrite=True)
         return jsonify(manifest)
     except Exception as ex:
+        from core.context_identity import ContextIdentityError
+        if isinstance(ex, ContextIdentityError):
+            return jsonify(ex.to_dict()), 409
         return jsonify({"ok": False, "error": str(ex)})
 
 
@@ -6170,8 +6196,13 @@ def api_informe_review_ocr():
 def api_informe_preview():
     """Vista preliminar del informe creado (meta + métricas + gráficas) antes de cerrar."""
     s = _settings()
+    if s.get("_context_identity_error"):
+        return jsonify({"ok": False, "error_code": "CONTEXT_IDENTITY_MISMATCH", "error": "Huella de contexto distinta"}), 409
     try:
-        return jsonify(build_informe_preview(s))
+        result = build_informe_preview(s)
+        if result.get("error_code") == "CONTEXT_IDENTITY_MISMATCH":
+            return jsonify(result), 409
+        return jsonify(result)
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 
@@ -6193,6 +6224,8 @@ def api_informe_mapa_ubicacion():
 def api_informe_cerrar():
     """Confirma/cierra entrega solo tras validar la vista preliminar."""
     s = _settings()
+    if s.get("_context_identity_error"):
+        return jsonify({"ok": False, "error_code": "CONTEXT_IDENTITY_MISMATCH", "error": "Huella de contexto distinta"}), 409
     body = request.get_json(silent=True) or {}
     if not body.get("validated"):
         return jsonify({
@@ -6200,11 +6233,14 @@ def api_informe_cerrar():
             "error": "Marque que validó la vista preliminar antes de cerrar la entrega.",
         })
     try:
-        return jsonify(confirm_informe_entrega(
+        result = confirm_informe_entrega(
             s,
             note=body.get("note") or "",
             force=bool(body.get("force")),
-        ))
+        )
+        if result.get("error_code") == "CONTEXT_IDENTITY_MISMATCH":
+            return jsonify(result), 409
+        return jsonify(result)
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 
@@ -6214,6 +6250,11 @@ def api_informe_imagen(name):
     """Sirve PNG de gráficas del informe (vista preliminar)."""
     s = _settings()
     try:
+        from core.report_provenance import require_matching_manifest
+        paths = informe_paths(s)
+        gate = require_matching_manifest(s, os.path.join(paths.get("doc_dir") or "", "fill_manifest.json"))
+        if gate.get("error_code"):
+            return jsonify(gate), 409
         safe = os.path.basename(name or "")
         if not safe.lower().endswith(".png") or ".." in safe:
             return jsonify({"ok": False, "error": "Imagen no permitida"}), 400
@@ -6232,6 +6273,10 @@ def api_informe_archivo(kind):
     s = _settings()
     try:
         paths = informe_paths(s)
+        from core.report_provenance import require_matching_manifest
+        gate = require_matching_manifest(s, os.path.join(paths.get("doc_dir") or "", "fill_manifest.json"))
+        if gate.get("error_code"):
+            return jsonify(gate), 409
         key = (kind or "").strip().lower()
         if key in ("informe", "docx", "word"):
             path = paths.get("informe_doc")
@@ -6263,6 +6308,10 @@ def api_informe_pagina(name):
         if not safe or ".." in safe:
             return jsonify({"ok": False, "error": "nombre invalido"}), 400
         paths = informe_paths(s)
+        from core.report_provenance import require_matching_manifest
+        gate = require_matching_manifest(s, os.path.join(paths.get("doc_dir") or "", "fill_manifest.json"))
+        if gate.get("error_code"):
+            return jsonify(gate), 409
         path = os.path.join(paths.get("doc_dir") or "", "informe_preview", safe)
         if not os.path.isfile(path):
             return jsonify({"ok": False, "error": "No existe: %s" % safe}), 404

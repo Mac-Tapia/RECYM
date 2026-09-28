@@ -90,9 +90,13 @@ function withAuthHeaders(h: Headers, includeContext = true) {
   if (key && !h.has("X-Api-Key")) h.set("X-Api-Key", key);
   if (!includeContext) return;
   if (activeFeeder) h.set("X-Feeder", activeFeeder);
+  if (activeNetwork) h.set("X-Network-Id", activeNetwork);
   if (activeStudyPath && !h.has("X-Study-Path")) h.set("X-Study-Path", activeStudyPath);
   if (activeDatabaseMdb && !h.has("X-Database-Mdb")) {
     h.set("X-Database-Mdb", activeDatabaseMdb);
+  }
+  if (activeContextFingerprint) {
+    h.set("X-Context-Fingerprint", activeContextFingerprint);
   }
 }
 
@@ -173,6 +177,41 @@ function eventsUrl(jobId: string) {
   const key = getApiKey();
   const q = key ? `?api_key=${encodeURIComponent(key)}` : "";
   return `/api/jobs/${jobId}/events${q}`;
+}
+
+/** Descarga autenticada y contextual; evita anchors que pierden API key/identidad. */
+export async function downloadApiFile(path: string, filename: string): Promise<void> {
+  await ensureApiAuth();
+  const headers = new Headers();
+  withAuthHeaders(headers, true);
+  const response = await fetch(path, {
+    method: "GET",
+    headers,
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let message = text || `HTTP ${response.status}`;
+    try {
+      const parsed = JSON.parse(text) as { error?: string };
+      message = parsed.error || message;
+    } catch {
+      /* keep response text */
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 const PROTECTED_JOB_ACTIONS = new Set([

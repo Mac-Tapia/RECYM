@@ -20,6 +20,12 @@ from datetime import datetime
 
 from core.common import mkdir, p
 from core.feeder_context import load_settings, output_path
+from core.report_provenance import (
+    assert_report_context,
+    copy_audit_artifacts,
+    context_metadata,
+    tag_context,
+)
 
 # Modelos oficiales (inmutables)
 MODELO_DIR = p("data", "input", "InformeModelo")
@@ -70,6 +76,8 @@ def informe_paths(settings=None):
     base = _paths()
     feeder = s.get("feeder_id") or "?"
     feeder_out = output_path(s, "informe")
+    _identity, fingerprint = context_metadata(s)
+    audit_dir = os.path.join(feeder_out, fingerprint)
     return {
         "feeder_id": feeder,
         "plantilla_dir": base["plantilla_dir"],
@@ -86,6 +94,9 @@ def informe_paths(settings=None):
         "loadflow_proyectado": output_path(s, "demand", "loadflow_proyectado.json"),
         "loadflow_result": output_path(s, "demand", "loadflow_result.json"),
         "assemble_manifest": os.path.join(base["doc_dir"], "assemble_manifest.json"),
+        "audit_dir": audit_dir,
+        "audit_assemble_manifest": os.path.join(audit_dir, "assemble_manifest.json"),
+        "audit_fill_manifest": os.path.join(audit_dir, "fill_manifest.json"),
     }
 
 
@@ -137,7 +148,12 @@ def assemble_informe(settings=None, overwrite=True):
             "copied": copied,
         }
 
-    manifest = {
+    audit = copy_audit_artifacts(
+        s,
+        paths["audit_dir"],
+        [paths["informe_doc"], paths["justificacion_doc"]],
+    )
+    manifest = tag_context(s, {
         "ok": True,
         "feeder_id": s.get("feeder_id"),
         "assembled_at": datetime.now().isoformat(timespec="seconds"),
@@ -148,8 +164,12 @@ def assemble_informe(settings=None, overwrite=True):
         "modelo_dir": MODELO_DIR,
         "paths": paths,
         "copied": copied,
-    }
+        "audit": audit,
+    })
     with open(paths["assemble_manifest"], "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    mkdir(paths["audit_dir"])
+    with open(paths["audit_assemble_manifest"], "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
     return manifest
 

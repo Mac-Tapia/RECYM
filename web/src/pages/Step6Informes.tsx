@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { api, getActiveFeeder, type Json } from "../api/client";
+import { api, downloadApiFile, getActiveFeeder, type Json } from "../api/client";
 import { ContextBind } from "../components/ContextBind";
+import { useFeeder } from "../state/feeder";
 
 type Delivery = {
   ok?: boolean;
@@ -50,6 +51,14 @@ type Preview = {
   word_replacements?: { old?: string; new?: string; count?: number }[];
   confirm?: { confirmed_at?: string; note?: string } | null;
   error?: string;
+  error_code?: string;
+  context_fingerprint?: string;
+  context_identity?: {
+    database_mdb?: string;
+    study_path?: string;
+    feeder_id?: string;
+    network_id?: string;
+  };
 };
 
 const META_FIELDS = [
@@ -76,6 +85,7 @@ function fmt(v: unknown, digits = 2): string {
 }
 
 export function Step6Informes() {
+  const { contextFingerprint } = useFeeder();
   const [delivery, setDelivery] = useState<Delivery>({});
   const [paths, setPaths] = useState<Json>({});
   const [meta, setMeta] = useState<Record<string, string>>({});
@@ -85,6 +95,19 @@ export function Step6Informes() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [pdf, setPdf] = useState<File | null>(null);
+  const contextMismatch = Boolean(
+    preview?.context_fingerprint &&
+      contextFingerprint &&
+      preview.context_fingerprint !== contextFingerprint
+  );
+
+  async function download(path: string, filename: string) {
+    try {
+      await downloadApiFile(path, filename);
+    } catch (error) {
+      setMsg(String(error));
+    }
+  }
 
   async function refreshStatus() {
     const j = await api<Delivery>("/api/informe/status");
@@ -300,6 +323,15 @@ export function Step6Informes() {
         PDF OCR + ambos flujos §5 + gráficas → Word/Excel en doc/. Antes de cerrar, valide la vista preliminar.
         · alimentador {feederHdr}
       </p>
+      {preview?.context_identity && (
+        <div className={contextMismatch ? "pathbox bad" : "pathbox"}>
+          Contexto del informe: <b>{preview.context_identity.feeder_id}</b>
+          {" · "}{preview.context_identity.network_id}
+          {" · "}{preview.context_identity.database_mdb?.split(/[/\\]/).pop()}
+          {" · "}{preview.context_identity.study_path?.split(/[/\\]/).pop()}
+          {" · huella "}{preview.context_fingerprint}
+        </div>
+      )}
 
       <div className="pathbox">
         <b>Checklist entrega</b>{" "}
@@ -411,19 +443,19 @@ export function Step6Informes() {
           Actualizar preliminar
         </button>
         {preview?.docs?.informe?.exists && (
-          <a className="btn-link" href={preview.docs.informe.url || "/api/informe/archivo/informe"} download>
+          <button type="button" className="btn-link" onClick={() => download(preview.docs?.informe?.url || "/api/informe/archivo/informe", "informe.docx")}>
             Descargar informe.docx
-          </a>
+          </button>
         )}
         {preview?.docs?.justificacion?.exists && (
-          <a className="btn-link" href={preview.docs.justificacion.url || "/api/informe/archivo/justificacion"} download>
+          <button type="button" className="btn-link" onClick={() => download(preview.docs?.justificacion?.url || "/api/informe/archivo/justificacion", "justificacion.xlsx")}>
             Descargar justificacion.xlsx
-          </a>
+          </button>
         )}
         {preview?.docs?.pdf?.exists && (
-          <a className="btn-link" href={preview.docs.pdf.url || "/api/informe/archivo/pdf"} download>
+          <button type="button" className="btn-link" onClick={() => download(preview.docs?.pdf?.url || "/api/informe/archivo/pdf", "informe.pdf")}>
             Descargar informe.pdf
-          </a>
+          </button>
         )}
       </div>
 
@@ -534,7 +566,7 @@ export function Step6Informes() {
         <input
           type="checkbox"
           checked={validated}
-          disabled={!preview?.preview_ok || Boolean(preview?.closed)}
+          disabled={!preview?.preview_ok || contextMismatch || Boolean(preview?.closed)}
           onChange={(e) => setValidated(e.target.checked)}
         />
         He revisado la vista preliminar y el informe es correcto
@@ -553,7 +585,7 @@ export function Step6Informes() {
       <div className="actions">
         <button
           type="button"
-          disabled={busy || !preview?.preview_ok || !validated || Boolean(preview?.closed)}
+          disabled={busy || !preview?.preview_ok || contextMismatch || !validated || Boolean(preview?.closed)}
           onClick={closeDelivery}
         >
           {preview?.closed ? "Entrega ya cerrada" : "Cerrar entrega"}

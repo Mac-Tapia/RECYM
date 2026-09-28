@@ -21,6 +21,7 @@ import os
 from core.common import require_cympy, load_json, mkdir, run_cympy_main
 from core.cympy_adapter import CymPyAdapter
 from core.feeder_context import load_settings, output_path
+from core.report_provenance import tag_context
 from pipeline.add_spot_load import list_connected_spot_loads
 
 
@@ -114,7 +115,7 @@ def run_load_flow(settings=None, scenario=None):
     scen = (scenario or "").strip().lower() or None
     if scen and scen not in ("situacional", "proyectado"):
         scen = None
-    result = {
+    result = tag_context(s, {
         "feeder_id": s.get("feeder_id"),
         "network_id": net,
         "module": "LoadFlow",
@@ -125,7 +126,7 @@ def run_load_flow(settings=None, scenario=None):
             "Cada boton es independiente: situacional desconecta cargas §4; "
             "proyectado las conecta. No redistribuir tras SpotLoad."
         ),
-    }
+    })
     if s.get("dry_run"):
         result["status"] = "dry_run"
         print("[%s] DRY_RUN: flujo no ejecutado." % s["feeder_id"])
