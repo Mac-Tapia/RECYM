@@ -160,6 +160,14 @@ def _parse_feeder_arg(argv=None):
             return argv[i + 1].strip()
         if a.startswith("--feeder="):
             return a.split("=", 1)[1].strip()
+    # Support positional argument (e.g. run_all.py PA217)
+    for a in argv:
+        candidate = a.strip()
+        # Evitar interpretar selectores de unittest/pytest como alimentadores.
+        if not candidate.startswith("-") and re.match(
+            r"^[A-Za-z]{2,6}\d{2,4}$", candidate
+        ):
+            return candidate
     return None
 
 def list_feeders():

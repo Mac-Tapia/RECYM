@@ -163,25 +163,29 @@ export function Step3Clientes() {
         : "Guardando selección Incluir…"
     );
     try {
-      const j = await api<{
+      type SaveResult = {
         ok?: boolean;
         error?: string;
         msg?: string;
         rows?: Json[];
         n_activos?: number;
         n_excluidos?: number;
-      }>("/api/clientes/activo", {
-        method: "POST",
-        body: JSON.stringify({
-          feeder: fid,
-          feeders: [fid],
-          activo: activoMapFromUi(),
-          restar_cabecera: restarCabMapFromUi(),
-          apply_cymdist: applyCymdist,
-          merge_inventory: false,
-        }),
-        timeoutMs: applyCymdist ? 300000 : 60000,
-      });
+      };
+      const payload = {
+        feeder: fid,
+        feeders: [fid],
+        activo: activoMapFromUi(),
+        restar_cabecera: restarCabMapFromUi(),
+        apply_cymdist: applyCymdist,
+        merge_inventory: false,
+      };
+      const j = applyCymdist
+        ? (await runJob("clientes_activo_cymdist", payload)) as SaveResult
+        : await api<SaveResult>("/api/clientes/activo", {
+            method: "POST",
+            body: JSON.stringify(payload),
+            timeoutMs: 60000,
+          });
       if (!j.ok) throw new Error(j.error || "Error guardar Incluir");
       if (j.rows?.length) {
         setRows(j.rows);

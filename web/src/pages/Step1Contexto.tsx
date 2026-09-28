@@ -14,6 +14,9 @@ type CtxFiles = {
     study_file?: string;
     has_study?: boolean;
     label?: string;
+    operational?: boolean;
+    inputs_ready?: boolean;
+    input_errors?: { code?: string; message?: string }[];
   }[];
   current_database?: string;
   current_study?: string;
@@ -342,6 +345,12 @@ export function Step1Contexto() {
         "",
       studyPath: resolvedStudy || "",
       databaseMdb: dbPath,
+      inputsReady: feedersList.find(
+        (f) => String(f.feeder_id).toUpperCase() === (fid || "").toUpperCase()
+      )?.inputs_ready ?? null,
+      inputErrors: (feedersList.find(
+        (f) => String(f.feeder_id).toUpperCase() === (fid || "").toUpperCase()
+      )?.input_errors || []).map((e) => String(e.message || e.code || "Entrada inválida")),
     });
     if (mdb && feedersList.length) {
       setMsg(
@@ -796,6 +805,10 @@ export function Step1Contexto() {
       network: row?.network_id || "",
       studyPath: stPath || "",
       databaseMdb: db || "",
+      inputsReady: row?.inputs_ready ?? null,
+      inputErrors: (row?.input_errors || []).map((e) =>
+        String(e.message || e.code || "Entrada inválida")
+      ),
     });
     if (!keepFeeder) {
       if (fid) setFeeder(fid, row?.network_id);
@@ -939,6 +952,12 @@ export function Step1Contexto() {
         network: j.network_id || "",
         studyPath: uiStudy || j.study_path || "",
         databaseMdb: db || j.database_mdb || "",
+        inputsReady: (files.feeders || []).find(
+          (f) => String(f.feeder_id).toUpperCase() === resolved.toUpperCase()
+        )?.inputs_ready ?? null,
+        inputErrors: ((files.feeders || []).find(
+          (f) => String(f.feeder_id).toUpperCase() === resolved.toUpperCase()
+        )?.input_errors || []).map((e) => String(e.message || e.code || "Entrada inválida")),
       });
 
       const connName =
@@ -1094,6 +1113,9 @@ export function Step1Contexto() {
   const dbs = files.databases || [];
   const studies = files.studies || [];
   const feeders = files.feeders || [];
+  const selectedFeeder = feeders.find(
+    (f) => String(f.feeder_id).toUpperCase() === (feederPick || feeder).toUpperCase()
+  );
   const showPhases = Boolean(vLl);
 
   const dbOptions = dbs.map((d) => {
@@ -1219,11 +1241,20 @@ export function Step1Contexto() {
           </>
         )}
       </p>
+      {selectedFeeder && (
+        <div className={selectedFeeder.inputs_ready ? "pathbox ok" : "pathbox bad"}>
+          Contexto CYMDIST: {selectedFeeder.operational ? "disponible" : "incompleto"}
+          {" · "}Entradas Excel: {selectedFeeder.inputs_ready ? "listas" : "bloqueadas"}
+          {!selectedFeeder.inputs_ready && selectedFeeder.input_errors?.length
+            ? ` · ${selectedFeeder.input_errors.map((e) => e.message || e.code).join(" · ")}`
+            : ""}
+        </div>
+      )}
       <div className="actions">
         <button
           type="button"
           className="secondary"
-          disabled={busy || !db || !study}
+          disabled={busy || !db || !study || !feederPick || selectedFeeder?.operational === false}
           onClick={applyContext}
           title="Verifica si la BD existe en CYMDIST; si no, la crea; luego activa el estudio"
         >

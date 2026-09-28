@@ -55,7 +55,7 @@ from core.clientes_suministro import (
 )
 from core.spot_load_new import compute_pq
 
-UI_VERSION = "5.10"
+UI_VERSION = "6.1-spa-prod"
 # RECYM_SPA=1: la SPA React (FastAPI) sirve `/`; Flask solo expone /api/* (+ /tablero legado).
 SPA_MODE = os.environ.get("RECYM_SPA", "0") in ("1", "true", "True", "yes")
 app = Flask(__name__)
@@ -4125,6 +4125,40 @@ def api_contexto_archivos():
                 include_orphan_studies=True,
             )
 
+        # Capacidad explícita: contexto CYMDIST y archivos Excel son gates distintos.
+        from pipeline.validate_inputs import inspect_feeder_inputs
+        for row in feeders:
+            fid = str(row.get("feeder_id") or "").strip()
+            fs = {}
+            try:
+                fs = load_settings(
+                    feeder_id=fid,
+                    network_id=row.get("network_id"),
+                    synthesize=True,
+                    persist_synth=False,
+                )
+                inputs = inspect_feeder_inputs(fs)
+            except Exception as ex_inputs:
+                inputs = {
+                    "ok": False,
+                    "inputs_ready": False,
+                    "errors": [{
+                        "code": "INPUT_INSPECTION_ERROR",
+                        "message": str(ex_inputs),
+                    }],
+                }
+            study_candidate = str(row.get("study_path") or fs.get("study_path") or "")
+            db_candidate = str(eff.get("database_mdb") or "")
+            row["operational"] = bool(
+                row.get("network_id")
+                and study_candidate
+                and os.path.isfile(study_candidate)
+                and db_candidate
+                and os.path.isfile(db_candidate)
+            )
+            row["inputs_ready"] = bool(inputs.get("inputs_ready"))
+            row["input_errors"] = inputs.get("errors") or []
+
         cur_db = q_mdb or s.get("database_mdb") or global_s.get("database_mdb") or ""
         # Preferir elección UI (.xst/.zsxst); study_path puede ser el .zxst writable
         cur_st = (
@@ -6639,23 +6673,26 @@ def api_suite_conexion():
 
 @app.route("/api/suite/validar_entradas", methods=["POST"])
 def api_suite_validar_entradas():
-    s = _settings()
+    body = request.get_json(silent=True) or {}
+    fid = (
+        body.get("feeder")
+        or body.get("feeder_id")
+        or request.headers.get("X-Feeder")
+        or ""
+    ).strip()
+    s = load_settings(feeder_id=fid, synthesize=True) if fid else _settings()
     try:
-        import io
-        from pipeline import validate_inputs as vi
-        buf = io.StringIO()
-        old = sys.stdout
-        try:
-            sys.stdout = buf
-            # validate_inputs.main usa load_settings vía env/argv
-            os.environ["RECYM_FEEDER"] = str(s.get("feeder_id") or "")
-            vi.main()
-        finally:
-            sys.stdout = old
-        log = buf.getvalue()
-        return jsonify({"ok": True, "msg": "Validación ejecutada", "log": log[-4000:], "feeder_id": s.get("feeder_id")})
-    except SystemExit as se:
-        return jsonify({"ok": int(getattr(se, "code", 1) or 0) == 0, "error": str(se), "feeder_id": s.get("feeder_id")})
+        from pipeline.validate_inputs import inspect_feeder_inputs
+        result = inspect_feeder_inputs(s)
+        result["msg"] = (
+            "Validación de entradas OK"
+            if result.get("ok")
+            else "Entradas bloqueadas: %s" % "; ".join(
+                x.get("message") or x.get("code")
+                for x in (result.get("errors") or [])
+            )
+        )
+        return jsonify(result)
     except Exception as ex:
         return jsonify({"ok": False, "error": str(ex)})
 
@@ -6961,4 +6998,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

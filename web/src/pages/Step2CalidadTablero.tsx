@@ -339,9 +339,10 @@ export function Step2CalidadTablero() {
             (result?.summary as Json)?.total_messages ??
             0
         );
+        const tableroBefore = (result?.tablero as Json)?.before as Json | undefined;
         const nProb = Number(
           (result?.summary as Json)?.n_problems ??
-            (result?.tablero as Json)?.before?.n_problems ??
+            tableroBefore?.n_problems ??
             0
         );
         setMsg(
@@ -442,7 +443,11 @@ export function Step2CalidadTablero() {
         const key = rowKey(r);
         map[key] = activo[key] !== false;
       }
-      const j = await api<{
+      const j = await runJob("clientes_activo_cymdist", {
+        activo: map,
+        apply_cymdist: 1,
+        draw: true,
+      }) as {
         ok?: boolean;
         error?: string;
         n_activos?: number;
@@ -450,15 +455,7 @@ export function Step2CalidadTablero() {
         n?: number;
         rows?: Json[];
         msg?: string;
-      }>("/api/clientes/activo", {
-        method: "POST",
-        body: JSON.stringify({
-          activo: map,
-          apply_cymdist: true,
-          draw: true,
-        }),
-        timeoutMs: 180000,
-      });
+      };
       if (!j.ok) throw new Error(j.error || "Error");
       if (j.rows?.length) {
         const next: Record<string, boolean> = {};
@@ -553,11 +550,9 @@ export function Step2CalidadTablero() {
     setBusy(label);
     setMsg(`${label} · ejecutando módulo CYMDIST (equipo ${String(rec.equipment_id || "")})…`);
     try {
-      const j = await api<Json>(`/api/optimizacion/${action}`, {
-        method: "POST",
-        body: JSON.stringify({ force: true }),
-        timeoutMs: 600000,
-      });
+      const j = await runJob(`optimizacion_${action}`, { force: true }, (state) =>
+        setMsg(String(state.message || label))
+      );
       setMsg(
         `${label}: ${String(j.msg || (j.ok ? "OK" : j.error) || "")}` +
           (j.equipment_id ? ` · equipo ${j.equipment_id}` : "") +

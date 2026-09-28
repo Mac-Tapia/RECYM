@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { api, type Json } from "../api/client";
+import { api, runJob, type Json } from "../api/client";
 import { useFeeder } from "../state/feeder";
 import { ContextBind, useHasSectionContext } from "../components/ContextBind";
 
 export function Step7Suite() {
-  const { feeder } = useFeeder();
+  const { feeder, inputsReady, inputErrors } = useFeeder();
   const hasCtx = useHasSectionContext();
   const [force, setForce] = useState(false);
   const [msg, setMsg] = useState("");
@@ -37,11 +37,36 @@ export function Step7Suite() {
     }
   }
 
+  async function job(action: string, label: string, body: Json = {}) {
+    if (!hasCtx) {
+      setMsg("Elija BD + estudio en §1 y pulse 1.1 Aplicar antes de §7.");
+      return;
+    }
+    setBusy(true);
+    setMsg(label + "…");
+    try {
+      const j = await runJob(action, body, (state) =>
+        setMsg(String(state.message || label))
+      );
+      setOut(JSON.stringify(j, null, 2));
+      setMsg(String(j.msg || (j.ok ? "OK" : j.error) || label));
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="panel">
       <h2>7 · Optimización + Suite</h2>
       <ContextBind hint="Optimización y herramientas sobre el estudio/BD de §1" />
       <p className="muted">Herramientas del pipeline · alimentador {feeder || "—"}.</p>
+      {inputsReady === false && (
+        <div className="pathbox bad">
+          Entradas Excel bloqueadas: {inputErrors.join(" · ") || "revise §1"}
+        </div>
+      )}
 
       <h3>7.1 Optimización CYMDIST</h3>
       <p className="muted" style={{ marginTop: 0 }}>
@@ -55,15 +80,15 @@ export function Step7Suite() {
           Forzar
         </label>
         <button type="button" className="secondary" disabled={busy}
-          onClick={() => call("/api/optimizacion/reclosers", "7.1a Reclosers", { force })}>
+          onClick={() => job("optimizacion_reclosers", "7.1a Reclosers", { force })}>
           7.1a · Reconectadores
         </button>
         <button type="button" className="secondary" disabled={busy}
-          onClick={() => call("/api/optimizacion/capacitors", "7.1c Capacitors", { force })}>
+          onClick={() => job("optimizacion_capacitors", "7.1c Capacitors", { force })}>
           7.1c · Capacitores (1º si hay caídas de V)
         </button>
         <button type="button" className="secondary" disabled={busy}
-          onClick={() => call("/api/optimizacion/regulators", "7.1b Regulators", { force })}>
+          onClick={() => job("optimizacion_regulators", "7.1b Regulators", { force })}>
           7.1b · Reguladores (2º)
         </button>
       </div>
@@ -75,7 +100,7 @@ export function Step7Suite() {
           7.2a · Validar entorno
         </button>
         <button type="button" className="secondary" disabled={busy}
-          onClick={() => call("/api/suite/conexion", "Conexión")}>
+          onClick={() => job("suite_conexion", "Conexión")}>
           7.2b · Probar conexión CYMDIST
         </button>
         <button type="button" className="ghost" disabled={busy}
@@ -83,23 +108,23 @@ export function Step7Suite() {
           7.2c · Validar entradas Excel
         </button>
         <button type="button" className="ghost" disabled={busy}
-          onClick={() => call("/api/suite/inventario_cargas", "Inventario", { system: true })}>
+          onClick={() => job("suite_inventario_cargas", "Inventario", { system: true })}>
           7.2d · Inventario SpotLoad (96)
         </button>
       </div>
 
       <h3>7.3 Equipos / modelo</h3>
       <div className="actions">
-        <button type="button" className="secondary" disabled={busy}
-          onClick={() => call("/api/suite/sync_equipos", "Sync equipos")}>
+        <button type="button" className="secondary" disabled={busy || inputsReady === false}
+          onClick={() => job("suite_sync_equipos", "Sync equipos")}>
           7.3a · Sync equipos Excel → CYMDIST
         </button>
         <button type="button" className="ghost" disabled={busy}
-          onClick={() => call("/api/suite/fix_default", "Fix DEFAULT")}>
+          onClick={() => job("suite_fix_default", "Fix DEFAULT")}>
           7.3b · Cerrar DEFAULT AAAC/XLPE
         </button>
         <button type="button" className="ghost" disabled={busy}
-          onClick={() => call("/api/suite/export_ascii", "Export ASCII")}>
+          onClick={() => job("suite_export_ascii", "Export ASCII")}>
           7.3c · Exportar ASCII
         </button>
       </div>
@@ -134,10 +159,10 @@ export function Step7Suite() {
 
       <h3>7.5 Pipeline batch</h3>
       <div className="actions">
-        <button type="button" className="secondary" disabled={busy}
+        <button type="button" className="secondary" disabled={busy || inputsReady === false}
           onClick={() => {
             if (!confirm("Ejecutar pipeline completo. ¿Continuar?")) return;
-            call("/api/suite/pipeline", "Pipeline");
+            job("suite_pipeline", "Pipeline");
           }}>
           7.5 · Ejecutar pipeline alimentador
         </button>

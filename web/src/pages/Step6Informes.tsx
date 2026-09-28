@@ -447,7 +447,7 @@ export function Step6Informes() {
               ["Solicitud", preview.meta?.solicitud],
             ].map(([lab, val]) => (
               <div key={String(lab)}>
-                <label>{lab}</label>
+                <label>{String(lab)}</label>
                 <div className="preview-val">{val == null || val === "" ? "—" : String(val)}</div>
               </div>
             ))}

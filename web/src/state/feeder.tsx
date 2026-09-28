@@ -6,12 +6,16 @@ type Ctx = {
   network: string;
   studyPath: string;
   databaseMdb: string;
+  inputsReady: boolean | null;
+  inputErrors: string[];
   setFeeder: (f: string, network?: string) => void;
   setContext: (opts: {
     feeder?: string;
     network?: string;
     studyPath?: string;
     databaseMdb?: string;
+    inputsReady?: boolean | null;
+    inputErrors?: string[];
   }) => void;
 };
 
@@ -22,13 +26,21 @@ export function FeederProvider({ children }: { children: ReactNode }) {
   const [network, setN] = useState("");
   const [studyPath, setStudyPath] = useState("");
   const [databaseMdb, setDatabaseMdb] = useState("");
+  const [inputsReady, setInputsReady] = useState<boolean | null>(null);
+  const [inputErrors, setInputErrors] = useState<string[]>([]);
   const value = useMemo<Ctx>(
     () => ({
       feeder,
       network,
       studyPath,
       databaseMdb,
+      inputsReady,
+      inputErrors,
       setFeeder: (f, n) => {
+        if ((f || "") !== feeder) {
+          setInputsReady(null);
+          setInputErrors([]);
+        }
         setF(f || "");
         if (n !== undefined) setN(n || "");
         setActiveFeeder(f || "");
@@ -39,6 +51,8 @@ export function FeederProvider({ children }: { children: ReactNode }) {
         if (opts.network !== undefined) setN(opts.network || "");
         if (opts.studyPath !== undefined) setStudyPath(opts.studyPath || "");
         if (opts.databaseMdb !== undefined) setDatabaseMdb(opts.databaseMdb || "");
+        if (opts.inputsReady !== undefined) setInputsReady(opts.inputsReady);
+        if (opts.inputErrors !== undefined) setInputErrors(opts.inputErrors);
         setActiveContext({
           feeder: opts.feeder !== undefined ? opts.feeder || "" : undefined,
           network: opts.network,
@@ -47,7 +61,7 @@ export function FeederProvider({ children }: { children: ReactNode }) {
         });
       },
     }),
-    [feeder, network, studyPath, databaseMdb]
+    [feeder, network, studyPath, databaseMdb, inputsReady, inputErrors]
   );
   return <FeederCtx.Provider value={value}>{children}</FeederCtx.Provider>;
 }

@@ -28,6 +28,16 @@ ISOLATED_ACTIONS = frozenset(
         "calidad_eld",
         "distribucion",
         "flujo",
+        "optimizacion_reclosers",
+        "optimizacion_regulators",
+        "optimizacion_capacitors",
+        "suite_conexion",
+        "suite_inventario_cargas",
+        "suite_sync_equipos",
+        "suite_fix_default",
+        "suite_export_ascii",
+        "suite_pipeline",
+        "clientes_activo_cymdist",
     ]
 )
 

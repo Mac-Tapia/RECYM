@@ -24,6 +24,28 @@ os.environ["RECYM_JOB_WORKER"] = "1"
 os.environ.setdefault("RECYM_SPA", "1")
 
 
+def write_result_and_exit(out_path, result, exit_code):
+    """Persiste el resultado y termina sin ejecutar destructores nativos.
+
+    CymPy/COM puede fallar durante el teardown del interprete. El fsync garantiza
+    que el padre pueda leer el JSON antes de os._exit; aun si CYME falla al
+    descargar su DLL, el padre conserva el resultado y el código nativo.
+    """
+    raw = json.dumps(
+        result, ensure_ascii=False, indent=2, default=str
+    ).encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    fd = os.open(out_path, flags, 0o600)
+    offset = 0
+    while offset < len(raw):
+        offset += os.write(fd, raw[offset:])
+    os.fsync(fd)
+    # No cerrar fd ni retornar: Windows libera el handle al terminar el proceso.
+    os._exit(int(exit_code))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="RECYM job worker aislado")
     ap.add_argument("--action", required=True)
@@ -70,25 +92,15 @@ def main(argv=None):
             "traceback": traceback.format_exc(),
         }
 
-    try:
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2, default=str)
-    except Exception as ex_w:
-        sys.stderr.write("No se pudo escribir out: %s\n" % ex_w)
-        return 2
-
-    # Salida limpia: evitar teardown CymPy 0xC0000005 si es posible
+    # Salida inmediata: persistir antes del posible teardown CymPy/COM.
     ok = bool(result.get("ok", True)) if isinstance(result, dict) else True
     if isinstance(result, dict) and result.get("ok") is False:
         ok = False
     try:
-        from core.common import exit_ok, exit_fail
-
-        if ok:
-            exit_ok()
-        exit_fail(1)
-    except Exception:
-        return 0 if ok else 1
+        write_result_and_exit(out_path, result, 0 if ok else 1)
+    except Exception as ex_w:
+        sys.stderr.write("No se pudo escribir out: %s\n" % ex_w)
+        return 2
 
 
 if __name__ == "__main__":

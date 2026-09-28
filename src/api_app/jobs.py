@@ -18,6 +18,59 @@ router = APIRouter()
 _LOCK = threading.Lock()
 _JOBS = {}  # type: Dict[str, dict]
 
+_LEGACY_JOB_ROUTES = {
+    "optimizacion_reclosers": "/api/optimizacion/reclosers",
+    "optimizacion_regulators": "/api/optimizacion/regulators",
+    "optimizacion_capacitors": "/api/optimizacion/capacitors",
+    "suite_conexion": "/api/suite/conexion",
+    "suite_inventario_cargas": "/api/suite/inventario_cargas",
+    "suite_sync_equipos": "/api/suite/sync_equipos",
+    "suite_fix_default": "/api/suite/fix_default",
+    "suite_export_ascii": "/api/suite/export_ascii",
+    "suite_pipeline": "/api/suite/pipeline",
+    "clientes_activo_cymdist": "/api/clientes/activo",
+}
+
+_INPUT_REQUIRED_JOB_ACTIONS = frozenset(["suite_sync_equipos", "suite_pipeline"])
+
+
+def legacy_route_for_action(action):
+    """Retorna solo rutas §7 explícitamente aprobadas para el worker."""
+    path = _LEGACY_JOB_ROUTES.get(str(action or ""))
+    if not path:
+        raise ValueError("Acción legacy no permitida: %s" % action)
+    return path
+
+
+def _run_legacy_api_action(action, payload, feeder):
+    """Ejecuta una ruta Flask allow-listed dentro del proceso hijo."""
+    from ui.demand_app import app as flask_app
+
+    path = legacy_route_for_action(action)
+    body = dict(payload or {})
+    if feeder:
+        body.setdefault("feeder", feeder)
+        body.setdefault("feeder_id", feeder)
+    headers = {}
+    if feeder:
+        headers["X-Feeder"] = str(feeder)
+    if body.get("study_path"):
+        headers["X-Study-Path"] = str(body["study_path"])
+    if body.get("database_mdb"):
+        headers["X-Database-Mdb"] = str(body["database_mdb"])
+    with flask_app.test_client() as client:
+        response = client.open(path, method="POST", json=body, headers=headers)
+        result = response.get_json(silent=True)
+    if not isinstance(result, dict):
+        return {
+            "ok": False,
+            "error": "Respuesta no JSON de %s (HTTP %s)" % (path, response.status_code),
+            "http_status": response.status_code,
+        }
+    result.setdefault("http_status", response.status_code)
+    result.setdefault("job_action", action)
+    return result
+
 
 class JobCreate(BaseModel):
     action: str = ""
@@ -61,7 +114,10 @@ def _run_action(action, payload, feeder, job_id=None):
     st = (
         (payload.get("study_path") or payload.get("ui_study_path") or "")
     ).strip() or None
-    if db or st or fid:
+    # Un feeder aislado selecciona configuración para esta ejecución, pero no
+    # debe reescribir el contexto global. Solo una selección explícita de §1
+    # (BD o estudio) autoriza persistirla.
+    if db or st:
         try:
             ctx = apply_context_selection(
                 database_mdb=db,
@@ -233,6 +289,20 @@ def _run_action(action, payload, feeder, job_id=None):
             return _annotate_study(fn())
 
         return with_cympy_lock(action, _wrapped, timeout_sec=float(timeout_sec))
+
+    if action in _LEGACY_JOB_ROUTES:
+        if action in _INPUT_REQUIRED_JOB_ACTIONS:
+            from pipeline.validate_inputs import inspect_feeder_inputs
+            inputs = inspect_feeder_inputs(s)
+            if not inputs.get("ok"):
+                return {
+                    "ok": False,
+                    "error_code": "INPUTS_NOT_READY",
+                    "error": "Entradas Excel bloqueadas para %s" % (s.get("feeder_id") or "?"),
+                    "errors": inputs.get("errors") or [],
+                    "inputs": inputs,
+                }
+        return _annotate_study(_run_legacy_api_action(action, payload, fid))
 
     if action == "calidad_diagnosticar":
         from pipeline.model_quality_gate import run_network_diagnostic
