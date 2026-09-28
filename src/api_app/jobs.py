@@ -97,6 +97,82 @@ def get_job(job_id):
 def _run_action(action, payload, feeder, job_id=None):
     """Ejecuta acciones conocidas reutilizando pipeline / Flask helpers."""
     payload = payload or {}
+    if action == "contexto_descubrir_redes":
+        from core.context_identity import canonical_file_path
+        from pipeline.model_quality_gate import list_bd_networks
+
+        requested = str(payload.get("database_mdb") or "").strip()
+        if not requested:
+            return {
+                "ok": False,
+                "error_code": "CONTEXT_INCOMPLETE",
+                "error": "Falta database_mdb para descubrir redes",
+            }
+        requested = os.path.realpath(os.path.abspath(os.path.normpath(requested)))
+        if not os.path.isfile(requested):
+            return {
+                "ok": False,
+                "error_code": "FILE_NOT_FOUND",
+                "error": "Base MDB no encontrada: %s" % requested,
+            }
+        if os.path.splitext(requested)[1].lower() != ".mdb":
+            return {
+                "ok": False,
+                "error_code": "INVALID_FILE_EXTENSION",
+                "error": "La base seleccionada debe tener extensión .mdb",
+            }
+        ephemeral = {
+            "database_mdb": requested,
+            "database_connection_name": os.path.splitext(os.path.basename(requested))[0],
+        }
+        discovered = list_bd_networks(
+            ephemeral,
+            force=True,
+            soft=False,
+            persist_cache=False,
+        )
+        if not isinstance(discovered, dict) or discovered.get("ok") is False:
+            return discovered if isinstance(discovered, dict) else {
+                "ok": False,
+                "error": "Descubrimiento CYMDIST sin respuesta",
+            }
+        by_network = {}
+        for item in discovered.get("networks") or []:
+            network_id = str(item.get("network_id") or "").strip()
+            if not network_id:
+                continue
+            feeder_id = str(item.get("feeder_id") or "").strip()
+            by_network[network_id] = {
+                "feeder_id": feeder_id,
+                "network_id": network_id,
+                "label": str(item.get("label") or "%s · %s" % (feeder_id, network_id)),
+            }
+        feeders = sorted(
+            by_network.values(),
+            key=lambda row: (row["feeder_id"].upper(), row["network_id"].upper()),
+        )
+        if not feeders:
+            return {
+                "ok": False,
+                "error_code": "NO_NETWORKS_FOUND",
+                "error": "CYMDIST no devolvió redes para la MDB seleccionada",
+                "source": discovered.get("source") or "cympy",
+                "database_mdb": requested,
+                "canonical_database_mdb": canonical_file_path(requested),
+                "feeders": [],
+                "n": 0,
+            }
+        return {
+            "ok": True,
+            "source": discovered.get("source") or "cympy",
+            "database_mdb": requested,
+            "canonical_database_mdb": canonical_file_path(requested),
+            "database_key": discovered.get("database_key"),
+            "connection": discovered.get("connection"),
+            "feeders": feeders,
+            "networks": feeders,
+            "n": len(feeders),
+        }
     from core.feeder_context import (
         load_settings,
         resolve_writable_study_path,

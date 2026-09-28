@@ -25,7 +25,13 @@ from pipeline.run_demand_allocation import load_session, save_session
 # Listo solo si no quedan Error / Warning / Hint del NetworkDiagnostic
 PROBLEM_SEVERITIES_LOCAL = ("Error", "Warning", "Hint")
 
-_NETWORKS_CACHE = {"ts": 0, "items": [], "connection": ""}
+_NETWORKS_CACHE = {
+    "ts": 0,
+    "items": [],
+    "connection": "",
+    "database_key": "",
+    "database_mdb": "",
+}
 
 # CymPy/COM no es reentrante: a lo sumo 1 operación pesada a la vez.
 # Las APIs ligeras (ping, listas en disco) NO deben esperar este lock.
@@ -73,7 +79,16 @@ def with_cympy_lock(who, fn, timeout_sec=0.5):
             pass
 
 
-def _networks_disk_path(connection=""):
+def _database_cache_identity(database_mdb=""):
+    from core.context_identity import canonical_file_path
+    import hashlib
+
+    canonical = canonical_file_path(database_mdb)
+    key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16] if canonical else ""
+    return canonical, key
+
+
+def _networks_disk_path(connection="", database_mdb=""):
     """Catálogo de redes en disco (la UI arranca sin abrir CYMDIST).
 
     Si hay connection, usa archivo por BD (bd_networks_<conn>.json) y mantiene
@@ -86,18 +101,21 @@ def _networks_disk_path(connection=""):
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         base = os.path.join(root, "data", "output", "system")
     conn = str(connection or "").strip()
-    if not conn:
+    _canonical, database_key = _database_cache_identity(database_mdb)
+    if not conn and not database_key:
         return os.path.join(base, "bd_networks.json")
     safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in conn)
     safe = safe.strip("_") or "default"
-    return os.path.join(base, "bd_networks_%s.json" % safe)
+    suffix = ("_" + database_key) if database_key else ""
+    return os.path.join(base, "bd_networks_%s%s.json" % (safe, suffix))
 
 
-def _load_networks_disk(connection=""):
+def _load_networks_disk(connection="", database_mdb=""):
     # Preferir catálogo de esa conexión; fallback al genérico
     paths = []
-    if connection:
-        paths.append(_networks_disk_path(connection))
+    requested_path, _requested_key = _database_cache_identity(database_mdb)
+    if connection or requested_path:
+        paths.append(_networks_disk_path(connection, database_mdb))
     paths.append(_networks_disk_path(""))
     seen = set()
     for path in paths:
@@ -111,6 +129,9 @@ def _load_networks_disk(connection=""):
             disk_conn = str(data.get("connection") or "").strip()
             if connection and disk_conn and disk_conn.lower() != str(connection).strip().lower():
                 continue
+            disk_path = str(data.get("canonical_database_mdb") or "").strip()
+            if requested_path and disk_path != requested_path:
+                continue
             items = data.get("networks") or []
             if items:
                 return items, disk_conn or connection
@@ -119,10 +140,11 @@ def _load_networks_disk(connection=""):
     return None, ""
 
 
-def _save_networks_disk(items, connection=""):
+def _save_networks_disk(items, connection="", database_mdb=""):
     conn = str(connection or "").strip()
-    paths = [_networks_disk_path(conn)]
-    if conn:
+    canonical_mdb, database_key = _database_cache_identity(database_mdb)
+    paths = [_networks_disk_path(conn, database_mdb)]
+    if conn or canonical_mdb:
         paths.append(_networks_disk_path(""))  # también «último»
     for path in paths:
         try:
@@ -132,6 +154,8 @@ def _save_networks_disk(items, connection=""):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({
                     "connection": conn,
+                    "database_key": database_key,
+                    "canonical_database_mdb": canonical_mdb,
                     "n": len(items or []),
                     "networks": items or [],
                     "ts": ts(),
@@ -144,6 +168,9 @@ def clear_networks_cache():
     """Limpia caché de redes BD (para Restablecer UI). No borra el catálogo en disco."""
     _NETWORKS_CACHE["ts"] = 0
     _NETWORKS_CACHE["items"] = []
+    _NETWORKS_CACHE["connection"] = ""
+    _NETWORKS_CACHE["database_key"] = ""
+    _NETWORKS_CACHE["database_mdb"] = ""
     return True
 
 
@@ -153,7 +180,13 @@ def feeder_id_from_network(network_id):
     return parts[-1] if parts else str(network_id or "")
 
 
-def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
+def list_bd_networks(
+    settings=None,
+    force=False,
+    cache_ttl_sec=300,
+    soft=False,
+    persist_cache=True,
+):
     """Lista redes de la BD CYMDIST (alimentadores del estudio compartido).
 
     soft=True  → solo memoria/disco (NO abre CYMDIST). Arranque UI instantáneo.
@@ -165,6 +198,7 @@ def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
     s = settings or load_settings()
     now = time.time()
     mdb_path = (s.get("database_mdb") or "").strip()
+    canonical_mdb, database_key = _database_cache_identity(mdb_path)
     conn = (
         s.get("database_connection_name")
         or (os.path.splitext(os.path.basename(mdb_path))[0] if mdb_path else "")
@@ -176,6 +210,7 @@ def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
         not force
         and _NETWORKS_CACHE["items"]
         and str(_NETWORKS_CACHE.get("connection") or "") == str(conn)
+        and str(_NETWORKS_CACHE.get("database_key") or "") == database_key
         and (now - float(_NETWORKS_CACHE["ts"] or 0)) < float(cache_ttl_sec)
     ):
         return {
@@ -183,22 +218,29 @@ def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
             "cached": True,
             "source": "memory",
             "connection": conn,
+            "database_mdb": mdb_path,
+            "database_key": database_key,
             "n": len(_NETWORKS_CACHE["items"]),
             "networks": list(_NETWORKS_CACHE["items"]),
         }
 
     # 2) disco (sin CYMDIST) — por conexión
     if not force:
-        disk_items, disk_conn = _load_networks_disk(conn)
+        disk_items, disk_conn = _load_networks_disk(conn, mdb_path)
         if disk_items:
-            _NETWORKS_CACHE["ts"] = now
-            _NETWORKS_CACHE["items"] = disk_items
-            _NETWORKS_CACHE["connection"] = disk_conn or conn
+            if persist_cache:
+                _NETWORKS_CACHE["ts"] = now
+                _NETWORKS_CACHE["items"] = disk_items
+                _NETWORKS_CACHE["connection"] = disk_conn or conn
+                _NETWORKS_CACHE["database_key"] = database_key
+                _NETWORKS_CACHE["database_mdb"] = canonical_mdb
             return {
                 "ok": True,
                 "cached": True,
                 "source": "disk",
                 "connection": disk_conn or conn,
+                "database_mdb": mdb_path,
+                "database_key": database_key,
                 "n": len(disk_items),
                 "networks": list(disk_items),
             }
@@ -209,6 +251,8 @@ def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
                 "source": "none",
                 "soft": True,
                 "connection": conn,
+                "database_mdb": mdb_path,
+                "database_key": database_key,
                 "n": 0,
                 "networks": [],
                 "msg": "Sin catálogo local para esta BD. Pulse actualizar (abre CYMDIST una vez).",
@@ -319,16 +363,20 @@ def list_bd_networks(settings=None, force=False, cache_ttl_sec=300, soft=False):
                 "has_config": fid in configured,
                 "label": "%s · %s" % (fid, nid),
             })
-        _NETWORKS_CACHE["ts"] = time.time()
-        _NETWORKS_CACHE["items"] = items
-        _NETWORKS_CACHE["connection"] = cname
-        _save_networks_disk(items, cname)
+        if persist_cache:
+            _NETWORKS_CACHE["ts"] = time.time()
+            _NETWORKS_CACHE["items"] = items
+            _NETWORKS_CACHE["connection"] = cname
+            _NETWORKS_CACHE["database_key"] = database_key
+            _NETWORKS_CACHE["database_mdb"] = canonical_mdb
+            _save_networks_disk(items, cname, mdb_path)
         return {
             "ok": True,
             "cached": False,
             "source": "cympy",
             "connection": cname,
             "database_mdb": mdb_path,
+            "database_key": database_key,
             "n": len(items),
             "networks": items,
         }

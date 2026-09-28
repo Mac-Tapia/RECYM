@@ -38,6 +38,7 @@ ISOLATED_ACTIONS = frozenset(
         "suite_export_ascii",
         "suite_pipeline",
         "clientes_activo_cymdist",
+        "contexto_descubrir_redes",
     ]
 )
 
