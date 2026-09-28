@@ -137,6 +137,11 @@ class UniversalRunner(object):
         try:
             result = fn()
             _assert_context(result, self.identity)
+            if isinstance(result, dict) and result.get("error_code"):
+                raise ApiError("%s: %s" % (
+                    result.get("error_code"),
+                    result.get("error") or result.get("msg") or "compuerta fallida",
+                ))
             self.evidence.append(stage, "passed", "Compuerta verificada", result=result)
             print("[OK] %s" % stage)
             return True
@@ -193,7 +198,7 @@ class UniversalRunner(object):
                 raise ApiError("CLIENT_FILES_REQUIRED")
             return self.client.request("POST", "/api/clientes/tabla", dict(
                 common, feeder=i["feeder_id"], feeders=[i["feeder_id"]],
-                suministro=supply, clientesimportantes=clients, rebuild=False,
+                suministro_file=supply, clientes_file=clients, rebuild=False,
             ), timeout=300)
 
         self._execute("3.1", clients_table)

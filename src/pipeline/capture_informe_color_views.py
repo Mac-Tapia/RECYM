@@ -699,6 +699,16 @@ if layer not in layers:
 cympy.study.SelectColorCodingLayer(layer)
 _log("selected=" + layer)
 try:
+    if NETWORK_ID:
+        # Dentro de Cyme LocateNetwork sí activa el documento/unifilar; desde
+        # un proceso CymPy externo no tiene efecto.
+        cympy.study.LocateNetwork(NETWORK_ID)
+        _log("located=" + NETWORK_ID)
+    cympy.study.DisplayBestFit()
+    _log("best_fit=OK")
+except Exception as ex:
+    _log("locate_warn=" + repr(ex))
+try:
     cympy.app.ActivateRefresh(True)
 except Exception:
     pass
@@ -1801,6 +1811,12 @@ def _try_com_color_and_capture(settings, color_type, out_path):
         notes.extend(color_notes or [])
         if not ran:
             notes.append("AVISO: select no confirmo — se intenta captura igual")
+
+        # Confirmación visual adicional sobre el combo real. Es fail-safe: no
+        # selecciona combo[0] ni usa coordenadas si no encuentra el nombre.
+        ui_ok, ui_notes = _ui_select_colorear_por(color_type)
+        notes.extend(ui_notes or [])
+        notes.append("ui_color_select=%s" % bool(ui_ok))
 
         # Captura inmediata (no revive: reopen pierde capas %)
         ok, err = _capture_best_cyme_view(out_path, settle_s=0.35)

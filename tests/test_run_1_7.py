@@ -45,6 +45,13 @@ class FakeClient(object):
         return dict(self.identity, ok=True, run_id=payload.get("run_id"))
 
 
+class SoftFalseClient(FakeClient):
+    def job(self, action, payload, timeout=900, poll=1.0):
+        if action == "calidad_diagnosticar":
+            return dict(self.identity, ok=True, error_code="NATIVE_DIAGNOSTIC_CAPTURE_FAILED")
+        return super(SoftFalseClient, self).job(action, payload, timeout, poll)
+
+
 def test_cli_requires_four_identity_fields():
     with pytest.raises(SystemExit):
         parse_args(["--mdb", "a.mdb", "--study", "b.zxst", "--feeder", "F"])
@@ -60,6 +67,9 @@ def test_read_only_run_is_dynamic_and_records_pending_writes(tmp_path):
     wire = json.dumps(client.calls)
     assert "XX999" in wire
     assert "PA217" not in wire and "PE104" not in wire and "CA101" not in wire
+    table_call = next(call for call in client.calls if call[1] == "/api/clientes/tabla")
+    assert table_call[2]["clientes_file"] == "ci.xlsx"
+    assert table_call[2]["suministro_file"] == "fuente.xlsx"
 
 
 def test_failed_gate_stops_downstream(tmp_path):
@@ -69,6 +79,14 @@ def test_failed_gate_stops_downstream(tmp_path):
         UniversalRunner(client, evidence).run()
     assert not any(call[1] == "/api/clientes/archivos" for call in client.calls)
     assert evidence.events()[-1]["stage"] == "1.discovery"
+    assert evidence.events()[-1]["status"] == "failed"
+
+
+def test_error_code_is_never_accepted_as_passed(tmp_path):
+    evidence = RunEvidence(str(tmp_path / "run-soft"), "run-soft", IDENTITY)
+    with pytest.raises(Exception, match="NATIVE_DIAGNOSTIC_CAPTURE_FAILED"):
+        UniversalRunner(SoftFalseClient(), evidence).run()
+    assert evidence.events()[-1]["stage"] == "2.1"
     assert evidence.events()[-1]["status"] == "failed"
 
 

@@ -506,10 +506,12 @@ def _run_action(action, payload, feeder, job_id=None):
                     result["tablero_error"] = str(ex_t)
             native_evidence = None
             try:
-                import uuid
                 from pipeline.capture_informe_color_views import capture_native_pair_with_restore
                 native_evidence = capture_native_pair_with_restore(
-                    s, "situacional", "diag-" + uuid.uuid4().hex, force=True
+                    s,
+                    "situacional",
+                    str(s.get("run_id") or ("diag-" + __import__("uuid").uuid4().hex)),
+                    force=True,
                 )
             except Exception as ex_native:
                 native_evidence = {
