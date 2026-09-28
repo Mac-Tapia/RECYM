@@ -33,6 +33,100 @@ _LEGACY_JOB_ROUTES = {
 
 _INPUT_REQUIRED_JOB_ACTIONS = frozenset(["suite_sync_equipos", "suite_pipeline"])
 
+PROTECTED_CONTEXT_ACTIONS = frozenset(
+    [
+        "calidad_diagnosticar",
+        "calidad_proponer",
+        "calidad_aplicar",
+        "calidad_convergencia",
+        "calidad_hasta_limpio",
+        "calidad_sistema",
+        "calidad_eld",
+        "distribucion",
+        "flujo",
+        "clientes_activo_cymdist",
+    ]
+    + list(_LEGACY_JOB_ROUTES.keys())
+)
+
+
+def _settings_from_explicit_context(payload, feeder=None):
+    """Build per-job settings from the four explicit, immutable identity fields."""
+    from core.context_identity import (
+        ContextIdentityError,
+        build_context_identity,
+        context_fingerprint,
+    )
+    from core.feeder_context import load_settings
+
+    source = dict(payload or {})
+    if not source.get("feeder_id") and source.get("feeder"):
+        source["feeder_id"] = source.get("feeder")
+    if not source.get("feeder_id") and feeder:
+        source["feeder_id"] = feeder
+    identity = build_context_identity(source, require_complete=True)
+    fingerprint = context_fingerprint(identity)
+    supplied = str(source.get("context_fingerprint") or "").strip().lower()
+    if supplied and supplied != fingerprint:
+        raise ContextIdentityError(
+            "CONTEXT_IDENTITY_MISMATCH",
+            "La huella del contexto no corresponde a BD, estudio, alimentador y red",
+            different_fields=["context_fingerprint"],
+            expected={"context_fingerprint": fingerprint},
+            actual={"context_fingerprint": supplied},
+        )
+
+    settings = load_settings(
+        feeder_id=identity["feeder_id"], synthesize=True, persist_synth=False
+    )
+    settings = dict(settings or {})
+    for key in ("database_mdb", "study_path", "feeder_id", "network_id"):
+        settings[key] = identity[key]
+    settings["ui_study_path"] = identity["study_path"]
+    settings["study_file"] = os.path.basename(identity["study_path"])
+    settings["database_connection_name"] = os.path.splitext(
+        os.path.basename(identity["database_mdb"])
+    )[0]
+    settings["context_fingerprint"] = fingerprint
+    return settings
+
+
+def _annotate_context_result(settings, result):
+    """Echo the requested identity and fail closed on a crossed pipeline result."""
+    from core.context_identity import (
+        ContextIdentityError,
+        assert_same_context,
+        build_context_identity,
+        context_fingerprint,
+    )
+
+    if not isinstance(result, dict):
+        return result
+    try:
+        expected = build_context_identity(settings, require_complete=True)
+        actual_source = dict(expected)
+        for key in ("database_mdb", "study_path", "feeder_id", "network_id"):
+            value = result.get(key)
+            if key == "study_path" and not value:
+                value = result.get("ui_study_path")
+            if value not in (None, ""):
+                actual_source[key] = value
+        actual = build_context_identity(actual_source, require_complete=True)
+        assert_same_context(expected, actual)
+    except ContextIdentityError as ex:
+        return ex.to_dict()
+
+    out = dict(result)
+    for key in ("database_mdb", "study_path", "feeder_id", "network_id"):
+        out[key] = expected[key]
+    out["ui_study_path"] = expected["study_path"]
+    out["study_file"] = os.path.basename(expected["study_path"])
+    out["database_connection_name"] = settings.get("database_connection_name") or os.path.splitext(
+        os.path.basename(expected["database_mdb"])
+    )[0]
+    out["context_fingerprint"] = context_fingerprint(expected)
+    return out
+
 
 def legacy_route_for_action(action):
     """Retorna solo rutas §7 explícitamente aprobadas para el worker."""
@@ -173,40 +267,38 @@ def _run_action(action, payload, feeder, job_id=None):
             "networks": feeders,
             "n": len(feeders),
         }
-    from core.feeder_context import (
-        load_settings,
-        resolve_writable_study_path,
-        apply_context_selection,
-        feeder_family_code,
-    )
+    from core.feeder_context import load_settings, feeder_family_code
     from pipeline.model_quality_gate import with_cympy_lock
 
-    # Contexto §1 dinámico: BD + estudio del payload (no un alimentador fijo)
-    fid = (feeder or "").strip() or (
+    # En acciones CYMDIST el payload completo manda; no se persiste ni se
+    # reconstruye desde el alimentador global, evitando cruces entre jobs.
+    if action in PROTECTED_CONTEXT_ACTIONS:
+        try:
+            s = _settings_from_explicit_context(payload, feeder)
+        except Exception as ex_context:
+            from core.context_identity import ContextIdentityError
+            if isinstance(ex_context, ContextIdentityError):
+                return ex_context.to_dict()
+            return {
+                "ok": False,
+                "error_code": "CONTEXT_INVALID",
+                "error": str(ex_context),
+            }
+        fid = s.get("feeder_id")
+        db = s.get("database_mdb")
+        st = s.get("study_path")
+    else:
+        s = None
+        fid = str(payload.get("feeder_id") or payload.get("feeder") or feeder or "").strip() or None
+        db = str(payload.get("database_mdb") or "").strip() or None
+        st = str(payload.get("study_path") or payload.get("ui_study_path") or "").strip() or None
+
+    fid = (fid or "").strip() or (
         (payload.get("feeder") or payload.get("feeder_id") or "")
     )
     fid = str(fid or "").strip() or None
-    db = (payload.get("database_mdb") or "").strip() or None
-    st = (
-        (payload.get("study_path") or payload.get("ui_study_path") or "")
-    ).strip() or None
-    # Un feeder aislado selecciona configuración para esta ejecución, pero no
-    # debe reescribir el contexto global. Solo una selección explícita de §1
-    # (BD o estudio) autoriza persistirla.
-    if db or st:
-        try:
-            ctx = apply_context_selection(
-                database_mdb=db,
-                study_path=st,
-                feeder_id=fid,
-                persist=True,
-            )
-            if ctx.get("feeder_id"):
-                fid = ctx.get("feeder_id")
-        except Exception as ex_ctx:
-            print("AVISO apply_context job:", ex_ctx)
-
-    s = load_settings(feeder_id=fid, synthesize=True) if fid else load_settings()
+    if s is None:
+        s = load_settings(feeder_id=fid, synthesize=True, persist_synth=False) if fid else load_settings()
     # Overrides explicitos del job (estudio/BD/red de esta ejecucion)
     if db:
         s["database_mdb"] = db
@@ -219,10 +311,8 @@ def _run_action(action, payload, feeder, job_id=None):
             pass
     if st:
         s["ui_study_path"] = st
-        s["study_path"] = resolve_writable_study_path(st, s)
+        s["study_path"] = st
         s["study_file"] = os.path.basename(s["study_path"])
-    elif s.get("study_path"):
-        s["study_path"] = resolve_writable_study_path(s.get("study_path"), s)
     if payload.get("network_id"):
         s["network_id"] = payload.get("network_id")
     if fid:
@@ -238,15 +328,7 @@ def _run_action(action, payload, feeder, job_id=None):
                 pass
 
     # Acciones que modifican / analizan CYMDIST: exigir BD + estudio del §1
-    if action in (
-        "calidad_diagnosticar",
-        "calidad_proponer",
-        "calidad_aplicar",
-        "calidad_convergencia",
-        "calidad_hasta_limpio",
-        "distribucion",
-        "flujo",
-    ):
+    if action in PROTECTED_CONTEXT_ACTIONS:
         if not (s.get("database_mdb") or "").strip():
             return {
                 "ok": False,
@@ -259,33 +341,28 @@ def _run_action(action, payload, feeder, job_id=None):
             }
         try:
             from core.feeder_context import resolve_cymdist_binding
+            from core.context_identity import assert_same_context
             bind = resolve_cymdist_binding(s)
-            s["study_path"] = bind["study_path"]
-            s["ui_study_path"] = bind.get("ui_study_path") or s.get("ui_study_path")
-            s["database_mdb"] = bind["database_mdb"]
+            assert_same_context(
+                s,
+                {
+                    "database_mdb": bind.get("database_mdb"),
+                    "study_path": bind.get("ui_study_path") or bind.get("study_path"),
+                    "feeder_id": s.get("feeder_id"),
+                    "network_id": s.get("network_id"),
+                },
+            )
             s["database_connection_name"] = bind["database_connection_name"]
             s["_cymdist_binding"] = bind
         except Exception as ex_bind:
+            from core.context_identity import ContextIdentityError
+            if isinstance(ex_bind, ContextIdentityError):
+                return ex_bind.to_dict()
             return {"ok": False, "error": "Enlace estudio/BD CYMDIST: %s" % ex_bind}
 
     def _annotate_study(result):
         """Adjunta BD/estudio §1 al resultado de cualquier acción §2."""
-        if not isinstance(result, dict):
-            return result
-        result.setdefault("feeder_id", s.get("feeder_id"))
-        result.setdefault("network_id", s.get("network_id"))
-        result["study_path"] = s.get("study_path") or result.get("study_path") or ""
-        result["ui_study_path"] = (
-            s.get("ui_study_path") or result.get("ui_study_path") or result["study_path"]
-        )
-        result["study_file"] = os.path.basename(
-            result.get("ui_study_path") or result.get("study_path") or ""
-        )
-        result["database_mdb"] = s.get("database_mdb") or result.get("database_mdb") or ""
-        result["database_connection_name"] = (
-            s.get("database_connection_name") or result.get("database_connection_name") or ""
-        )
-        return result
+        return _annotate_context_result(s, result)
 
     def _spa_system_diag_payload(result, label):
         """Normaliza 2.7/2.8 para la SPA (panel sistema/ELD, no tablero feeder)."""

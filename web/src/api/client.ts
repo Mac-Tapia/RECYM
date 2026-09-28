@@ -4,6 +4,7 @@ let activeFeeder = "";
 let activeStudyPath = "";
 let activeDatabaseMdb = "";
 let activeNetwork = "";
+let activeContextFingerprint = "";
 let apiKey = "";
 let bootstrapPromise: Promise<void> | null = null;
 
@@ -23,11 +24,15 @@ export function setActiveContext(opts: {
   network?: string;
   studyPath?: string;
   databaseMdb?: string;
+  contextFingerprint?: string;
 }) {
   if (opts.feeder !== undefined) activeFeeder = (opts.feeder || "").trim();
   if (opts.network !== undefined) activeNetwork = (opts.network || "").trim();
   if (opts.studyPath !== undefined) activeStudyPath = (opts.studyPath || "").trim();
   if (opts.databaseMdb !== undefined) activeDatabaseMdb = (opts.databaseMdb || "").trim();
+  if (opts.contextFingerprint !== undefined) {
+    activeContextFingerprint = (opts.contextFingerprint || "").trim().toLowerCase();
+  }
 }
 
 export function getActiveContext() {
@@ -36,6 +41,7 @@ export function getActiveContext() {
     network: activeNetwork,
     studyPath: activeStudyPath,
     databaseMdb: activeDatabaseMdb,
+    contextFingerprint: activeContextFingerprint,
   };
 }
 
@@ -102,6 +108,9 @@ function injectContextBody(body: BodyInit | null | undefined): BodyInit | null |
     if (!obj.network_id && ctx.network) obj.network_id = ctx.network;
     if (!obj.study_path && ctx.studyPath) obj.study_path = ctx.studyPath;
     if (!obj.database_mdb && ctx.databaseMdb) obj.database_mdb = ctx.databaseMdb;
+    if (!obj.context_fingerprint && ctx.contextFingerprint) {
+      obj.context_fingerprint = ctx.contextFingerprint;
+    }
     if (!obj.feeders && ctx.feeder) obj.feeders = [ctx.feeder];
     return JSON.stringify(obj);
   } catch {
@@ -166,6 +175,31 @@ function eventsUrl(jobId: string) {
   return `/api/jobs/${jobId}/events${q}`;
 }
 
+const PROTECTED_JOB_ACTIONS = new Set([
+  "calidad_diagnosticar", "calidad_proponer", "calidad_aplicar",
+  "calidad_convergencia", "calidad_hasta_limpio", "calidad_sistema",
+  "calidad_eld", "distribucion", "flujo", "clientes_activo_cymdist",
+  "optimizacion_reclosers", "optimizacion_regulators", "optimizacion_capacitors",
+  "suite_conexion", "suite_inventario_cargas", "suite_sync_equipos",
+  "suite_fix_default", "suite_export_ascii", "suite_pipeline",
+]);
+
+export function verifyProtectedJobContext(
+  action: string,
+  result: Json,
+  expectedFingerprint: string
+): Json {
+  if (!PROTECTED_JOB_ACTIONS.has(action)) return result;
+  const expected = (expectedFingerprint || "").trim().toLowerCase();
+  if (!expected) throw new Error("Contexto CYMDIST sin huella: complete y aplique §1.1");
+  const actual = String(result?.context_fingerprint || "").trim().toLowerCase();
+  if (!actual) throw new Error("Respuesta CYMDIST sin huella de contexto");
+  if (actual !== expected) {
+    throw new Error(`Respuesta de contexto distinto (esperado ${expected}, recibido ${actual})`);
+  }
+  return result;
+}
+
 export async function runJob(
   action: string,
   payload: Json = {},
@@ -180,7 +214,12 @@ export async function runJob(
     network_id: payload.network_id || ctx.network || undefined,
     study_path: payload.study_path || ctx.studyPath || undefined,
     database_mdb: payload.database_mdb || ctx.databaseMdb || undefined,
+    context_fingerprint:
+      payload.context_fingerprint || ctx.contextFingerprint || undefined,
   };
+  if (PROTECTED_JOB_ACTIONS.has(action) && !ctx.contextFingerprint) {
+    throw new Error("Contexto CYMDIST sin huella: complete y aplique §1.1");
+  }
   const created = await api<{ ok: boolean; job_id: string; error?: string }>("/api/jobs", {
     method: "POST",
     body: JSON.stringify({
@@ -203,7 +242,13 @@ export async function runJob(
         const st = String(job.status || "");
         if (st === "ok") {
           es.close();
-          resolve((job.result as Json) || job);
+          resolve(
+            verifyProtectedJobContext(
+              action,
+              (job.result as Json) || job,
+              ctx.contextFingerprint
+            )
+          );
         } else if (st === "error") {
           es.close();
           const res = (job.result as Json) || {};
@@ -222,7 +267,15 @@ export async function runJob(
         .then((j) => {
           const job = j.job || {};
           onUpdate?.(job);
-          if (job.status === "ok") resolve((job.result as Json) || job);
+          if (job.status === "ok") {
+            resolve(
+              verifyProtectedJobContext(
+                action,
+                (job.result as Json) || job,
+                ctx.contextFingerprint
+              )
+            );
+          }
           else {
             const res = (job.result as Json) || {};
             reject(

@@ -2,10 +2,10 @@ import { useFeeder } from "../state/feeder";
 
 /** Muestra el enlace §1 (alimentador · estudio · BD) usado en CYMDIST. */
 export function ContextBind({ hint }: { hint?: string }) {
-  const { feeder, studyPath, databaseMdb } = useFeeder();
+  const { feeder, network, studyPath, databaseMdb, contextFingerprint } = useFeeder();
   const studyFile = (studyPath || "").split(/[/\\]/).pop() || "";
   const dbFile = (databaseMdb || "").split(/[/\\]/).pop() || "";
-  const ok = Boolean(feeder && studyPath && databaseMdb);
+  const ok = Boolean(feeder && network && studyPath && databaseMdb && contextFingerprint);
 
   return (
     <p className="muted" style={{ marginTop: 0 }}>
@@ -16,6 +16,12 @@ export function ContextBind({ hint }: { hint?: string }) {
       <b title={studyPath || ""}>{studyFile || "—"}</b>
       {" · BD "}
       <b title={databaseMdb || ""}>{dbFile || "—"}</b>
+      {" · red "}
+      <b>{network || "—"}</b>
+      {" · huella "}
+      <b title={contextFingerprint || ""}>
+        {contextFingerprint ? contextFingerprint.slice(0, 8) : "—"}
+      </b>
       {!ok ? (
         <span style={{ color: "#b45309" }}>
           {" "}
@@ -27,6 +33,6 @@ export function ContextBind({ hint }: { hint?: string }) {
 }
 
 export function useHasSectionContext() {
-  const { feeder, studyPath, databaseMdb } = useFeeder();
-  return Boolean(feeder && studyPath && databaseMdb);
+  const { feeder, network, studyPath, databaseMdb, contextFingerprint } = useFeeder();
+  return Boolean(feeder && network && studyPath && databaseMdb && contextFingerprint);
 }

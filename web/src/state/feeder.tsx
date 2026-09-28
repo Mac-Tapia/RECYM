@@ -55,7 +55,7 @@ export function FeederProvider({ children }: { children: ReactNode }) {
         setF(f || "");
         if (n !== undefined) setN(n || "");
         setActiveFeeder(f || "");
-        setActiveContext({ feeder: f || "", network: n });
+        setActiveContext({ feeder: f || "", network: n, contextFingerprint: "" });
       },
       setContext: (opts) => {
         const identityChanged =
@@ -80,6 +80,12 @@ export function FeederProvider({ children }: { children: ReactNode }) {
           network: opts.network,
           studyPath: opts.studyPath,
           databaseMdb: opts.databaseMdb,
+          contextFingerprint:
+            opts.contextFingerprint !== undefined
+              ? opts.contextFingerprint || ""
+              : identityChanged
+                ? ""
+                : undefined,
         });
       },
     }),

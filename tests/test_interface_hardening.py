@@ -208,8 +208,10 @@ class TestSuiteWorkerIsolation(unittest.TestCase):
         before = {path: read_bytes(path) for path in tracked}
         result = run_action_inprocess("suite_sync_equipos", {}, "CA101")
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error_code"], "INPUTS_NOT_READY")
-        self.assertTrue(result["errors"])
+        # Every CYMDIST worker now fails before feeder/input lookup unless the
+        # complete four-field §1 identity is supplied.
+        self.assertEqual(result["error_code"], "CONTEXT_INCOMPLETE")
+        self.assertIn("database_mdb", result["missing_fields"])
         after = {path: read_bytes(path) for path in tracked}
         self.assertEqual(after, before)
 
