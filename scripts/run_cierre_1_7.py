@@ -163,7 +163,10 @@ class UniversalRunner(object):
         ))
         self._execute("1.1", lambda: self.client.request("POST", "/api/contexto/aplicar", dict(
             common, feeder=i["feeder_id"], strict=True,
-            allowed_networks=[i["network_id"]],
+            allowed_networks=[{
+                "feeder_id": i["feeder_id"],
+                "network_id": i["network_id"],
+            }],
         ), timeout=300), write=True)
 
         def save_head():

@@ -481,6 +481,18 @@ def quick_context_catalog(
         if discovered_db and discovered_db == canonical_file_path(selected_database):
             feeders = list(discovery.get("feeders") or discovery.get("networks") or [])
 
+    persisted_database = canonical_file_path(s.get("database_mdb"))
+    selected_database_key = canonical_file_path(selected_database)
+    same_persisted_database = bool(
+        persisted_database
+        and selected_database_key
+        and persisted_database == selected_database_key
+    )
+    current_feeder = str(s.get("active_feeder") or "").strip() if same_persisted_database else ""
+    current_network = (
+        str(s.get("active_network_id") or "").strip() if same_persisted_database else ""
+    )
+
     return {
         "ok": True,
         "databases": dedupe(databases),
@@ -492,6 +504,11 @@ def quick_context_catalog(
         "current_study": (
             os.path.realpath(os.path.abspath(selected_study)) if selected_study else ""
         ),
+        # Esta pareja proviene del ultimo contexto estricto ya verificado. La lista
+        # completa de redes se obtiene aparte mediante CymPy para no inventar ni
+        # bloquear esta respuesta de catalogo de archivos.
+        "current_feeder": current_feeder,
+        "current_network": current_network,
     }
 
 

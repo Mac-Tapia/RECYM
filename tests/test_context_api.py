@@ -63,6 +63,28 @@ class TestQuickContextCatalog(unittest.TestCase):
         )
         self.assertEqual(result["feeders"], [])
 
+    def test_persisted_identity_is_returned_only_for_its_database(self):
+        from core.feeder_context import quick_context_catalog
+
+        with tempfile.TemporaryDirectory(dir=ROOT) as work:
+            selected = os.path.join(work, "redes.mdb")
+            other = os.path.join(work, "otra.mdb")
+            for path in (selected, other):
+                with open(path, "wb") as handle:
+                    handle.write(b"mdb")
+            settings = {
+                "database_mdb": selected,
+                "active_feeder": "PE104",
+                "active_network_id": "NET_2030_184_PE104",
+            }
+            same = quick_context_catalog(settings, selected_database=selected)
+            different = quick_context_catalog(settings, selected_database=other)
+
+        self.assertEqual(same["current_feeder"], "PE104")
+        self.assertEqual(same["current_network"], "NET_2030_184_PE104")
+        self.assertEqual(different["current_feeder"], "")
+        self.assertEqual(different["current_network"], "")
+
 
 class TestStrictContextApplication(unittest.TestCase):
     def _files(self, work, study_name="CA101V2.sxst"):

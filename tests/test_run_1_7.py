@@ -72,6 +72,19 @@ def test_read_only_run_is_dynamic_and_records_pending_writes(tmp_path):
     assert table_call[2]["suministro_file"] == "fuente.xlsx"
 
 
+def test_apply_context_sends_discovered_network_objects(tmp_path):
+    evidence = RunEvidence(str(tmp_path / "run-write"), "run-write", IDENTITY)
+    client = FakeClient()
+    # Stop after the first later mutating job; 1.1 must already be observable.
+    client.fail_action = "calidad_diagnosticar"
+    with pytest.raises(RuntimeError):
+        UniversalRunner(client, evidence, allow_write=True).run()
+    call = next(item for item in client.calls if item[1] == "/api/contexto/aplicar")
+    assert call[2]["allowed_networks"] == [{
+        "feeder_id": "XX999", "network_id": "NET_DINAMICA_999",
+    }]
+
+
 def test_failed_gate_stops_downstream(tmp_path):
     evidence = RunEvidence(str(tmp_path / "run-y"), "run-y", IDENTITY)
     client = FakeClient(fail_action="contexto_descubrir_redes")

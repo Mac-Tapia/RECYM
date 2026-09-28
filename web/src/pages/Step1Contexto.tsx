@@ -563,14 +563,47 @@ export function Step1Contexto() {
       try {
         const catalog = await loadFiles();
         await loadMedicionFiles();
-        const fid =
-          (catalog.feeders || []).find(
-            (f) =>
-              String(f.feeder_id).toUpperCase() ===
-              String(catalog.current_feeder || "").toUpperCase()
-          )?.feeder_id ||
-          catalog.current_feeder ||
-          "";
+        const initialDb = catalog.current_database || "";
+        const fid = String(catalog.current_feeder || "").trim();
+        const networkId = String(catalog.current_network || "").trim();
+        if (fid) {
+          setFeederPick(fid);
+          setFeeder(fid, networkId);
+        }
+        if (initialDb) {
+          const started = beginDatabaseSelection(
+            selectionRef.current,
+            initialDb,
+            normPath(initialDb)
+          );
+          const restored = selectContextFeeder(
+            selectStudy(started, catalog.current_study || ""),
+            fid,
+            networkId
+          );
+          selectionRef.current = restored;
+          setSelection(restored);
+          const discovered = await runDetachedJob(
+            "contexto_descubrir_redes",
+            { database_mdb: initialDb },
+            (job) => setMsg(String(job.message || "Descubriendo redes reales en CYMDIST…"))
+          );
+          setSelection(() => {
+            const accepted = acceptDiscoveryResult(
+              selectionRef.current,
+              restored.databaseRequestId,
+              discovered as Json
+            );
+            selectionRef.current = accepted;
+            setFiles((previous) => ({
+              ...previous,
+              feeders: accepted.feeders,
+              n_feeders: accepted.feeders.length,
+              networks_source: String(discovered.source || "cympy"),
+            }));
+            return accepted;
+          });
+        }
         if (fid) await loadCabecera(fid);
       } catch (e) {
         setMsg(String(e));
