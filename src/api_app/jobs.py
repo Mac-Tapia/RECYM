@@ -89,6 +89,7 @@ def _settings_from_explicit_context(payload, feeder=None):
         os.path.basename(identity["database_mdb"])
     )[0]
     settings["context_fingerprint"] = fingerprint
+    settings["run_id"] = str(source.get("run_id") or ("interactive-" + fingerprint))
     return settings
 
 
@@ -904,8 +905,8 @@ def _run_action(action, payload, feeder, job_id=None):
                 try:
                     jid = job_id or payload.get("_job_id")
                     if jid:
-                        label = "5.1" if scenario == "situacional" else (
-                            "5.2" if scenario == "proyectado" else "5"
+                        label = "3.4" if scenario == "situacional" else (
+                            "5.1" if scenario == "proyectado" else "5"
                         )
                         _set_job(jid, message="%s · %s" % (label, msg))
                 except Exception:

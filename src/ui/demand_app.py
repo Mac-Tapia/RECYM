@@ -3807,6 +3807,7 @@ def _settings():
         if supplied_fingerprint and str(supplied_fingerprint).lower() != expected_fingerprint:
             s["_context_identity_error"] = "CONTEXT_IDENTITY_MISMATCH"
         s["context_fingerprint"] = expected_fingerprint
+        s["run_id"] = str(body.get("run_id") or ("interactive-" + expected_fingerprint))
 
     try:
         from core.feeder_context import resolve_cymdist_binding

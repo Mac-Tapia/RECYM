@@ -401,7 +401,7 @@ export function Step6Informes() {
       <h3>6.2 Rellenar Word/Excel</h3>
       <p className="muted">
         Informe técnico para <b>Electro Dunas</b>: use el botón situacional para el
-        diagnóstico del <b>estado actual</b> (solo §5.1; no exige proyectado ni carga nueva).
+        diagnóstico del <b>estado actual</b> (evidencia §3.4; no exige proyectado ni carga nueva).
         La entrega completa sigue requiriendo situacional + proyectado.
         Al rellenar también se intenta <code>topologia.png</code> (mapa satélite de la carga nueva §4, opcional en situacional).
       </p>
@@ -410,7 +410,7 @@ export function Step6Informes() {
         <button
           type="button"
           disabled={busy}
-          title="Informe técnico diagnóstico estado situacional · Electro Dunas (LF §5.1 + 2 PNG)"
+          title="Informe técnico diagnóstico estado situacional · Electro Dunas (LF §3.4 + 2 PNG)"
           onClick={() => fill("situacional")}
         >
           Informe técnico · estado situacional (Electro Dunas)

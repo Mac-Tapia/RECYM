@@ -82,6 +82,8 @@ def record_active_commit(settings, stage, commit):
         "manifest_path": commit.get("manifest_path"),
         "action": commit.get("action"),
         "commit_mode": commit.get("commit_mode"),
+        "context_identity": commit.get("context_identity"),
+        "run_id": commit.get("run_id") or payload.get("run_id"),
     }
     _write_manifest(path, payload)
     return True

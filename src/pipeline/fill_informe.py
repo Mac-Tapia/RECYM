@@ -32,10 +32,12 @@ from core.common import mkdir, p
 from core.feeder_context import load_settings, output_path
 from core.report_provenance import (
     assert_report_context,
+    assert_run_provenance,
     copy_audit_artifacts,
     require_matching_manifest,
     sha256_file,
     tag_context,
+    validate_report_sources,
 )
 from pipeline.assemble_informe import assemble_informe, informe_paths, TEMPLATE_DIR, DOC_DIR
 from pipeline.generate_informe_charts import (
@@ -423,6 +425,8 @@ def _load_scenarios(settings):
     for artifact in (sit, proy, gen):
         if artifact is not None:
             assert_report_context(settings, artifact)
+            if settings.get("run_id"):
+                assert_run_provenance(settings, artifact, settings.get("run_id"))
     # Fallback: un solo flujo general alimenta situacional
     if sit is None and gen and gen.get("status") in ("ok", "dry_run"):
         sit = dict(gen)
@@ -2036,6 +2040,37 @@ def build_informe_preview(settings=None):
     scenarios = _load_scenarios(s)
     meta = _meta_cliente(s)
     paths = scenarios["paths"]
+    provenance_seed = tag_context(s, {})
+    s["run_id"] = str(s.get("run_id") or provenance_seed["run_id"])
+    from core.cymdist_commit import load_active_commits
+    active_commits = load_active_commits(s)
+    sources = {
+        "1.2": active_commits.get("1.2"),
+        "3.2": active_commits.get("3.2"),
+        "3.3": active_commits.get("3.3"),
+    }
+    situational_34_path = output_path(s, "demand", "loadflow_situacional_34.json")
+    sources["3.4"] = _read_json(situational_34_path)
+    required_sources = ("1.2", "3.2", "3.3", "3.4")
+    if mode != "situacional":
+        sources["4"] = active_commits.get("4")
+        sources["5.1"] = scenarios.get("raw_proyectado")
+        required_sources += ("4", "5.1")
+    report_sources_gate = validate_report_sources(
+        s, sources, s["run_id"], required_stages=required_sources
+    )
+    if not report_sources_gate.get("ok"):
+        manifest = tag_context(s, {
+            "ok": False,
+            "delivery_ready": False,
+            "error_code": "REPORT_PROVENANCE_INCOMPLETE",
+            "error": "El informe rechaza fuentes faltantes, ajenas o no verificadas",
+            "report_sources": report_sources_gate,
+            "paths": paths,
+            "filled_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        return _persist_fill_manifest(s, paths, manifest)
+    s["_report_sources_gate"] = report_sources_gate
     img_dir = _images_dir(s)
     mkdir(img_dir)
 
@@ -2142,6 +2177,7 @@ def build_informe_preview(settings=None):
             "meta_source": meta.get("meta_source"),
         },
         "scenarios_used": scenarios_used,
+        "report_sources": man.get("report_sources") or {},
         "images": images,
         "images_dir": img_dir,
         "docs": docs,
@@ -2413,6 +2449,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True, info
             "cymdist_captures": capture_res,
             "location_map": map_res,
             "scenarios_used": scenarios_used,
+            "report_sources": report_sources_gate,
             "notes": notes,
             "aviso_imagenes": (
                 "Solo capturas nativas CYMDIST. Modo %s. Directorio: %s."
@@ -2509,6 +2546,7 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True, info
         "cymdist_captures": capture_res,
         "location_map": map_res,
         "scenarios_used": scenarios_used,
+        "report_sources": report_sources_gate,
         "excel_notes": xnotes,
         "excel_tables": {
             "mapping": (excel_tables or {}).get("mapping"),

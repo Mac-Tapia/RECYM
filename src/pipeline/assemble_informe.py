@@ -106,6 +106,14 @@ def assemble_informe(settings=None, overwrite=True):
     formato, numerales, formulas e imagenes. Nunca toca data/input/InformeModelo.
     """
     s = settings or load_settings()
+    provenance_gate = s.get("_report_sources_gate") if isinstance(s, dict) else None
+    if not isinstance(provenance_gate, dict) or not provenance_gate.get("ok"):
+        return tag_context(s, {
+            "ok": False,
+            "error_code": "REPORT_PROVENANCE_INCOMPLETE",
+            "error": "No se arma el informe sin fuentes verificadas de la ejecución activa",
+            "report_sources": provenance_gate or {},
+        })
     paths = informe_paths(s)
     mkdir(paths["doc_dir"])
     feeder_dir = os.path.dirname(paths["informe_feeder_doc"])

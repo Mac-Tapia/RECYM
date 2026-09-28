@@ -29,9 +29,67 @@ def tag_context(settings, payload=None):
     result = dict(payload or {})
     result["context_identity"] = identity
     result["context_fingerprint"] = fingerprint
+    run_id = str((settings or {}).get("run_id") or result.get("run_id") or ("interactive-" + fingerprint))
+    result["run_id"] = run_id
     for key, value in identity.items():
         result.setdefault(key, value)
     return result
+
+
+def assert_run_provenance(settings, artifact, run_id):
+    assert_report_context(settings, artifact)
+    actual = str((artifact or {}).get("run_id") or "")
+    expected = str(run_id or (settings or {}).get("run_id") or "")
+    if not expected or actual != expected:
+        raise ContextIdentityError(
+            "RUN_ID_MISMATCH",
+            "Artefacto de otra ejecución: esperado %s, recibido %s" % (expected, actual),
+            different_fields=["run_id"],
+            expected={"run_id": expected},
+            actual={"run_id": actual},
+        )
+    return True
+
+
+def validate_report_sources(
+    settings,
+    sources,
+    run_id,
+    required_stages=("1.2", "3.2", "3.3", "3.4", "4", "5.1"),
+):
+    accepted = {}
+    failed = {}
+    for stage in required_stages:
+        item = (sources or {}).get(stage)
+        if isinstance(item, str):
+            try:
+                with open(item, "r", encoding="utf-8") as handle:
+                    item = json.load(handle) or {}
+            except Exception as ex:
+                failed[stage] = {"error_code": "SOURCE_UNREADABLE", "error": str(ex)}
+                continue
+        if not isinstance(item, dict):
+            failed[stage] = {"error_code": "SOURCE_MISSING"}
+            continue
+        try:
+            assert_run_provenance(settings, item, run_id)
+            if item.get("ok") is False:
+                raise ValueError("source not ok")
+            if stage in ("1.2", "3.2", "3.3", "4") and item.get("reopen_verified") is not True:
+                raise ValueError("commit not reopen_verified")
+            accepted[stage] = item
+        except Exception as ex:
+            failed[stage] = ex.to_dict() if hasattr(ex, "to_dict") else {
+                "error_code": "SOURCE_NOT_VERIFIED",
+                "error": str(ex),
+            }
+    return {
+        "ok": not failed,
+        "run_id": run_id,
+        "accepted_stages": sorted(accepted),
+        "failed_stages": failed,
+        "sources": accepted,
+    }
 
 
 def assert_report_context(settings, artifact):
@@ -122,9 +180,11 @@ def copy_audit_artifacts(settings, audit_dir, paths):
 
 __all__ = [
     "assert_report_context",
+    "assert_run_provenance",
     "context_metadata",
     "copy_audit_artifacts",
     "require_matching_manifest",
     "sha256_file",
     "tag_context",
+    "validate_report_sources",
 ]
