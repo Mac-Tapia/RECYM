@@ -11,6 +11,32 @@ Contexto CYMDIST obligatorio para operaciones protegidas:
 
 `POST /api/contexto/aplicar` es la única operación que persiste la selección de §1.1. Los jobs ordinarios reciben una copia explícita y no cambian el contexto global.
 
+## Ejecutor universal 1–7
+
+`scripts/run_cierre_1_7.py` no contiene un alimentador, estudio ni base de datos
+predeterminados. Exige las cuatro identidades y las transmite en cada job:
+
+```powershell
+python scripts/run_cierre_1_7.py `
+  --mdb "D:\modelos\red.mdb" `
+  --study "D:\estudios\Caso.zxst" `
+  --feeder PE104 `
+  --network NET_2030_184_PE104
+```
+
+Sin `--allow-write` la corrida es diagnóstica: las etapas físicas quedan como
+`pending_real`. Con escritura autorizada se agrega `--allow-write`; las cargas
+de §4 deben provenir de `--stage4-json` (objeto con `rows[]`) o existir ya en el
+estudio. El ejecutor nunca inventa una carga. `--allow-optimization` es una
+autorización adicional y además requiere `--allow-write`.
+
+Cada corrida crea `events.jsonl`, `summary.json`, `summary.md` y
+`manifest.json` bajo `data/output/runs/<run_id>/`. Los eventos son append-only,
+usan `passed|failed|blocked|pending_real`, y una reanudación con
+`--resume-run <id>` se rechaza si cambia MDB, estudio, alimentador, red o huella.
+La secuencia guiada ejecuta 3.4 después de 3.3 y 5.1 proyectado después de §4;
+cualquier gate fallido detiene los módulos posteriores.
+
 ## Campaign API v2
 
 - `GET /api/v2/campaigns/{feeder}` → steps + gates

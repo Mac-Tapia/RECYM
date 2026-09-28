@@ -324,6 +324,7 @@ def run_load_flow(settings=None, scenario=None):
         _progress(s, "ERROR LoadFlow: %s" % err)
         print("ERROR LoadFlow:", err)
 
+    result = tag_context(s, result)
     out_dir = os.path.dirname(output_path(s, "demand", "loadflow_result.json"))
     mkdir(out_dir)
     out = os.path.join(out_dir, "loadflow_result.json")

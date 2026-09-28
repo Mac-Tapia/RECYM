@@ -4953,6 +4953,9 @@ def _api_cabecera_impl():
         s["study_path"] = resolve_writable_study_path(ui_sp, s)
     if body.get("database_mdb"):
         s["database_mdb"] = body.get("database_mdb")
+    for _key in ("run_id", "context_fingerprint"):
+        if body.get(_key):
+            s[_key] = str(body.get(_key))
     # Alinear network_id con el feeder del estudio (nunca mezclar IN112 + PA217)
     if ctx and ctx.get("network_id"):
         s["network_id"] = ctx.get("network_id")
@@ -5066,6 +5069,8 @@ def _api_cabecera_impl():
             "ui_study_path": s.get("ui_study_path") or body.get("study_path"),
             "database_mdb": s.get("database_mdb"),
             "database_connection_name": s.get("database_connection_name"),
+            "run_id": s.get("run_id"),
+            "context_fingerprint": s.get("context_fingerprint"),
             "P_kW": p,
             "Q_kvar": q,
             "Vll_kV": sess.get("Vll_kV"),
@@ -5263,6 +5268,12 @@ def _settings_for_clientes(body, fallback=None):
         s["study_path"] = resolve_writable_study_path(st, s)
     if db:
         s["database_mdb"] = db
+    # La configuración específica del radial no debe perder la corrida explícita
+    # que ya validó _settings().
+    for key in ("run_id", "context_fingerprint", "network_id"):
+        value = body.get(key) or (base or {}).get(key)
+        if value:
+            s[key] = str(value)
     try:
         from core.feeder_context import resolve_cymdist_binding
         bind = resolve_cymdist_binding(s)
@@ -6226,6 +6237,8 @@ def api_informe_armar():
     """
     s = _settings()
     body = request.get_json(silent=True) or {}
+    if body.get("run_evidence_path"):
+        s["run_evidence_path"] = os.path.realpath(str(body["run_evidence_path"]))
     if s.get("_context_identity_error"):
         return jsonify({"ok": False, "error_code": "CONTEXT_IDENTITY_MISMATCH", "error": "Huella de contexto distinta"}), 409
     do_fill = body.get("fill", True)

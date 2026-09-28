@@ -403,8 +403,18 @@ def _persist_fill_manifest(settings, paths, manifest):
             paths.get("informe_doc"),
             paths.get("justificacion_doc"),
             os.path.join(paths.get("doc_dir") or "", "informe.pdf"),
+            settings.get("run_evidence_path"),
         ],
     )
+    if settings.get("run_evidence_path"):
+        tagged["execution_annex"] = {
+            "source": settings.get("run_evidence_path"),
+            "included_in_audit": any(
+                os.path.basename(str(settings.get("run_evidence_path")))
+                == os.path.basename(str(item.get("path") or ""))
+                for item in (audit.get("artifacts") or [])
+            ),
+        }
     tagged["audit"] = audit
     man_path = os.path.join(paths["doc_dir"], "fill_manifest.json")
     mkdir(paths["doc_dir"])

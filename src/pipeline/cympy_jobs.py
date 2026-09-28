@@ -29,7 +29,7 @@ def job_cabecera(payload):
     s = load_settings(feeder_id=feeder, synthesize=True)
     # Override rutas si vienen del UI
     for k in ("study_path", "database_mdb", "network_id", "ui_study_path",
-              "database_connection_name"):
+              "database_connection_name", "run_id", "context_fingerprint"):
         if payload.get(k):
             s[k] = payload[k]
     # Conservar elección UI exacta (.xst) para OpenStudy COM / GUI
