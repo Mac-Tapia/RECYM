@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Permitir seleccionar una MDB y un estudio desde cualquier carpeta, descubrir de forma asíncrona las redes reales de esa MDB y garantizar que §§1–7 y el informe operen con la misma identidad explícita.
+**Goal:** Permitir seleccionar una MDB y un estudio desde cualquier carpeta, descubrir de forma asíncrona sus redes reales, persistir y verificar físicamente cada mutación CYMDIST, y producir un cierre auditable módulo por módulo de §§1–7 con un informe construido solo con datos de esa ejecución.
 
-**Architecture:** Un selector nativo local entrega rutas canónicas; un job CymPy aislado descubre redes sin heredar ni persistir el contexto activo; 1.1 valida y persiste las cuatro identidades. El cliente conserva MDB, estudio y alimentador como estados independientes, y cada resultado técnico o de informe lleva una huella de contexto verificable antes de ser reutilizado o servido.
+**Architecture:** Un selector nativo local entrega rutas canónicas; un job CymPy aislado descubre redes sin heredar ni persistir el contexto activo; 1.1 valida y persiste las cuatro identidades. Un coordinador serializado por ruta de estudio respalda, muta, guarda una sola vez y verifica por reapertura cada cambio. El cliente conserva MDB, estudio y alimentador como estados independientes; cada módulo emite evidencia con una huella de contexto y un `run_id`, y el informe/cierre 1–7 solo acepta artefactos de esa misma corrida.
 
 **Tech Stack:** Python 3.7.9 win32, FastAPI 0.95, Flask 2.2, CymPy/CYMDIST, React 19, TypeScript 5.7, Vite 6, Vitest 3.2, unittest.
 
-**Spec:** `docs/superpowers/specs/2026-09-27-contexto-universal-cymdist-design.md`
+**Spec:** `docs/superpowers/specs/2026-09-27-contexto-universal-cymdist-design.md` and `docs/superpowers/specs/2026-09-27-persistencia-multialimentador-cymdist-design.md`
 
 ## Global Constraints
 
@@ -20,7 +20,10 @@
 - El selector y el descubrimiento tienen timeout de 600 s; el descubrimiento corre en el worker aislado y no guarda el estudio.
 - Examinar y descubrir no modifican `config/settings.json` ni crean configuraciones de alimentador; solo 1.1 persiste.
 - Los archivos del usuario ya modificados o no versionados se preservan; cada commit incluye únicamente los archivos de su tarea.
-- La prueba real CYMDIST es un canario de solo lectura para descubrimiento y no autoriza guardar/modificar el estudio.
+- Toda mutación crea respaldo, usa lock por ruta canónica, guarda una sola vez y exige reapertura/relectura en un proceso nuevo antes de informar éxito.
+- Los diagnósticos 2.1 y 3.4 solo aceptan LoadFlow y capturas nativas CYMDIST verificadas; no se permiten imágenes sintéticas ni fallbacks como evidencia.
+- La ejecución integral requiere parámetros explícitos `--mdb`, `--study`, `--feeder` y `--network`; no contiene un alimentador fijo ni elige por nombre de archivo.
+- El informe final y el anexo de cierre solo consumen artefactos con el mismo `run_id` y la misma huella MDB–estudio–alimentador–red.
 
 ## Review Focus
 
@@ -29,6 +32,11 @@
 - Cancelar `OpenFileDialog` debe conservar las tres selecciones; Task 5 lo fija con `cancelled_picker_preserves_context`.
 - Un LoadFlow o informe de otro contexto no debe satisfacer el gate ni poder cerrarse; Task 7 lo fija con `test_report_rejects_foreign_context_artifacts`.
 - Un proceso CymPy que termina con Access Violation después de escribir un resultado útil debe conservar el resultado y mantener viva la API; Task 8 lo comprueba con el canario real y `/health`.
+- Dos commits consecutivos sobre redes distintas del mismo estudio no deben perder el primero; Task 9 lo fija con una prueba A→B→reapertura.
+- Un guardado COM no debe recibir un segundo `study.Save`; Task 10 lo fija para `external_engine_saved`.
+- Una captura antigua, sintética o de otra huella no debe satisfacer 2.1, 3.4 ni el informe; Tasks 11 y 13 lo fijan.
+- Una corrida 1–7 interrumpida no debe producir un informe “completo”; Task 14 exige gates fail-closed y una matriz de evidencia por módulo.
+- La etapa 7 no debe ejecutar optimizaciones mutantes de manera implícita; Task 14 limita el cierre automático a validaciones/suite y exige una opción explícita para cualquier optimización.
 
 ---
 
@@ -53,6 +61,13 @@
 - Modify `web/src/pages/Step6Informes.tsx`: mostrar/verificar contexto del informe y descargar con autenticación/contexto.
 - Create focused tests under `tests/` and `web/src/context/selection.test.ts`.
 - Modify `docs/API_CONTRATO_UI.md`, `docs/VALIDACION_INTEGRAL.md`: contrato y evidencia operativa.
+- Create `src/core/cymdist_commit.py`: lock, respaldo, modos de commit, manifiesto y verificación independiente.
+- Create `src/pipeline/verify_cymdist_commit.py`: reapertura y relectura estricta de valores/redes.
+- Modify mutaciones de `src/pipeline/` y sus rutas API: adopción del coordinador persistente.
+- Modify `src/pipeline/capture_informe_color_views.py`: evidencia nativa estricta para 2.1 y 3.4.
+- Create `src/pipeline/run_evidence.py`: `run_id`, registro append-only y gates de §§1–7.
+- Rewrite `scripts/run_cierre_1_7.py`: CLI universal, asincrónica y fail-closed sin `PA217` fijo.
+- Create `tests/test_cymdist_commit.py`, `tests/test_native_color_evidence.py`, `tests/test_run_1_7.py`.
 
 ### Task 1: Canonical context identity
 
@@ -443,6 +458,292 @@
   git commit -m "Document and validate universal CYMDIST context"
   ```
 
+### Task 9: Persistent CYMDIST unit of work
+
+**Files:**
+- Create: `src/core/cymdist_commit.py`
+- Create: `src/pipeline/verify_cymdist_commit.py`
+- Create: `tests/test_cymdist_commit.py`
+
+**Interfaces:**
+- Consumes: `ContextIdentity` from Task 1 and existing `CymPyAdapter` open/save APIs.
+- Produces: `CommitMode`, `CommitRequest`, `commit_cymdist_action(request, mutate) -> dict`, study-path lock, backup/manifest schema and independent `verify_commit(manifest_path) -> dict`.
+
+- [ ] **Step 1: Write failing transaction tests**
+
+  Add `test_lock_key_uses_canonical_study_path`, `test_read_operation_cannot_request_commit`, `test_study_commit_saves_once`, `test_database_commit_calls_update_and_save_project_once`, `test_external_engine_saved_does_not_save_twice`, `test_failed_save_preserves_backup`, `test_readback_mismatch_fails_closed`, and `test_two_network_commits_preserve_a_after_b`. Use a filesystem-backed fake study so hashes, backup and append-only manifests are real while CymPy calls remain injected boundaries.
+
+- [ ] **Step 2: Run focused tests and confirm RED**
+
+  Run: `.tools\python37-win32\python.exe -m unittest tests.test_cymdist_commit -v`
+
+  Expected: FAIL because `core.cymdist_commit` and `verify_cymdist_commit` do not exist.
+
+- [ ] **Step 3: Implement the coordinator and verifier contracts**
+
+  Implement canonical-path `StudyLock`, pre-write SHA-256 backup, modes `study`, `study_and_database`, `external_engine_saved`, one-save enforcement, before/requested/read-back values, neighbor-network inventory and JSON manifest. Fail with the exact codes from the persistence spec; never delete or overwrite the backup on failure.
+
+- [ ] **Step 4: Run focused and core regressions**
+
+  Run: `.tools\python37-win32\python.exe -m unittest tests.test_cymdist_commit tests.test_api_contract -v`
+
+  Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+  ```powershell
+  git add src/core/cymdist_commit.py src/pipeline/verify_cymdist_commit.py tests/test_cymdist_commit.py
+  git commit -m "Add verifiable CYMDIST commit coordinator"
+  ```
+
+### Task 10: Persist every mutating action in §§1–3
+
+**Files:**
+- Modify: `src/pipeline/run_demand_allocation.py`
+- Modify: `src/pipeline/apply_clientes_to_cymdist.py`
+- Modify: `src/pipeline/model_quality_gate.py`
+- Modify: `src/pipeline/add_spot_load.py`
+- Modify: `src/api_app/jobs.py`
+- Modify: `src/ui/demand_app.py`
+- Create: `tests/test_mutating_actions_commit.py`
+
+**Interfaces:**
+- Consumes: `commit_cymdist_action` and commit modes from Task 9; complete context from Tasks 1–6.
+- Produces: uniform `commit` result on 1.2, 2.3, Guardar inclusiones, 3.1 when it changes CYMDIST, 3.2 and 3.3; verified flags consumed by 3.4 and the report.
+
+- [ ] **Step 1: Write failing table-driven mutation tests**
+
+  Assert each action selects the required mode, forwards the exact `network_id`, refuses incomplete/mismatched context, exposes backup/manifest/readback fields and cannot report `ok` when `reopen_verified` is false. Pin 3.3 COM to `external_engine_saved` and assert no second `study.Save`.
+
+- [ ] **Step 2: Run focused tests and confirm RED**
+
+  Run: `.tools\python37-win32\python.exe -m unittest tests.test_mutating_actions_commit -v`
+
+  Expected: FAIL because current actions use mixed direct saves and do not return the uniform commit contract.
+
+- [ ] **Step 3: Route mutations through the coordinator**
+
+  Keep domain calculations in their existing modules; wrap only the physical mutation/save boundary. Use `study_and_database` for 1.2 and for quality corrections that mutate equipment/BD, `study` for normal study edits, and `external_engine_saved` for COM Load Allocation. Preserve `save_after_write=False` internally so nested functions cannot save twice.
+
+- [ ] **Step 4: Add job/API gates**
+
+  Make routes and isolated jobs fail closed unless identity, save result and independent reopen/readback match. Persist the commit manifest path in the active session without replacing the selected feeder.
+
+- [ ] **Step 5: Run focused and full Python suites**
+
+  Run: `.tools\python37-win32\python.exe -m unittest tests.test_mutating_actions_commit tests.test_cymdist_commit -v`
+
+  Run: `.tools\python37-win32\python.exe -m unittest discover -s tests -p "test_*.py" -v`
+
+  Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+  ```powershell
+  git add src/pipeline/run_demand_allocation.py src/pipeline/apply_clientes_to_cymdist.py src/pipeline/model_quality_gate.py src/pipeline/add_spot_load.py src/api_app/jobs.py src/ui/demand_app.py tests/test_mutating_actions_commit.py
+  git commit -m "Persist and verify CYMDIST mutations"
+  ```
+
+### Task 11: Native colored diagnostics and situational step 3.4
+
+**Files:**
+- Modify: `src/pipeline/capture_informe_color_views.py`
+- Modify: `src/pipeline/run_load_flow.py`
+- Modify: `src/pipeline/diagnostic_registry.py`
+- Modify: `src/api_app/jobs.py`
+- Modify: `web/src/pages/Step2CalidadTablero.tsx`
+- Modify: `web/src/pages/Step3Clientes.tsx`
+- Create: `tests/test_native_color_evidence.py`
+
+**Interfaces:**
+- Consumes: complete context/fingerprint and verified 1.2/3.2/3.3 commit manifests.
+- Produces: diagnostic evidence for 2.1 and situational evidence for 3.4, each with real LoadFlow metrics plus `VoltageLevel` and `LoadingLevel` PNG sidecars where `color_verified=true`.
+
+- [ ] **Step 1: Write failing strict-evidence tests**
+
+  Add cases rejecting renderer fallback, missing CYMDIST window identity, stale fingerprint, missing PNG hash, `color_verified=false`, unconverged LoadFlow and un-restored temporary state. Add a 3.4 gate test that requires verified 1.2, 3.2 and 3.3 manifests.
+
+- [ ] **Step 2: Run focused tests and confirm RED**
+
+  Run: `.tools\python37-win32\python.exe -m unittest tests.test_native_color_evidence -v`
+
+  Expected: FAIL because no strict 2.1/3.4 evidence contract exists.
+
+- [ ] **Step 3: Implement strict native capture**
+
+  Separate `capture_native_color_view(context, color_type, scenario, run_id) -> dict` from any report renderer. Permit only `VoltageLevel` and `LoadingLevel`; record window/process identity, capture method, PNG SHA-256, metrics and fingerprint. Snapshot and restore visual/scenario state, then close without saving.
+
+- [ ] **Step 4: Add isolated `flujo_situacional_34` and UI**
+
+  Execute real situational LoadFlow after 3.3, create both verified native captures and `loadflow_situacional.json`, and expose the action as 3.4 after the three persistence gates. 2.1 invokes the same strict capture primitive for diagnostic evidence but remains read-only.
+
+- [ ] **Step 5: Run Python and frontend verification**
+
+  Run: `.tools\python37-win32\python.exe -m unittest tests.test_native_color_evidence tests.test_mutating_actions_commit -v`
+
+  Run: `npm --prefix web test -- --run`
+
+  Run: `web\node_modules\.bin\tsc.cmd -p web\tsconfig.json --noEmit`
+
+  Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+  ```powershell
+  git add src/pipeline/capture_informe_color_views.py src/pipeline/run_load_flow.py src/pipeline/diagnostic_registry.py src/api_app/jobs.py web/src/pages/Step2CalidadTablero.tsx web/src/pages/Step3Clientes.tsx tests/test_native_color_evidence.py
+  git commit -m "Add native CYMDIST diagnostic and situational evidence"
+  ```
+
+### Task 12: Renumber projected LoadFlow and enforce report provenance
+
+**Files:**
+- Modify: `src/api_app/jobs.py`
+- Modify: `src/pipeline/assemble_informe.py`
+- Modify: `src/pipeline/fill_informe.py`
+- Modify: `src/pipeline/deliver_informe.py`
+- Modify: `web/src/pages/Step5Flujos.tsx`
+- Modify: `web/src/pages/Step6Informes.tsx`
+- Modify: `scripts/_run_cierre_informe.py`
+- Modify: `scripts/_run_lf_informe.py`
+- Create: `tests/test_report_run_provenance.py`
+
+**Interfaces:**
+- Consumes: 3.4 situational evidence, §4 commit evidence, 5.1 projected evidence and common context/run identity.
+- Produces: renumbered UI/API labels and report manifest that lists every accepted source artifact and rejects cross-run/cross-context data.
+
+- [ ] **Step 1: Write failing provenance and numbering tests**
+
+  Assert Step 5 exposes only projected 5.1 in the guided flow; no active 5.2/5.3 call site remains. Assert assembly rejects mismatched `run_id`, fingerprint, MDB/study/feeder/network, missing native capture sidecars and unverified commits.
+
+- [ ] **Step 2: Run focused tests and confirm RED**
+
+  Run: `.tools\python37-win32\python.exe -m unittest tests.test_report_run_provenance -v`
+
+  Expected: FAIL on current 5.1/5.2/5.3 labels and shared artifacts.
+
+- [ ] **Step 3: Renumber the guided flow**
+
+  Remove situational/general buttons from Step 5, expose projected LoadFlow as 5.1, and update progress/messages/scripts. Keep a non-guided compatibility endpoint only if existing callers require it; it must not satisfy report gates without current evidence.
+
+- [ ] **Step 4: Gate report assembly by run provenance**
+
+  Require verified manifests from 1.2, 3.2, 3.3, 3.4 and, for complete projected delivery, §4/5.1. Copy accepted artifacts into a `run_id`-scoped delivery directory and write hashes in `assemble_manifest.json` and `fill_manifest.json`.
+
+- [ ] **Step 5: Run report, Python and frontend regressions**
+
+  Run: `.tools\python37-win32\python.exe -m unittest tests.test_report_run_provenance tests.test_informe_context -v`
+
+  Run: `.tools\python37-win32\python.exe -m unittest discover -s tests -p "test_*.py" -v`
+
+  Run: `npm --prefix web test -- --run`
+
+  Run: `npm --prefix web run build`
+
+  Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+  ```powershell
+  git add src/api_app/jobs.py src/pipeline/assemble_informe.py src/pipeline/fill_informe.py src/pipeline/deliver_informe.py web/src/pages/Step5Flujos.tsx web/src/pages/Step6Informes.tsx scripts/_run_cierre_informe.py scripts/_run_lf_informe.py tests/test_report_run_provenance.py
+  git commit -m "Bind reports to renumbered verified CYMDIST runs"
+  ```
+
+### Task 13: Universal module-by-module 1–7 runner
+
+**Files:**
+- Create: `src/pipeline/run_evidence.py`
+- Rewrite: `scripts/run_cierre_1_7.py`
+- Create: `tests/test_run_1_7.py`
+- Modify: `docs/API_CONTRATO_UI.md`
+
+**Interfaces:**
+- Consumes: authenticated API, explicit four-field context, commit/capture/report manifests from Tasks 1–12.
+- Produces: `run_id`-scoped JSON/Markdown matrix for every module and substep, with inputs, hashes, jobs, timings, outputs, gate decisions and final closure status.
+
+- [ ] **Step 1: Write failing orchestration tests**
+
+  Cover arbitrary paths containing spaces, no hard-coded feeder, asynchronous job polling, context propagation on every request, stop-on-failed-gate, resume only with matching `run_id`, report refusal before all mandatory stages, and omission of mutating §7 optimization unless `--allow-optimization` is explicitly passed.
+
+- [ ] **Step 2: Run focused tests and confirm RED**
+
+  Run: `.tools\python37-win32\python.exe -m unittest tests.test_run_1_7 -v`
+
+  Expected: FAIL because the current script fixes `PA217`, uses outdated numbering and lacks provenance gates.
+
+- [ ] **Step 3: Implement `RunEvidence`**
+
+  Provide append-only stage records with status `passed`, `failed`, `blocked` or `pending_real`; record input/output SHA-256, `context_fingerprint`, `run_id`, API/job identifiers, native engine and evidence paths. A skipped required stage makes closure fail.
+
+- [ ] **Step 4: Rewrite the CLI without fixed paths or feeders**
+
+  Required arguments: `--mdb`, `--study`, `--feeder`, `--network`. Optional: `--base-url`, `--api-key`, `--resume-run`, `--allow-write`, `--allow-optimization`, `--out`. Default is diagnostic/read-only; physical §§1–6 execution requires `--allow-write`. Run 3.4 after 3.3, projected 5.1 after §4, generate the §6 draft, perform §7 validation, then refresh the report with the §7 execution annex.
+
+- [ ] **Step 5: Verify module coverage and output contract**
+
+  Run: `.tools\python37-win32\python.exe -m unittest tests.test_run_1_7 tests.test_universal_context_canary tests.test_report_run_provenance -v`
+
+  Expected: PASS and the dry-run fixture contains an evidence row for every required substep.
+
+- [ ] **Step 6: Commit**
+
+  ```powershell
+  git add src/pipeline/run_evidence.py scripts/run_cierre_1_7.py tests/test_run_1_7.py docs/API_CONTRATO_UI.md
+  git commit -m "Add universal audited runner for sections one through seven"
+  ```
+
+### Task 14: Full automated verification and controlled real execution
+
+**Files:**
+- Modify: `docs/VALIDACION_INTEGRAL.md`
+- Create at runtime: `data/output/runs/<run_id>/module_matrix.json`
+- Create at runtime: `data/output/runs/<run_id>/module_matrix.md`
+- Create at runtime: `data/output/runs/<run_id>/final_manifest.json`
+
+**Interfaces:**
+- Consumes: completed Tasks 1–13 and an explicitly selected real MDB/study/feeder/network discovered through the universal selector.
+- Produces: fresh automated-test evidence, real CYMDIST execution evidence for §§1–7, final report artifacts and a precise list of any blocked/pending-real stage.
+
+- [ ] **Step 1: Run all non-native gates**
+
+  Run: `.tools\python37-win32\python.exe -m unittest discover -s tests -p "test_*.py" -v`
+
+  Run: `npm --prefix web test -- --run`
+
+  Run: `web\node_modules\.bin\tsc.cmd -p web\tsconfig.json --noEmit`
+
+  Run: `npm --prefix web run build`
+
+  Expected: all commands exit 0; record exact counts and logs, not a summary inferred from earlier runs.
+
+- [ ] **Step 2: Start and verify the real web route**
+
+  Launch with `scripts\20_demand_ui_production.bat`, obtain session/API credentials through the supported bootstrap flow, and verify `/health`, `/api/health/ready`, `/api/spa/meta` and the SPA route. Record PID, port, UI version and timestamps.
+
+- [ ] **Step 3: Resolve the real context without inference**
+
+  Use picker/discovery results or explicit user-selected paths; record canonical paths and initial hashes. Abort if the network is not returned by CymPy from that MDB or if the study/context binding differs.
+
+- [ ] **Step 4: Execute the real 1–7 closure**
+
+  Run `scripts/run_cierre_1_7.py` with all four identity arguments and `--allow-write`. Before each mutating stage confirm backup creation; after each worker verify API health. Do not use `--allow-optimization` unless separately authorized because §7 optimization changes the model.
+
+- [ ] **Step 5: Inspect every module and final report**
+
+  Require zero `failed`/`blocked` mandatory rows, independently reopen/readback each saved stage, validate native capture sidecars and hashes, inspect Word/Excel/PDF existence and report manifest, and confirm the §7 annex shares the same `run_id` and fingerprint. If any condition fails, report the report as incomplete rather than regenerating synthetic evidence.
+
+- [ ] **Step 6: Publish the validation boundary**
+
+  Update `docs/VALIDACION_INTEGRAL.md` with commands, exact results, context identity, backup/manifests, artifact hashes, module matrix and pending-real limitations. Never translate unit/fake success into real CYMDIST success.
+
+- [ ] **Step 7: Commit only code/documentation evidence**
+
+  ```powershell
+  git add docs/VALIDACION_INTEGRAL.md
+  git commit -m "Record module by module CYMDIST validation"
+  ```
+
+  Runtime MDB/study backups and `data/output/runs/` remain operational evidence and are not committed unless repository policy explicitly requires it.
+
 ## Academic and technical basis
 
 - Fielding's doctoral dissertation requires each request to carry all information needed for interpretation; this supports explicit four-field context rather than hidden server fallback: https://ics.uci.edu/~fielding/pubs/dissertation/rest_arch_style.htm
@@ -450,3 +751,6 @@
 - The indexed workflow-provenance model by Butt and Fitch supports recording enough execution and data lineage to validate outputs; this motivates context identity in LoadFlow/report manifests: https://www.sciencedirect.com/science/article/pii/S0169023X21000045
 - Microsoft documents `System.Windows.Forms.OpenFileDialog`, the native local-file mechanism used here: https://learn.microsoft.com/en-us/dotnet/api/system.windows.forms.openfiledialog?view=netframework-4.8.1
 - MDN documents that browser file inputs expose a protected fake path, which rules out relying on an HTML file input for an original Windows path: https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/input/file
+- Puustjärvi's doctoral thesis on transactional workflows supports explicit phases and concurrency control for durable long-running operations: https://www.cs.helsinki.fi/TR/A-1999/2/
+- Chkliaev's doctoral thesis links concurrency control, recovery and commit verification: https://research.tue.nl/en/publications/mechanical-verification-of-concurrency-control-and-recovery-proto/
+- Wang et al. provide an indexed atomicity/provenance model with commit and abort semantics for scientific workflows: https://doi.org/10.1016/j.future.2008.06.007
