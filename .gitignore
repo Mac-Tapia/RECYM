@@ -5,11 +5,13 @@ __pycache__/
 data/output/
 *.log
 web/node_modules/
+node_modules/
 web/dist/
 .worktrees/
 
 # Archivos >100MB (limite GitHub); mantener locales
 data/input/common/clientesimportantes/*.xlsb
+data/input/common/clientesimportantes/*.xlsx
 
 # Mediciones cabecera (Excel pesados locales)
 data/input/common/medicioncabecera/*.xls
@@ -21,4 +23,12 @@ config/settings.local.json
 config/.api_key
 config/settings.json.bak
 *.zxst.bak
+
+# Artefactos locales/regenerables y duplicados de informes
+data/system/campaigns.db
+doc/_tmp_doc/
+doc/_unpack_inf/
+doc/informe.docx.bak*
+doc/informe.docx.good_layout
+data/input/feeders/*/*.bak-*
 
