@@ -2,12 +2,12 @@
 
 Suite **multi-alimentador** para modelado, corrección, asignación de demanda, flujos de carga e informes sobre **CYMDIST 9.2 / CymPy**, con UI SPA (React) y API (FastAPI + puente Flask).
 
-Versión de referencia UI: **SPA v6** (`ui_version: 6.0-spa`).  
+Versión de referencia UI: **SPA v6.1** (`ui_version: 6.1-spa-prod`).
 **Dominio de campaña v7:** [`CAMPAIGN_V7.md`](CAMPAIGN_V7.md) (máquina de estados §§1–7 + ledger SQLite).
 
 ---
 
-## 0. Arquitectura v7 (objetivo en despliegue)
+## 0. Arquitectura v7 (implementada; cola externa futura)
 
 ```mermaid
 flowchart TB
@@ -181,6 +181,8 @@ Scripts de entrada:
 | `scripts\03_test_cymdist_connection.bat` | COM / estudio |
 | `scripts\10_pipeline_dryrun.bat` | Pipeline sin WRITE |
 | `scripts\11_run_feeder.bat` | Un feeder o `--all-feeders` |
+| `Abrir RECYM.bat` | Lanzador local del Escritorio; inicia API y abre la SPA |
+| `scripts\RECYM_Abrir_Estudio.bat` | Arranque de la SPA y API :5055 con espera de `/health` |
 | `scripts\20_demand_ui.bat` | SPA + API :5055 |
 | `scripts\24_*.bat` / `25_*.bat` | Diagnóstico sistema / ELD |
 

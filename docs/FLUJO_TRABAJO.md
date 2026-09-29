@@ -1,7 +1,7 @@
 # Flujo de trabajo RECYM
 
 Campaña típica por alimentador (referencia: **PA217**).  
-UI: `scripts\20_demand_ui.bat` → http://127.0.0.1:5055  
+UI: `Abrir RECYM.bat` (acceso directo del Escritorio) o `scripts\20_demand_ui.bat` → http://127.0.0.1:5055
 Arquitectura: [`ARQUITECTURA.md`](ARQUITECTURA.md) · Campaign v7: [`CAMPAIGN_V7.md`](CAMPAIGN_V7.md) · Manual: [`MANUAL_UI_DEMANDA.md`](MANUAL_UI_DEMANDA.md)
 
 ---
@@ -34,7 +34,7 @@ flowchart TD
 3. Confirmar en `config/settings.json`:
    - rutas `studies_root`, `projects_dir`, `database_mdb`
    - `"dry_run": false` solo si se va a escribir al `.zxst`
-4. Abrir SPA: `scripts\20_demand_ui.bat`
+4. Abrir SPA: `Abrir RECYM.bat` (acceso directo del Escritorio) o `scripts\20_demand_ui.bat`
 
 ---
 
