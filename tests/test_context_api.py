@@ -165,5 +165,55 @@ class TestStrictContextApplication(unittest.TestCase):
         self.assertNotEqual(first["study_path"], second["study_path"])
 
 
+class TestContextApplyCreatesStudy(unittest.TestCase):
+    def test_empty_study_is_created_with_selected_network_before_context_persists(self):
+        from api_app.routers.context import ContextApplyRequest, context_apply
+
+        created_path = r"D:\projects\AL209.zxst"
+        body = ContextApplyRequest(
+            database_mdb=r"D:\bases\260924.mdb",
+            study_path="",
+            feeder_id="AL209",
+            network_id="NET_2030_861579_AL209",
+            allowed_networks=[
+                {
+                    "feeder_id": "AL209",
+                    "network_id": "NET_2030_861579_AL209",
+                }
+            ],
+        )
+        ensured = {
+            "ok": True,
+            "created": True,
+            "reused": False,
+            "study_path": created_path,
+            "ui_study_path": created_path,
+            "database_mdb": body.database_mdb,
+            "feeder_id": body.feeder_id,
+            "network_id": body.network_id,
+            "loaded_networks": [body.network_id],
+            "cymdist_open": True,
+        }
+        applied = dict(ensured)
+        applied["context_fingerprint"] = "abc123"
+
+        with mock.patch(
+            "core.feeder_context.load_settings",
+            return_value={"projects_dir": r"D:\projects"},
+        ), mock.patch(
+            "core.cymdist_com.ensure_feeder_study_com",
+            return_value=ensured,
+        ), mock.patch(
+            "api_app.routers.context.apply_context_selection",
+            return_value=applied,
+        ):
+            result = context_apply(body)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["study_created"])
+        self.assertEqual(result["study_path"], created_path)
+        self.assertEqual(result["cymdist_sync"]["loaded_networks"], [body.network_id])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

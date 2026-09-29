@@ -23,6 +23,12 @@ for p in (_SRC, os.path.join(_SRC, "core"), os.path.join(_SRC, "pipeline")):
 os.environ["RECYM_JOB_WORKER"] = "1"
 os.environ.setdefault("RECYM_SPA", "1")
 
+# Debe ejecutarse antes de importar/usar CymPy. El worker conserva códigos de
+# salida y diagnóstico, pero Windows no abre un cuadro modal por el AV nativo.
+from core.cympy_isolation import configure_worker_error_mode
+
+WORKER_ERROR_MODE = configure_worker_error_mode()
+
 
 def write_result_and_exit(out_path, result, exit_code):
     """Persiste el resultado y termina sin ejecutar destructores nativos.

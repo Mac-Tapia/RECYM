@@ -189,7 +189,18 @@ function applyDiagResult(prev: Board | null, result: Json): Board {
 }
 
 export function Step2CalidadTablero() {
-  const { feeder, network, studyPath, databaseMdb, setContext } = useFeeder();
+  const {
+    feeder,
+    network,
+    studyPath,
+    databaseMdb,
+    contextFingerprint,
+    studyMode,
+    transferNode,
+    transferSectionalizer,
+    transferTieSwitch,
+    setContext,
+  } = useFeeder();
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState("");
   const [gate, setGate] = useState<Json | null>(null);
@@ -199,7 +210,9 @@ export function Step2CalidadTablero() {
 
   const studyFile = (studyPath || "").split(/[/\\]/).pop() || "";
   const dbFile = (databaseMdb || "").split(/[/\\]/).pop() || "";
-  const hasCtx = Boolean(feeder && (studyPath || databaseMdb));
+  const hasCtx = Boolean(
+    feeder && network && studyPath && databaseMdb && contextFingerprint
+  );
 
   const refreshGate = useCallback(async () => {
     const j = await api<Json>("/api/calidad/estado");
@@ -214,10 +227,13 @@ export function Step2CalidadTablero() {
         network: String(j.network_id || network || ""),
         studyPath: String(j.ui_study_path || j.study_path || studyPath || ""),
         databaseMdb: String(j.database_mdb || databaseMdb || ""),
+        contextFingerprint: String(j.context_fingerprint || ""),
       });
+    } else if (!contextFingerprint && j?.context_fingerprint) {
+      setContext({ contextFingerprint: String(j.context_fingerprint) });
     }
     return j;
-  }, [feeder, network, studyPath, databaseMdb, setContext]);
+  }, [contextFingerprint, feeder, network, studyPath, databaseMdb, setContext]);
 
   const refreshBoard = useCallback(async (rebuild = 0, refreshDiag = false, clear = false, seedLoads = false) => {
     const bust = Date.now();
@@ -268,6 +284,7 @@ export function Step2CalidadTablero() {
           current_network?: string;
           current_study?: string;
           current_database?: string;
+          context_fingerprint?: string;
         }>("/api/contexto/archivos", { timeoutMs: 30000 });
         if (j?.ok) {
           setContext({
@@ -275,6 +292,9 @@ export function Step2CalidadTablero() {
             network: j.current_network || "",
             studyPath: j.current_study || studyPath || "",
             databaseMdb: j.current_database || databaseMdb || "",
+            ...(j.context_fingerprint
+              ? { contextFingerprint: j.context_fingerprint }
+              : {}),
           });
         }
       } catch {
@@ -799,6 +819,39 @@ export function Step2CalidadTablero() {
           Solo alimentador activo · DiagnosticTool. Para cargabilidad / perfiles de
           tensión en todos los alimentadores use <a href="/5">§5 LoadFlow</a>.
         </p>
+        {studyMode === "transfer" ? (
+          <div className="panel" style={{ marginTop: 12, borderLeft: "3px solid #0f766e" }}>
+            <h3 style={{ marginTop: 0 }}>Punto de seccionamiento para §5</h3>
+            <p className="muted" style={{ marginTop: 0 }}>
+              Seleccione manualmente el nodo y los equipos que intervienen. §5 usará esta selección
+              para abrir el seccionador, cerrar el enlace y validar el flujo.
+            </p>
+            <div className="actions">
+              <input
+                value={transferNode}
+                disabled={Boolean(busy)}
+                placeholder="NodeID del punto de seccionamiento"
+                onChange={(event) => setContext({ transferNode: event.target.value })}
+              />
+              <input
+                value={transferSectionalizer}
+                disabled={Boolean(busy)}
+                placeholder="DeviceID seccionador a abrir"
+                onChange={(event) => setContext({ transferSectionalizer: event.target.value })}
+              />
+              <input
+                value={transferTieSwitch}
+                disabled={Boolean(busy)}
+                placeholder="DeviceID interruptor de enlace"
+                onChange={(event) => setContext({ transferTieSwitch: event.target.value })}
+              />
+            </div>
+            <p className="muted" style={{ marginBottom: 0 }}>
+              Equipos seleccionados: nodo <b>{transferNode || "—"}</b> · abrir <b>{transferSectionalizer || "—"}</b>
+              {" · cerrar "}<b>{transferTieSwitch || "—"}</b>
+            </p>
+          </div>
+        ) : null}
         <div className="actions">
           <button type="button" {...btnProps("tablero")}
             onClick={() =>

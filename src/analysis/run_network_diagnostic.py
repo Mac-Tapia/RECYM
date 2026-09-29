@@ -153,6 +153,13 @@ def main(settings=None):
     except Exception as ex:
         print("AVISO LoadNetwork %s: %s" % (net, ex))
 
+    # El diagnóstico del par configurado solo puede comenzar con su enlace
+    # inequívocamente identificado y abierto. La puerta nunca adivina equipos.
+    from pipeline.transfer_tie_safety import require_transfer_tie_gate
+    transfer_tie_gate = require_transfer_tie_gate(
+        c, s, adapter=a, auto_open=True
+    )
+
     # —— Raíz 220011: bajar tolerancia LF ANTES del diagnóstico y guardar ——
     # Converge el LoadFlow NO elimina este Hint: hay que corregir el parámetro.
     tol_info = None
@@ -299,6 +306,7 @@ def main(settings=None):
             for r in problem_rows[:40]
         ],
         "ready_model": n_problems == 0,
+        "transfer_tie_gate": transfer_tie_gate,
         "lf_tolerance_fix": {
             "ok": bool((tol_info or {}).get("ok")),
             "n_applied": (tol_info or {}).get("n_applied"),

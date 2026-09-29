@@ -321,7 +321,10 @@ if os.path.isdir(os.path.join(_WEB_DIST, "assets")):
 @app.get("/")
 def spa_root():
     if os.path.isfile(_INDEX):
-        return FileResponse(_INDEX)
+        return FileResponse(
+            _INDEX,
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
     return JSONResponse(
         {
             "ok": True,

@@ -2047,6 +2047,7 @@ def build_informe_preview(settings=None):
     Usar antes de cerrar/confirmar entrega.
     """
     s = settings or load_settings()
+    mode = _normalize_informe_mode(s.get("informe_mode"))
     scenarios = _load_scenarios(s)
     meta = _meta_cliente(s)
     paths = scenarios["paths"]
@@ -2308,6 +2309,26 @@ def fill_informe(settings=None, overwrite_copy=True, require_delivery=True, info
         auto_capture = bool(auto_capture)
     force_cap = bool(s.get("force_cymdist_captures", False))
     force_charts = bool(s.get("force_informe_charts", False))
+    from core.cymdist_commit import load_active_commits
+    active_commits = load_active_commits(s)
+    report_sources = {
+        "1.2": active_commits.get("1.2"),
+        "3.2": active_commits.get("3.2"),
+        "3.3": active_commits.get("3.3"),
+        "3.4": _read_json(output_path(s, "demand", "loadflow_situacional_34.json")),
+    }
+    required_sources = ("1.2", "3.2", "3.3", "3.4")
+    if mode != "situacional":
+        report_sources["4"] = active_commits.get("4")
+        report_sources["5.1"] = scenarios.get("raw_proyectado")
+        required_sources += ("4", "5.1")
+    report_sources_gate = validate_report_sources(
+        s,
+        report_sources,
+        str(s.get("run_id") or ""),
+        required_stages=required_sources,
+    )
+    s["_report_sources_gate"] = report_sources_gate
     # Si LoadFlow §5 es mas reciente que las capturas, forzar recaptura CYMDIST
     if not force_cap:
         try:

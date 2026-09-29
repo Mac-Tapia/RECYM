@@ -42,6 +42,27 @@ def main():
             if os.path.isfile(sfile) and not os.path.isfile(dfile):
                 shutil.copy2(sfile, dfile)
                 print("Copiado Excel:", dfile)
+                if fname == "Control_Simulacion.xlsx" and from_feeder:
+                    try:
+                        import openpyxl
+                        wb = openpyxl.load_workbook(dfile)
+                        changed = False
+                        old_str = from_feeder.upper()
+                        new_str = fid.upper()
+                        for sheet in wb.sheetnames:
+                            ws = wb[sheet]
+                            for row in ws.iter_rows():
+                                for cell in row:
+                                    if isinstance(cell.value, str) and old_str in cell.value.upper():
+                                        # Simple case-insensitive replacement
+                                        import re
+                                        cell.value = re.sub(old_str, new_str, cell.value, flags=re.IGNORECASE)
+                                        changed = True
+                        if changed:
+                            wb.save(dfile)
+                            print("Plantilla inteligente: Actualizado NetworkID y FeederID a", new_str)
+                    except Exception as e:
+                        print("Aviso: No se pudo actualizar plantilla inteligente", e)
     print("Creado:", path)
     print("Datos:", dest)
     print("Alimentadores:", ", ".join(list_feeders()))

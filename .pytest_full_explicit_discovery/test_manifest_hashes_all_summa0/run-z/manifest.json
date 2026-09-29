@@ -1,0 +1,21 @@
+{
+  "artifacts": [
+    {
+      "path": "D:\\Proyectos\\ELDICA\\RECYM\\.pytest_full_explicit_discovery\\test_manifest_hashes_all_summa0\\run-z\\events.jsonl",
+      "sha256": "415c10999750387a666c19fe7a766ff4544c7633a9b6e49e0125d9478a583fb2",
+      "size": 1099
+    },
+    {
+      "path": "D:\\Proyectos\\ELDICA\\RECYM\\.pytest_full_explicit_discovery\\test_manifest_hashes_all_summa0\\run-z\\summary.json",
+      "sha256": "fcea32a3f32f5449a172f82a1f4f835eac744a65d5ac762799a23fb1080f2451",
+      "size": 1883
+    },
+    {
+      "path": "D:\\Proyectos\\ELDICA\\RECYM\\.pytest_full_explicit_discovery\\test_manifest_hashes_all_summa0\\run-z\\summary.md",
+      "sha256": "0b3167a1706da85140e156e54cd5d7de2c5a11a4fa33ad053b5bf6f659fe1646",
+      "size": 221
+    }
+  ],
+  "context_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "run_id": "run-z"
+}

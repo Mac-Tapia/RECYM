@@ -39,9 +39,60 @@ ISOLATED_ACTIONS = frozenset(
         "suite_export_ascii",
         "suite_pipeline",
         "clientes_activo_cymdist",
-        "contexto_descubrir_redes",
     ]
 )
+
+
+def configure_worker_error_mode(
+    platform=None,
+    set_error_mode=None,
+    set_wer_flags=None,
+):
+    """Disable modal Win32 crash dialogs only in the isolated CymPy worker.
+
+    The native exit code and ``crashed_com`` telemetry remain unchanged; this
+    only prevents an unattended child process from blocking on a message box.
+    """
+    current_platform = os.name if platform is None else str(platform)
+    if current_platform != "nt":
+        return {"applied": False, "reason": "non-windows"}
+
+    # WinBase.h: SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
+    # SEM_NOOPENFILEERRORBOX.
+    flags = 0x0001 | 0x0002 | 0x8000
+    try:
+        if set_error_mode is None:
+            import ctypes
+
+            set_error_mode = ctypes.windll.kernel32.SetErrorMode
+            set_error_mode.argtypes = [ctypes.c_uint]
+            set_error_mode.restype = ctypes.c_uint
+        previous = int(set_error_mode(flags))
+        if set_wer_flags is None:
+            import ctypes
+
+            # WerApi.h: WER_FAULT_REPORTING_NO_UI = 32. La API se expone en
+            # wer.dll en Windows de escritorio; mantener fallback por SDK.
+            try:
+                set_wer_flags = ctypes.windll.wer.WerSetFlags
+            except Exception:
+                set_wer_flags = ctypes.windll.kernel32.WerSetFlags
+            set_wer_flags.argtypes = [ctypes.c_ulong]
+            set_wer_flags.restype = ctypes.c_long
+        wer_hresult = int(set_wer_flags(32))
+        return {
+            "applied": wer_hresult == 0,
+            "flags": flags,
+            "previous": previous,
+            "wer_no_ui": wer_hresult == 0,
+            "wer_hresult": wer_hresult,
+        }
+    except Exception as ex:
+        return {
+            "applied": False,
+            "flags": flags,
+            "error": "%s: %s" % (type(ex).__name__, ex),
+        }
 
 
 def _can_soft_accept_crash(result):

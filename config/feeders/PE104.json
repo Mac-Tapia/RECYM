@@ -2,15 +2,25 @@
   "name": "PE104",
   "description": "Auto desde BD/estudio (sin config/feeders previa)",
   "network_id": "NET_2030_184_PE104",
-  "study_file": "ELD.zxst",
-  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\ELD.zxst",
-  "voltage_ll_kv": 22.9,
+  "study_file": "CA101.sxst",
+  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
+  "voltage_ll_kv": 10.0,
   "region": "",
   "substation": "",
   "enabled": true,
+  "transfer_pair": [
+    "PE104",
+    "CA101"
+  ],
+  "require_open_transfer_tie_for_diagnostic": true,
+  "transfer_tie_max_distance_m": 2.0,
+  "transfer_tie_devices": ["EQ_1080_935483"],
+  "transfer_tie_note": "El enlace EQ_1080_935483 se abre y verifica antes del diagnóstico.",
   "control_workbook": "",
   "catalog_workbook": "",
   "output_dir": "",
-  "notes": "Sintetizado automáticamente para diagnóstico de red BD",
-  "synthesized": true
+  "notes": "PE104 con enlace de transferencia explícito hacia CA101.",
+  "synthesized": false,
+  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
+  "ui_study_file": "CA101.sxst"
 }

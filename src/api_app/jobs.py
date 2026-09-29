@@ -89,6 +89,7 @@ def _settings_from_explicit_context(payload, feeder=None):
         os.path.basename(identity["database_mdb"])
     )[0]
     settings["context_fingerprint"] = fingerprint
+    settings["scenario_id"] = str(source.get("scenario_id") or "").strip()
     settings["run_id"] = str(source.get("run_id") or ("interactive-" + fingerprint))
     return settings
 
@@ -195,7 +196,7 @@ def _run_action(action, payload, feeder, job_id=None):
     payload = payload or {}
     if action == "contexto_descubrir_redes":
         from core.context_identity import canonical_file_path
-        from pipeline.model_quality_gate import list_bd_networks
+        from core.cymdist_com import list_database_feeders_com
 
         requested = str(payload.get("database_mdb") or "").strip()
         if not requested:
@@ -221,12 +222,7 @@ def _run_action(action, payload, feeder, job_id=None):
             "database_mdb": requested,
             "database_connection_name": os.path.splitext(os.path.basename(requested))[0],
         }
-        discovered = list_bd_networks(
-            ephemeral,
-            force=True,
-            soft=False,
-            persist_cache=False,
-        )
+        discovered = list_database_feeders_com(ephemeral)
         if not isinstance(discovered, dict) or discovered.get("ok") is False:
             return discovered if isinstance(discovered, dict) else {
                 "ok": False,
@@ -252,7 +248,7 @@ def _run_action(action, payload, feeder, job_id=None):
                 "ok": False,
                 "error_code": "NO_NETWORKS_FOUND",
                 "error": "CYMDIST no devolvió redes para la MDB seleccionada",
-                "source": discovered.get("source") or "cympy",
+                "source": discovered.get("source") or "cymdist_com",
                 "database_mdb": requested,
                 "canonical_database_mdb": canonical_file_path(requested),
                 "feeders": [],
@@ -260,11 +256,14 @@ def _run_action(action, payload, feeder, job_id=None):
             }
         return {
             "ok": True,
-            "source": discovered.get("source") or "cympy",
+            "source": discovered.get("source") or "cymdist_com",
             "database_mdb": requested,
             "canonical_database_mdb": canonical_file_path(requested),
             "database_key": discovered.get("database_key"),
             "connection": discovered.get("connection"),
+            "engine": discovered.get("engine"),
+            "cymdist_open": bool(discovered.get("cymdist_open")),
+            "db_activate_method": discovered.get("db_activate_method"),
             "feeders": feeders,
             "networks": feeders,
             "n": len(feeders),
@@ -465,7 +464,13 @@ def _run_action(action, payload, feeder, job_id=None):
         import shutil
 
         def _diag_and_tablero():
-            result = run_network_diagnostic(s, suffix="")
+            try:
+                result = run_network_diagnostic(s, suffix="")
+            except Exception as ex:
+                from pipeline.transfer_tie_safety import TransferTieSafetyError
+                if isinstance(ex, TransferTieSafetyError):
+                    return ex.result
+                raise
             # 2.1 = estado actual: actualizar «antes» y alinear «después»
             summary = (result.get("summary") or {}) if isinstance(result, dict) else {}
             if isinstance(summary, dict):
@@ -521,11 +526,12 @@ def _run_action(action, payload, feeder, job_id=None):
                 }
             if isinstance(result, dict):
                 result["native_color_evidence"] = native_evidence
-                result["ok"] = bool(native_evidence and native_evidence.get("ok"))
-                if not result["ok"]:
-                    result["error_code"] = (
+                diagnostic_ok = result.get("ok") is not False
+                if not native_evidence or not native_evidence.get("ok"):
+                    result["native_color_evidence_warning"] = (
                         native_evidence or {}
-                    ).get("error_code") or "NATIVE_DIAGNOSTIC_CAPTURE_FAILED"
+                    ).get("error") or "Captura nativa no disponible; diagnóstico conservado"
+                result["ok"] = diagnostic_ok
                 result["summary"] = summary
                 result["voltage_opt"] = summary.get("voltage_opt")
                 result["tablero"] = {
@@ -870,7 +876,9 @@ def _run_action(action, payload, feeder, job_id=None):
                 return {"ok": False, "error_code": "LOADFLOW_NOT_CONVERGED", "loadflow": lf}
             pair = capture_native_pair_with_restore(s, "situacional", run_id, force=True)
             evidence = pair.get("captures") or []
-            ok = bool(pair.get("ok"))
+            loadflow_ok = lf.get("status") in ("ok", "dry_run")
+            capture_ok = bool(pair.get("ok"))
+            ok = loadflow_ok
             result = tag_context(s, {
                 "ok": ok,
                 "run_id": run_id,
@@ -881,7 +889,10 @@ def _run_action(action, payload, feeder, job_id=None):
                 "temporary_backup": pair.get("temporary_backup"),
                 "state_restored": pair.get("state_restored"),
                 "restore_error": pair.get("restore_error"),
-                "error_code": None if ok else "NATIVE_SITUATIONAL_EVIDENCE_FAILED",
+                "native_capture_warning": None if capture_ok else (
+                    "Captura nativa no disponible; LoadFlow situacional conservado"
+                ),
+                "error_code": None if ok else "LOADFLOW_NOT_CONVERGED",
             })
             path = output_path(s, "demand", "loadflow_situacional_34.json")
             os.makedirs(os.path.dirname(path), exist_ok=True)

@@ -205,6 +205,29 @@ def ensure_switch_equipment(cympy, eq_id="SW22.9KV"):
     return eq_id, "created"
 
 
+def ensure_sectionalizer_equipment(cympy, eq_id="SEC22.9KV"):
+    """Ensure the cataloged 27 kV sectionalizer exists in CYMDIST library."""
+    import cympy.eq as eq
+
+    et = cympy.enums.EquipmentType.Sectionalizer
+    ids = [str(e.ID) for e in eq.ListEquipments(et)]
+    if eq_id in ids:
+        return eq_id, "exists"
+    sec = eq.Add(eq_id, et)
+    # Values come from Catalogo_Maestro.xlsx / Seccionadores_Fusibles.
+    for field, value in (
+        ("RatedVoltage", 27.0),
+        ("WithstandRating", 150.0),
+        ("RatedCurrent", 400.0),
+        ("MomentaryRating", 20000.0),
+    ):
+        try:
+            sec.SetValue(value, field)
+        except Exception:
+            pass
+    return eq_id, "created_from_catalog"
+
+
 def list_source_equipment(mdb):
     rows = _ace_query(
         mdb, "SELECT EquipmentId, NominalKVLL, DesiredKVLL FROM [CYMEQSOURCE]"
@@ -219,6 +242,55 @@ def list_source_equipment(mdb):
             "vll": _num(r.get("NominalKVLL")) or _num(r.get("DesiredKVLL")),
         })
     return out
+
+
+def ensure_source_catalog_for_devices(mdb, dry_run=False):
+    """Create missing CYMEQSOURCE rows for source device IDs by voltage."""
+    library = _ace_query(mdb, "SELECT * FROM CYMEQSOURCE")
+    devices = _ace_query(
+        mdb,
+        "SELECT DeviceNumber,EquipmentId,OperatingVoltageA,OperatingVoltageB,OperatingVoltageC FROM CYMSOURCE",
+    )
+    valid = {str(row.get("EquipmentId") or "").strip().upper() for row in library}
+    templates = [row for row in library if str(row.get("EquipmentId") or "").upper() != "DEFAULT"]
+    created = []
+    for device in devices:
+        source_id = str(device.get("EquipmentId") or "").strip()
+        if not source_id or source_id.upper() in valid:
+            continue
+        voltage = _num(device.get("OperatingVoltageA"))
+        template = None
+        best = None
+        for row in templates:
+            vll = _num(row.get("NominalKVLL"))
+            if voltage is None or vll is None:
+                continue
+            distance = min(abs(vll - voltage), abs(vll / math.sqrt(3.0) - voltage))
+            if best is None or distance < best:
+                best = distance
+                template = row
+        if template is None:
+            continue
+        columns = list(template.keys())
+        values = [source_id if col == "EquipmentId" else template.get(col) for col in columns]
+        def sql_value(value):
+            if value is None or str(value).upper() in ("NONE", "NULL", ""):
+                return "NULL"
+            text = str(value).replace("'", "''")
+            try:
+                float(text)
+                return text
+            except Exception:
+                return "'%s'" % text
+        sql = "INSERT INTO [CYMEQSOURCE] (%s) VALUES (%s)" % (
+            ",".join("[%s]" % col for col in columns),
+            ",".join(sql_value(value) for value in values),
+        )
+        if not dry_run:
+            _ace_exec(mdb, sql)
+        valid.add(source_id.upper())
+        created.append({"source_id": source_id, "template": template.get("EquipmentId"), "voltage": voltage})
+    return created
 
 
 def pick_source_equipment(v_ln, source_eqs, fallback="SET22.9KV"):
@@ -252,25 +324,28 @@ def resolve_targets(cympy, settings, mdb):
         # SEC es Sectionalizer; Switch necesita ID propio en biblioteca Switch
         sw_id = "SW22.9KV"
     sw_id, sw_how = ensure_switch_equipment(cympy, sw_id)
+    sec_id, sec_how = ensure_sectionalizer_equipment(
+        cympy, defaults.get("Sectionalizer") or "SEC22.9KV"
+    )
 
     size_oh = size_from_default_equipment(cympy, "OverheadLine")
-    oh_id, oh_how = pick_equipment(
-        cympy, "OverheadLine",
-        preferred_id=defaults.get("OverheadLine"),
-        size_mm2=size_oh, inventory=inv,
-    )
+    if size_oh is None:
+        oh_id, oh_how = None, "seccion_requerida"
+    else:
+        oh_id, oh_how = pick_equipment(
+            cympy, "OverheadLine",
+            preferred_id=defaults.get("OverheadLine"),
+            size_mm2=size_oh, inventory=inv,
+        )
     size_cab = size_from_default_equipment(cympy, "Cable")
-    cab_id, cab_how = pick_equipment(
-        cympy, "Cable",
-        preferred_id=defaults.get("Cable") or defaults.get("Underground"),
-        size_mm2=size_cab if size_cab else 120, inventory=inv,
-    )
-    sec_id, sec_how = pick_equipment(
-        cympy, "Sectionalizer",
-        preferred_id=defaults.get("Sectionalizer"),
-        size_mm2=None, inventory=inv,
-    )
-
+    if size_cab is None:
+        cab_id, cab_how = None, "seccion_requerida"
+    else:
+        cab_id, cab_how = pick_equipment(
+            cympy, "Cable",
+            preferred_id=defaults.get("Cable") or defaults.get("Underground"),
+            size_mm2=size_cab, inventory=inv,
+        )
     source_eqs = list_source_equipment(mdb)
 
     return {
@@ -316,19 +391,23 @@ def apply_device_updates(mdb, targets, dry_run=False):
 
 
 def apply_source_updates(mdb, targets, dry_run=False):
-    """Asigna EquipmentId SET* por voltage; NO modifica OperatingVoltageA/B/C."""
+    """Repair missing/DEFAULT source IDs by voltage; preserve OperatingVoltageA/B/C."""
     source_eqs = targets.get("SourceCatalog") or []
     fallback = (targets.get("SourceFallback") or {}).get("id") or "SET22.9KV"
     rows = _ace_query(
         mdb,
         "SELECT DeviceNumber, NetworkId, EquipmentId, "
         "OperatingVoltageA, OperatingVoltageB, OperatingVoltageC "
-        "FROM [CYMSOURCE] WHERE EquipmentId='DEFAULT'",
+        "FROM [CYMSOURCE]",
     )
+    valid_ids = set(str(row.get("id") or "").strip().upper() for row in source_eqs)
     updates = []
     # Agrupar por SET elegido para UPDATE masivo cuando posible
     by_set = {}
     for r in rows:
+        current_id = str(r.get("EquipmentId") or "").strip()
+        if current_id.upper() in valid_ids:
+            continue
         va = _num(r.get("OperatingVoltageA"))
         eq_id, how = pick_source_equipment(va, source_eqs, fallback=fallback)
         by_set.setdefault(eq_id, []).append({
@@ -416,10 +495,18 @@ def refresh_eld_study(settings, targets):
     import cympy.study as study
 
     conn = settings.get("database_connection_name") or "20260919"
-    study_path = settings.get("eld_study_path")
+    study_path = settings.get("study_path") or settings.get("eld_study_path")
+    active_network = str(settings.get("network_id") or "").strip()
+    if active_network:
+        return {
+            "skipped": True,
+            "reason": "contextual_mdb_update_only",
+            "study_path": study_path,
+            "network_id": active_network,
+        }
     db.ConnectDatabaseByName(conn)
     study.Open(study_path)
-    nets = [str(n) for n in list(db.ListNetworks())]
+    nets = [active_network] if active_network else [str(n) for n in list(db.ListNetworks())]
     opt = cympy.enums.LoadNetworkOption.NoDependencies
     print("[fix-default] LoadNetworks(%d)..." % len(nets))
     study.LoadNetworks(nets, opt)
@@ -427,7 +514,7 @@ def refresh_eld_study(settings, targets):
     oh_id = targets["OverheadLine"]["id"]
     cab_id = targets["Cable"]["id"]
     sw_id = targets["Switch"]["id"]
-    net = "NET_2030_179_PA217"
+    net = active_network
     sample = {}
     if net in list(study.ListNetworks()):
         for d in list(cympy.study.ListDevices(cympy.enums.DeviceType.OverheadLine, net))[:3]:
@@ -449,8 +536,8 @@ def refresh_eld_study(settings, targets):
     return {"sample": sample, "n_networks": len(nets)}
 
 
-def main(argv=None):
-    settings = load_json("config/settings.json")
+def main(argv=None, settings_override=None):
+    settings = dict(settings_override or load_json("config/settings.json") or {})
     ap = argparse.ArgumentParser(description="Cerrar TODOS los DEFAULT con equipos creados")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--skip-backup", action="store_true")
@@ -473,6 +560,24 @@ def main(argv=None):
             "Tramo/sección → LineID/CableID. Fuentes: solo EquipmentId; OpV intacto."
         ),
     }
+    try:
+        from pipeline.build_manufacturer_catalog import build_catalog
+        catalog = build_catalog()
+        report["manufacturer_catalog"] = {
+            "path": "config/manufacturer_equipment_catalog.json",
+            "schema_version": catalog.get("schema_version"),
+            "records": len(catalog.get("records") or []),
+        }
+    except Exception as ex_catalog:
+        report["manufacturer_catalog"] = {"ok": False, "error": str(ex_catalog)}
+        print("AVISO catalogo fabricante:", ex_catalog)
+    try:
+        report["source_catalog_created"] = ensure_source_catalog_for_devices(
+            mdb, dry_run=args.dry_run
+        )
+    except Exception as ex_source_catalog:
+        report["source_catalog_created"] = {"ok": False, "error": str(ex_source_catalog)}
+        print("AVISO catalogo fuentes:", ex_source_catalog)
 
     try:
         from core.cymdist_com import pause_cymdist_for_cympy
@@ -518,11 +623,12 @@ def main(argv=None):
         pass
     db.ConnectDatabaseByName(settings.get("database_connection_name") or "20260919")
     targets = resolve_targets(cympy, settings, mdb)
-    # Persist newly created Switch to MDB
-    try:
-        db.Update()
-    except Exception as ex:
-        print("AVISO db.Update library:", ex)
+    # Dry-run must not persist newly created catalog equipment.
+    if not args.dry_run:
+        try:
+            db.Update()
+        except Exception as ex:
+            print("AVISO db.Update library:", ex)
     report["targets"] = {
         k: v for k, v in targets.items() if k != "SourceCatalog"
     }

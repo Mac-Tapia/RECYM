@@ -63,6 +63,38 @@ SIZE_HINTS = {
     },
 }
 
+
+def manufacturer_catalog_path():
+    from core.common import p
+    return p("config", "manufacturer_equipment_catalog.json")
+
+
+def load_manufacturer_catalog():
+    path = manufacturer_catalog_path()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {"records": []}
+    except Exception:
+        return {"records": []}
+
+
+def manufacturer_record(equipment_type, section_mm2, tolerance=0.01):
+    """Return the normalized manufacturer record for a nominal section."""
+    try:
+        target = float(section_mm2)
+    except Exception:
+        return None
+    for record in load_manufacturer_catalog().get("records", []):
+        if record.get("equipment_type") != equipment_type:
+            continue
+        try:
+            if abs(float(record.get("nominal_section_mm2")) - target) <= tolerance:
+                return record
+        except Exception:
+            continue
+    return None
+
 def list_equipment_ids(cympy, equipment_type_name):
     """Lista IDs de la biblioteca para un EquipmentType (excluye vacíos)."""
     import cympy.eq as eq
@@ -107,6 +139,14 @@ def non_default_ids(ids):
 def _parse_size_from_id(eq_id):
     """Extrae calibre mm2 desde IDs tipo ATVB1-22.9KV-120 / XLPE050 / AAAC035."""
     s = str(eq_id or "").upper()
+    # Biblioteca CYMDIST Electro Dunas: NK12003D / AA12003D / AA12002G.
+    # El sufijo de familia no forma parte de la sección nominal.
+    m = re.search(r"(?:NK|AA|CU)(\d{2,3})(?:0[0-9][DG])$", s)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
     m = re.search(r"(?:KV-|XLPE|AAAC|N2XYH)?(\d{2,4})(?:-2T)?$", s)
     if not m:
         m = re.search(r"(\d{2,4})", s)

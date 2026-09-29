@@ -5,6 +5,7 @@ let activeStudyPath = "";
 let activeDatabaseMdb = "";
 let activeNetwork = "";
 let activeContextFingerprint = "";
+let activeScenarioId = "";
 let apiKey = "";
 let bootstrapPromise: Promise<void> | null = null;
 
@@ -25,6 +26,7 @@ export function setActiveContext(opts: {
   studyPath?: string;
   databaseMdb?: string;
   contextFingerprint?: string;
+  scenarioId?: string;
 }) {
   if (opts.feeder !== undefined) activeFeeder = (opts.feeder || "").trim();
   if (opts.network !== undefined) activeNetwork = (opts.network || "").trim();
@@ -33,6 +35,7 @@ export function setActiveContext(opts: {
   if (opts.contextFingerprint !== undefined) {
     activeContextFingerprint = (opts.contextFingerprint || "").trim().toLowerCase();
   }
+  if (opts.scenarioId !== undefined) activeScenarioId = (opts.scenarioId || "").trim();
 }
 
 export function getActiveContext() {
@@ -42,6 +45,7 @@ export function getActiveContext() {
     studyPath: activeStudyPath,
     databaseMdb: activeDatabaseMdb,
     contextFingerprint: activeContextFingerprint,
+    scenarioId: activeScenarioId,
   };
 }
 
@@ -98,6 +102,7 @@ function withAuthHeaders(h: Headers, includeContext = true) {
   if (activeContextFingerprint) {
     h.set("X-Context-Fingerprint", activeContextFingerprint);
   }
+  if (activeScenarioId) h.set("X-Scenario-Id", activeScenarioId);
 }
 
 /** Inyecta feeder/estudio/BD de §1 en bodies JSON (POST/PUT/PATCH). */
@@ -115,6 +120,7 @@ function injectContextBody(body: BodyInit | null | undefined): BodyInit | null |
     if (!obj.context_fingerprint && ctx.contextFingerprint) {
       obj.context_fingerprint = ctx.contextFingerprint;
     }
+    if (!obj.scenario_id && ctx.scenarioId) obj.scenario_id = ctx.scenarioId;
     if (!obj.feeders && ctx.feeder) obj.feeders = [ctx.feeder];
     return JSON.stringify(obj);
   } catch {
@@ -255,6 +261,7 @@ export async function runJob(
     database_mdb: payload.database_mdb || ctx.databaseMdb || undefined,
     context_fingerprint:
       payload.context_fingerprint || ctx.contextFingerprint || undefined,
+    scenario_id: payload.scenario_id || ctx.scenarioId || undefined,
   };
   if (PROTECTED_JOB_ACTIONS.has(action) && !ctx.contextFingerprint) {
     throw new Error("Contexto CYMDIST sin huella: complete y aplique §1.1");

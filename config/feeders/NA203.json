@@ -12,5 +12,7 @@
   "catalog_workbook": "",
   "output_dir": "",
   "notes": "Sintetizado automáticamente para diagnóstico de red BD",
-  "synthesized": true
+  "synthesized": true,
+  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\ELD.zxst",
+  "ui_study_file": "ELD.zxst"
 }

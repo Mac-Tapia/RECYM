@@ -11,6 +11,91 @@ mismo .zxst, en el tramo/nodo indicado, con el DeviceNumber (= nombre) asignado.
 """
 from __future__ import print_function
 import os
+import queue
+import threading
+import time
+
+# Mantiene la referencia COM mientras vive la API web. Sin esta referencia,
+# Cyme.exe puede cerrarse al terminar el job que cargó el catálogo.
+_LIVE_CYMDIST_APP = None
+_LIVE_COM_QUEUE = None
+_LIVE_COM_THREAD = None
+_LIVE_COM_LOCK = threading.Lock()
+
+
+def _live_com_worker(requests):
+    """Apartamento COM persistente de la API; conserva Cyme.exe visible."""
+    global _LIVE_CYMDIST_APP
+    try:
+        import comtypes
+        comtypes.CoInitialize()
+    except Exception:
+        comtypes = None
+    app = None
+    while True:
+        operation, settings, access_version, response = requests.get()
+        try:
+            if app is None:
+                app, _mode = acquire_cymdist_app(settings, show_window=True)
+            if operation == "list_database_feeders":
+                result, app, _mode = discover_database_feeders_with_recovery(
+                    settings,
+                    app=app,
+                    mode=_mode,
+                    access_version=access_version,
+                )
+            elif operation == "ensure_feeder_study":
+                result = ensure_feeder_study_com(
+                    settings,
+                    selected_study=settings.get("_selected_study") or "",
+                    app=app,
+                    access_version=access_version,
+                )
+            else:
+                raise RuntimeError("Operación COM persistente desconocida: %s" % operation)
+            if isinstance(result, dict):
+                result["attach_mode"] = _mode
+            if not result.get("ok"):
+                app = None
+            else:
+                _LIVE_CYMDIST_APP = app
+            response.put(result)
+        except Exception as ex:
+            app = None
+            response.put(
+                {
+                    "ok": False,
+                    "error_code": "CYMDIST_COM_DISCOVERY_FAILED",
+                    "error": "No se pudieron leer alimentadores desde CYMDIST: %s" % ex,
+                    "engine": "COM",
+                }
+            )
+
+
+def _run_live_com(operation, settings, access_version=None, timeout=120.0):
+    global _LIVE_COM_QUEUE, _LIVE_COM_THREAD
+    with _LIVE_COM_LOCK:
+        if _LIVE_COM_THREAD is None or not _LIVE_COM_THREAD.is_alive():
+            _LIVE_COM_QUEUE = queue.Queue()
+            _LIVE_COM_THREAD = threading.Thread(
+                target=_live_com_worker,
+                args=(_LIVE_COM_QUEUE,),
+                name="recym-cymdist-com",
+                daemon=True,
+            )
+            _LIVE_COM_THREAD.start()
+        requests = _LIVE_COM_QUEUE
+    response = queue.Queue(maxsize=1)
+    requests.put((operation, dict(settings or {}), access_version, response))
+    try:
+        return response.get(True, float(timeout))
+    except queue.Empty:
+        return {
+            "ok": False,
+            "error_code": "CYMDIST_COM_TIMEOUT",
+            "error": "CYMDIST no respondió en %.0f s" % float(timeout),
+            "engine": "COM",
+        }
 
 def _ensure_comtypes(cyme_root=None):
     try:
@@ -43,6 +128,33 @@ def _guess_source_node(network_id, settings=None):
     if net.startswith("NET_"):
         return "NODE_" + net[4:]
     return net
+
+
+def _resolve_source_node_com(app, network_id, settings=None):
+    """Resolve a feeder head node from CYMDIST before using the ID heuristic."""
+    configured = _guess_source_node(network_id, settings)
+    target = str(network_id or "").strip().upper()
+    try:
+        feeders = getattr(app, "objFeedersInMemory", None)
+        count = int(getattr(feeders, "Count", 0) or 0)
+        for index in range(1, count + 1):
+            try:
+                feeder = feeders.Item(index)
+                feeder_id = str(getattr(feeder, "ID", "") or "").strip().upper()
+                if feeder_id != target:
+                    continue
+                head = getattr(feeder, "objHeadNode", None)
+                head_id = str(getattr(head, "ID", "") or "").strip()
+                if head_id:
+                    return head_id, "feeder.objHeadNode"
+                source_id = str(getattr(feeder, "SourceID", "") or "").strip()
+                if source_id and source_id.upper() != "DEFAULT":
+                    return source_id, "feeder.SourceID"
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return configured, "settings_or_network_heuristic"
 
 
 def _parse_com_number(raw):
@@ -473,24 +585,344 @@ def ensure_database_in_cymdist(settings):
         }
 
 
-def activate_database_com(app, mdb_path, access_version=None):
-    """Activa la .mdb en la sesión COM (GUI). Prefiere Unique por ruta."""
+def activate_database_com(app, mdb_path, access_version=None, select_both=False):
+    """Activa la .mdb de red y equipos en la sesión COM (GUI)."""
     ver = access_version if access_version is not None else _access_version()
     path = os.path.abspath(mdb_path)
     errors = []
-    # 1) Unique por ruta (activa o crea acceso único a esa .mdb)
-    try:
-        ret = app.SelectUniqueDatabaseAccess(path, 0, ver)
-        return {"ok": True, "method": "SelectUniqueDatabaseAccess", "ret": ret, "path": path}
-    except Exception as ex:
-        errors.append("SelectUniqueDatabaseAccess: %s" % ex)
-    # 2) Access con Network=Equipment=path
-    try:
-        ret = app.SelectDatabaseAccess(path, path, ver)
-        return {"ok": True, "method": "SelectDatabaseAccess", "ret": ret, "path": path}
-    except Exception as ex:
-        errors.append("SelectDatabaseAccess: %s" % ex)
+    methods = (
+        (("SelectDatabaseAccess", (path, path, ver)),
+         ("SelectUniqueDatabaseAccess", (path, 0, ver)))
+        if select_both else
+        (("SelectUniqueDatabaseAccess", (path, 0, ver)),
+         ("SelectDatabaseAccess", (path, path, ver)))
+    )
+    for method, args in methods:
+        try:
+            ret = getattr(app, method)(*args)
+            return {"ok": True, "method": method, "ret": ret, "path": path}
+        except Exception as ex:
+            errors.append("%s: %s" % (method, ex))
     raise RuntimeError("No se pudo activar BD en CYMDIST: " + " | ".join(errors))
+
+
+def _com_collection_items(collection):
+    """Materializa una colección CYMDIST sin asumir índice 0 o 1."""
+    if collection is None:
+        return []
+    try:
+        return list(collection)
+    except Exception:
+        pass
+
+    count = int(getattr(collection, "Count", 0) or 0)
+    for start in (0, 1):
+        items = []
+        try:
+            for index in range(start, start + count):
+                items.append(collection.Item(index))
+            return items
+        except Exception:
+            continue
+    raise RuntimeError("CYMDIST devolvió una colección de alimentadores no enumerable")
+
+
+def list_database_feeders_com(settings, app=None, access_version=None):
+    """Abre CYMDIST en el disparador explícito y lista alimentadores de la MDB.
+
+    No abre ni modifica un estudio. La selección completa MDB + alimentador +
+    estudio sigue perteneciendo a 1.1.
+    """
+    global _LIVE_CYMDIST_APP
+    settings = settings or {}
+    mdb = str(settings.get("database_mdb") or "").strip()
+    if not mdb or not os.path.isfile(mdb):
+        return {
+            "ok": False,
+            "error_code": "FILE_NOT_FOUND",
+            "error": "database_mdb no existe: %s" % mdb,
+            "engine": "COM",
+        }
+
+    if app is None:
+        return _run_live_com(
+            "list_database_feeders", settings, access_version=access_version
+        )
+
+    mode = "provided"
+    try:
+        app.ShowWindow(1)
+        activated = activate_database_com(
+            app, mdb, access_version=access_version, select_both=True
+        )
+        network_ids = set()
+        wait_seconds = max(0.0, float(settings.get("catalog_wait_seconds", 15.0)))
+        poll_seconds = max(0.001, float(settings.get("catalog_poll_seconds", 0.2)))
+        deadline = time.monotonic() + wait_seconds
+        catalog_reads = 0
+        while True:
+            catalog_reads += 1
+            collection = app.objFeedersInNetwork
+            for feeder in _com_collection_items(collection):
+                network_id = str(getattr(feeder, "ID", "") or "").strip()
+                if network_id:
+                    network_ids.add(network_id)
+            if network_ids or time.monotonic() >= deadline:
+                break
+            time.sleep(poll_seconds)
+
+        if not network_ids:
+            return {
+                "ok": False,
+                "error_code": "NO_NETWORKS_FOUND",
+                "error": "CYMDIST no terminó de cargar alimentadores para la MDB seleccionada",
+                "source": "cymdist_com",
+                "engine": "COM",
+                "database_mdb": os.path.abspath(mdb),
+                "db_activate_method": activated.get("method"),
+                "catalog_reads": catalog_reads,
+                "catalog_wait_seconds": wait_seconds,
+            }
+
+        from pipeline.model_quality_gate import feeder_id_from_network
+
+        networks = []
+        for network_id in sorted(network_ids):
+            feeder_id = feeder_id_from_network(network_id)
+            networks.append(
+                {
+                    "feeder_id": feeder_id,
+                    "network_id": network_id,
+                    "label": "%s · %s" % (feeder_id, network_id),
+                }
+            )
+        networks.sort(
+            key=lambda row: (row["feeder_id"].upper(), row["network_id"].upper())
+        )
+        _LIVE_CYMDIST_APP = app
+        return {
+            "ok": True,
+            "source": "cymdist_com",
+            "engine": "COM",
+            "cymdist_open": True,
+            "attach_mode": mode,
+            "database_mdb": os.path.abspath(mdb),
+            "db_activate_method": activated.get("method"),
+            "networks": networks,
+            "n": len(networks),
+            "catalog_reads": catalog_reads,
+            "msg": "CYMDIST abierto · %s alimentadores leídos de %s"
+            % (len(networks), os.path.basename(mdb)),
+        }
+    except Exception as ex:
+        return {
+            "ok": False,
+            "error_code": "CYMDIST_COM_DISCOVERY_FAILED",
+            "error": "No se pudieron leer alimentadores desde CYMDIST: %s" % ex,
+            "engine": "COM",
+            "database_mdb": os.path.abspath(mdb),
+        }
+
+
+def discover_database_feeders_with_recovery(
+    settings,
+    app,
+    mode,
+    access_version=None,
+    acquire=None,
+):
+    """Reabre una sola vez la instancia COM propia si su catálogo quedó obsoleto."""
+    global _LIVE_CYMDIST_APP
+    result = list_database_feeders_com(
+        settings, app=app, access_version=access_version
+    )
+    recoverable_codes = {
+        "NO_NETWORKS_FOUND",
+        "CYMDIST_COM_DISCOVERY_FAILED",
+    }
+    if result.get("error_code") not in recoverable_codes or mode == "attach_active":
+        return result, app, mode
+
+    try:
+        app.Close()
+    except Exception:
+        pass
+    _LIVE_CYMDIST_APP = None
+    acquire_fn = acquire or acquire_cymdist_app
+    wait_seconds = max(
+        0.0, float(settings.get("catalog_recovery_wait_seconds", 1.0))
+    )
+    attempts = max(1, int(settings.get("catalog_recovery_attempts", 3)))
+    active_app = app
+    active_mode = mode
+    recovered = result
+    for recovery_attempt in range(1, attempts + 1):
+        if wait_seconds:
+            time.sleep(wait_seconds)
+        try:
+            active_app, active_mode = acquire_fn(settings, show_window=True)
+            recovered = list_database_feeders_com(
+                settings, app=active_app, access_version=access_version
+            )
+        except Exception as ex:
+            recovered = {
+                "ok": False,
+                "error_code": "CYMDIST_COM_DISCOVERY_FAILED",
+                "error": "No se pudo reiniciar CYMDIST: %s" % ex,
+                "engine": "COM",
+            }
+        recovered["catalog_session_recovered"] = True
+        recovered["catalog_recovery_attempt"] = recovery_attempt
+        if recovered.get("ok"):
+            return recovered, active_app, active_mode
+        try:
+            active_app.Close()
+        except Exception:
+            pass
+        _LIVE_CYMDIST_APP = None
+    return recovered, active_app, active_mode
+
+
+def _loaded_feeder_ids(app):
+    ids = []
+    for feeder in _com_collection_items(getattr(app, "objFeedersInMemory", None)):
+        network_id = str(getattr(feeder, "ID", "") or "").strip()
+        if network_id:
+            ids.append(network_id)
+    return sorted(set(ids))
+
+
+def ensure_feeder_study_com(
+    settings,
+    selected_study="",
+    app=None,
+    access_version=None,
+):
+    """Reutiliza un estudio compatible o crea uno cargando la red desde la MDB."""
+    settings = dict(settings or {})
+    mdb = str(settings.get("database_mdb") or "").strip()
+    feeder_id = str(settings.get("feeder_id") or "").strip().upper()
+    network_id = str(settings.get("network_id") or "").strip()
+    projects_dir = str(settings.get("projects_dir") or "").strip()
+    if not mdb or not os.path.isfile(mdb):
+        return {"ok": False, "error_code": "FILE_NOT_FOUND", "error": "MDB no encontrada: %s" % mdb}
+    if not feeder_id or not network_id:
+        return {"ok": False, "error_code": "CONTEXT_INCOMPLETE", "error": "Falta alimentador o NetworkID"}
+    if not projects_dir:
+        projects_dir = os.path.dirname(str(selected_study or "").strip())
+    if not projects_dir:
+        return {"ok": False, "error_code": "PROJECTS_DIR_MISSING", "error": "Falta projects_dir para guardar el estudio"}
+
+    if app is None:
+        settings["_selected_study"] = str(selected_study or "").strip()
+        return _run_live_com("ensure_feeder_study", settings, access_version=access_version)
+
+    try:
+        app.ShowWindow(1)
+        activated = activate_database_com(app, mdb, access_version=access_version)
+        from core.feeder_context import is_usable_study_file
+
+        rank_exts = (".zxst", ".sxst", ".zsxst", ".xst")
+        candidates = []
+        selected = str(selected_study or "").strip()
+        if is_usable_study_file(selected):
+            candidates.append(os.path.abspath(selected))
+        for ext in rank_exts:
+            candidate = os.path.abspath(os.path.join(projects_dir, feeder_id + ext))
+            if candidate not in candidates and is_usable_study_file(candidate):
+                candidates.append(candidate)
+
+        open_attempts = max(1, int(settings.get("study_open_attempts", 4)))
+        open_poll_seconds = max(
+            0.001, float(settings.get("study_open_poll_seconds", 0.5))
+        )
+        load_wait_seconds = max(
+            0.0, float(settings.get("study_load_wait_seconds", 10.0))
+        )
+        for candidate in candidates:
+            last_open_error = None
+            for attempt in range(open_attempts):
+                try:
+                    app.OpenStudy(candidate)
+                    last_open_error = None
+                    break
+                except Exception as ex_open:
+                    last_open_error = ex_open
+                    if attempt + 1 < open_attempts:
+                        time.sleep(open_poll_seconds)
+            if last_open_error is not None:
+                raise RuntimeError(
+                    "CYMDIST no pudo abrir el estudio existente tras %s intentos: %s"
+                    % (open_attempts, last_open_error)
+                )
+
+            loaded = []
+            load_deadline = time.monotonic() + load_wait_seconds
+            while True:
+                loaded = _loaded_feeder_ids(app)
+                if network_id in loaded or time.monotonic() >= load_deadline:
+                    break
+                time.sleep(open_poll_seconds)
+            if network_id in loaded:
+                return {
+                    "ok": True,
+                    "created": False,
+                    "reused": True,
+                    "study_path": candidate,
+                    "ui_study_path": candidate,
+                    "database_mdb": os.path.abspath(mdb),
+                    "feeder_id": feeder_id,
+                    "network_id": network_id,
+                    "loaded_networks": loaded,
+                    "db_activate_method": activated.get("method"),
+                    "cymdist_open": True,
+                }
+
+        os.makedirs(projects_dir, exist_ok=True)
+        target = os.path.abspath(os.path.join(projects_dir, feeder_id + ".zxst"))
+        if os.path.exists(target):
+            return {
+                "ok": False,
+                "error_code": "STUDY_TARGET_CONFLICT",
+                "error": "El estudio destino existe pero no contiene %s: %s" % (network_id, target),
+            }
+        study_obj = app.NewStudy()
+        study_obj.LoadFeederFromID(network_id)
+        loaded = _loaded_feeder_ids(app)
+        if network_id not in loaded:
+            return {
+                "ok": False,
+                "error_code": "STUDY_NETWORK_NOT_LOADED",
+                "error": "CYMDIST no confirmó la carga de %s en el nuevo estudio" % network_id,
+            }
+        study_obj.SaveAs(target)
+        if not is_usable_study_file(target):
+            return {
+                "ok": False,
+                "error_code": "STUDY_SAVE_FAILED",
+                "error": "CYMDIST no guardó un estudio válido: %s" % target,
+            }
+        global _LIVE_CYMDIST_APP
+        _LIVE_CYMDIST_APP = app
+        return {
+            "ok": True,
+            "created": True,
+            "reused": False,
+            "study_path": target,
+            "ui_study_path": target,
+            "database_mdb": os.path.abspath(mdb),
+            "feeder_id": feeder_id,
+            "network_id": network_id,
+            "loaded_networks": loaded,
+            "db_activate_method": activated.get("method"),
+            "cymdist_open": True,
+        }
+    except Exception as ex:
+        return {
+            "ok": False,
+            "error_code": "STUDY_ENSURE_FAILED",
+            "error": "No se pudo verificar/crear el estudio en CYMDIST: %s" % ex,
+        }
 
 
 def _save_current_study_com(app=None):
@@ -1188,7 +1620,7 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
         except Exception:
             warn_path = None
 
-        src = _guess_source_node(net, settings)
+        src, src_resolution = _resolve_source_node_com(app, net, settings)
         topo = {}
         run_ret = None
         method_used = None
@@ -1349,6 +1781,7 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
             "engine": "COM",
             "network_id": net,
             "source_node": src,
+            "source_node_resolution": src_resolution,
             "topo": topo,
             "saved": saved,
             "warnings": warnings,

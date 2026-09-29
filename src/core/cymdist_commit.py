@@ -31,6 +31,7 @@ MUTATING_ACTION_MODES = {
     "clientes_aplicar_32": CommitMode.STUDY,
     "distribucion_33": CommitMode.EXTERNAL_ENGINE_SAVED,
     "spotload_4": CommitMode.STUDY,
+    "transfer_ties_open": CommitMode.STUDY_AND_DATABASE,
 }
 
 

@@ -939,6 +939,8 @@ def _persist_gate(settings, converge_result, extra=None):
 
 
 def get_gate_status(settings=None):
+    from core.context_identity import build_context_identity, context_fingerprint
+
     s = settings or load_settings()
     sess = load_session(s)
     gate = sess.get("model_quality_gate") or {}
@@ -953,6 +955,7 @@ def get_gate_status(settings=None):
         except Exception:
             summary = None
     corr_rows = _read_csv(corr) if os.path.isfile(corr) else []
+    identity = build_context_identity(s)
     return {
         "ok": True,
         "feeder_id": s.get("feeder_id") or (summary or {}).get("feeder_id"),
@@ -964,6 +967,7 @@ def get_gate_status(settings=None):
         ),
         "database_mdb": s.get("database_mdb") or "",
         "database_connection_name": s.get("database_connection_name") or "",
+        "context_fingerprint": context_fingerprint(identity),
         "gate": gate,
         "ready": bool(gate.get("ready")),
         "converge": gate.get("converge"),

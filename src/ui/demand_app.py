@@ -4478,7 +4478,13 @@ def api_calidad_diagnosticar():
 
     def _run():
         s = _settings()
-        result = run_network_diagnostic(s, suffix="")
+        try:
+            result = run_network_diagnostic(s, suffix="")
+        except Exception as ex:
+            from pipeline.transfer_tie_safety import TransferTieSafetyError
+            if isinstance(ex, TransferTieSafetyError):
+                return ex.result
+            raise
         summary = (result.get("summary") or {}) if isinstance(result, dict) else {}
         try:
             before_path = output_path(s, "diagnostics", "dashboard_summary.json")
@@ -4851,7 +4857,7 @@ def api_cabecera_transfer_voltage_quality():
             "study_path": s.get("study_path"),
             "database_mdb": s.get("database_mdb"),
             "network_id": s.get("network_id"),
-            "network_ids": s.get("network_ids"),
+            "network_ids": body.get("network_ids") or s.get("network_ids"),
             "transfer_pair": body.get("transfer_pair") or s.get("transfer_pair"),
             "vmin_limit_pu": body.get("vmin_limit_pu") or 0.95,
             "vmax_limit_pu": body.get("vmax_limit_pu") or 1.05,
@@ -6796,6 +6802,26 @@ def api_suite_entorno():
 def api_suite_conexion():
     s = _settings()
     try:
+        from core.cymdist_com import open_cymdist_gui
+
+        com_result = open_cymdist_gui(
+            s,
+            kill_existing=False,
+            reason="suite_conexion",
+        )
+        if com_result.get("ok"):
+            return jsonify({
+                "ok": True,
+                "engine": "COM",
+                "cymdist_open": True,
+                "database_connected": bool(com_result.get("database_mdb")),
+                "study_opened": bool(com_result.get("study_path")),
+                "study_path": com_result.get("study_path") or s.get("study_path"),
+                "database_mdb": com_result.get("database_mdb") or s.get("database_mdb"),
+                "database_connection_name": com_result.get("database_connection_name"),
+                "msg": com_result.get("msg") or "Conexión Electro Dunas OK vía COM",
+            })
+
         api = load_json("config/cympy_api_map.json")
         c = require_cympy(s)
         a = CymPyAdapter(c, api, s)
@@ -6962,7 +6988,7 @@ def api_suite_fix_default():
             ca._PROCESS_DB_NAME = None
         except Exception as ex:
             print("AVISO pre-close fix_default:", ex)
-        rc = fix_main([])
+        rc = fix_main([], settings_override=s)
         return jsonify({
             "ok": rc == 0,
             "rc": rc,

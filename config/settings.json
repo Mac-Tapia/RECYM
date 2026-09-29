@@ -9,8 +9,8 @@
   "studies_root": "D:\\BaseDatosElectroDunas\\260919BaseDatos",
   "projects_dir": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos",
   "database_dir": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603",
-  "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\260924.mdb",
-  "database_connection_name": "260924",
+  "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
+  "database_connection_name": "BASE JUL25 1_1",
   "eld_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\ELD.zxst",
   "common_equipment_dir": "data\\input\\common\\equipment",
   "suministrocliente_dir": "data\\input\\common\\suministrocliente",
@@ -71,11 +71,12 @@
     "demand_allocation",
     "report"
   ],
-  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101V2.sxst",
-  "ui_study_file": "CA101V2.sxst",
+  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
+  "ui_study_file": "CA101.sxst",
   "informe_prefer_cymdist_captures": true,
   "informe_auto_cymdist_capture": true,
   "informe_capture_open_gui": true,
   "informe_ocr_review": true,
-  "informe_ocr_review_rounds": 3
+  "informe_ocr_review_rounds": 3,
+  "active_network_id": "NET_2030_131_CA101"
 }

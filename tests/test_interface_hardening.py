@@ -21,6 +21,19 @@ os.environ.setdefault("RECYM_ISOLATE_JOBS", "1")
 
 
 class TestLaunchAndVersionContract(unittest.TestCase):
+    def test_step1_never_starts_cympy_discovery_on_page_mount(self):
+        page = os.path.join(ROOT, "web", "src", "pages", "Step1Contexto.tsx")
+        with open(page, "r", encoding="utf-8") as stream:
+            source = stream.read()
+
+        # La única llamada permitida vive en loadDatabaseFeeders, invocada por
+        # el botón explícito; seleccionar la MDB solo prepara el contexto.
+        self.assertEqual(source.count('"contexto_descubrir_redes"'), 1)
+        self.assertIn("Cargar alimentadores", source)
+        self.assertIn("async function loadDatabaseFeeders", source)
+        self.assertIn("function onSelectDatabase", source)
+        self.assertNotIn("void onPickDatabase", source)
+
     def test_production_launcher_resolves_existing_target(self):
         env = os.environ.copy()
         env["RECYM_LAUNCHER_VALIDATE_ONLY"] = "1"

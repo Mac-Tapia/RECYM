@@ -4,6 +4,74 @@ export type FeederOption = {
   label?: string;
 };
 
+export type StudyOption = {
+  path: string;
+  feeder_id?: string;
+  ext?: string;
+};
+
+/** Estudio dedicado exacto del alimentador; nunca reutiliza otro por defecto. */
+export function chooseStudyForFeeder(
+  studies: StudyOption[],
+  feederId: string
+): string {
+  const wanted = (feederId || "").trim().toUpperCase();
+  if (!wanted) return "";
+  const rank: Record<string, number> = {
+    ".zxst": 0,
+    ".sxst": 1,
+    ".zsxst": 2,
+    ".xst": 3,
+  };
+  const matches = (studies || []).filter(
+    (item) => String(item.feeder_id || "").trim().toUpperCase() === wanted
+  );
+  matches.sort((a, b) => {
+    const extA = String(a.ext || a.path.match(/\.[^.\\/]+$/)?.[0] || "").toLowerCase();
+    const extB = String(b.ext || b.path.match(/\.[^.\\/]+$/)?.[0] || "").toLowerCase();
+    return (rank[extA] ?? 9) - (rank[extB] ?? 9);
+  });
+  return String(matches[0]?.path || "");
+}
+
+export type FeederReadiness = {
+  operational?: boolean;
+  inputs_ready?: boolean;
+};
+
+export type FeederReadinessPresentation = {
+  contextLabel: "listo" | "disponible" | "incompleto" | "pendiente 1.1";
+  inputsLabel: "listas" | "bloqueadas" | "por validar";
+  tone: "ok" | "bad" | "neutral";
+};
+
+/** No convierte metadatos ausentes en fallos confirmados. */
+export function deriveFeederReadiness(
+  feeder: FeederReadiness | undefined,
+  cymdistReady: boolean
+): FeederReadinessPresentation {
+  const contextLabel = cymdistReady
+    ? "listo"
+    : feeder?.operational === true
+      ? "disponible"
+      : feeder?.operational === false
+        ? "incompleto"
+        : "pendiente 1.1";
+  const inputsLabel =
+    feeder?.inputs_ready === true
+      ? "listas"
+      : feeder?.inputs_ready === false
+        ? "bloqueadas"
+        : "por validar";
+  const tone =
+    feeder?.inputs_ready === false || (!cymdistReady && feeder?.operational === false)
+      ? "bad"
+      : cymdistReady || feeder?.operational === true
+        ? "ok"
+        : "neutral";
+  return { contextLabel, inputsLabel, tone };
+}
+
 export type SelectionState = {
   databaseMdb: string;
   canonicalDatabaseMdb: string;
@@ -29,7 +97,26 @@ type DiscoveryResult = {
 };
 
 function fallbackCanonical(path: string): string {
-  return (path || "").trim().replace(/\//g, "\\").toLocaleLowerCase();
+  return (path || "").trim().replace(/\//g, "\\").toLowerCase();
+}
+
+/**
+ * 1.1 solo puede cambiar la ruta elegida cuando el backend confirma que creó
+ * y guardó un estudio nuevo. Si reutiliza uno existente, conserva identidad
+ * estricta para impedir que otro estudio sustituya silenciosamente al elegido.
+ */
+export function resolveAppliedStudy(
+  requestedStudy: string,
+  returnedStudy: string,
+  studyCreated: boolean
+): string {
+  const requested = (requestedStudy || "").trim();
+  const returned = (returnedStudy || "").trim();
+  if (!returned) throw new Error("STUDY_IDENTITY_MISMATCH: 1.1 no devolvió estudio");
+  if (!requested || studyCreated || fallbackCanonical(requested) === fallbackCanonical(returned)) {
+    return returned;
+  }
+  throw new Error("STUDY_IDENTITY_MISMATCH: 1.1 devolvió otro estudio existente");
 }
 
 export function beginDatabaseSelection(
@@ -82,8 +169,11 @@ export function acceptDiscoveryResult(
   result: DiscoveryResult
 ): SelectionState {
   const canonical =
-    (result.canonical_database_mdb || fallbackCanonical(result.database_mdb || "")).trim();
-  if (requestId !== state.databaseRequestId || canonical !== state.canonicalDatabaseMdb) {
+    result.canonical_database_mdb || result.database_mdb || "";
+  if (
+    requestId !== state.databaseRequestId ||
+    fallbackCanonical(canonical) !== fallbackCanonical(state.canonicalDatabaseMdb)
+  ) {
     return state;
   }
   return { ...state, feeders: [...(result.feeders || [])] };

@@ -3,10 +3,13 @@ import {
   acceptDiscoveryResult,
   applyPickerResult,
   beginDatabaseSelection,
+  chooseStudyForFeeder,
+  resolveAppliedStudy,
   selectFeeder,
   selectStudy,
   type SelectionState,
 } from "./selection";
+import * as selectionModule from "./selection";
 
 const initial: SelectionState = {
   databaseMdb: "D:\\bases\\a.mdb",
@@ -70,5 +73,93 @@ describe("independent CYMDIST selection", () => {
       feeders: [{ feeder_id: "CA101", network_id: "NET_2030_131_CA101" }],
     });
     expect(wrongDatabase).toBe(initial);
+  });
+
+  it("accepts_every_feeder_from_the_selected_mdb_with_windows_path_variants", () => {
+    const selected = beginDatabaseSelection(
+      initial,
+      "D:\\BaseDatos\\260924.mdb",
+      "D:\\BaseDatos\\260924.mdb"
+    );
+    const feeders = Array.from({ length: 101 }, (_, index) => ({
+      feeder_id: `F${String(index + 1).padStart(3, "0")}`,
+      network_id: `NET_${index + 1}`,
+    }));
+
+    const accepted = acceptDiscoveryResult(selected, selected.databaseRequestId, {
+      database_mdb: "d:/basedatos/260924.mdb",
+      canonical_database_mdb: "d:/basedatos/260924.mdb",
+      feeders,
+    });
+
+    expect(accepted).not.toBe(selected);
+    expect(accepted.feeders).toHaveLength(101);
+    expect(accepted.feeders).toEqual(feeders);
+  });
+});
+
+describe("feeder readiness presentation", () => {
+  it("does_not_report_missing_readiness_metadata_as_blocked_after_1_1", () => {
+    const derive = (
+      selectionModule as typeof selectionModule & {
+        deriveFeederReadiness?: (
+          feeder: { operational?: boolean; inputs_ready?: boolean } | undefined,
+          cymdistReady: boolean
+        ) => { contextLabel: string; inputsLabel: string; tone: string };
+      }
+    ).deriveFeederReadiness;
+
+    expect(typeof derive).toBe("function");
+    if (!derive) return;
+    expect(derive({}, true)).toEqual({
+      contextLabel: "listo",
+      inputsLabel: "por validar",
+      tone: "ok",
+    });
+  });
+});
+
+describe("study resolution for selected feeder", () => {
+  it("selects_the_exact_feeder_study_with_engine_extension_priority", () => {
+    const studies = [
+      { path: "D:\\projects\\ELD.zxst", feeder_id: "ELD", ext: ".zxst" },
+      { path: "D:\\projects\\AL209.sxst", feeder_id: "AL209", ext: ".sxst" },
+      { path: "D:\\projects\\AL209.zxst", feeder_id: "AL209", ext: ".zxst" },
+    ];
+
+    expect(chooseStudyForFeeder(studies, "al209")).toBe(
+      "D:\\projects\\AL209.zxst"
+    );
+  });
+
+  it("returns_empty_when_no_study_exists_for_the_feeder", () => {
+    expect(
+      chooseStudyForFeeder(
+        [{ path: "D:\\projects\\ELD.zxst", feeder_id: "ELD", ext: ".zxst" }],
+        "AL209"
+      )
+    ).toBe("");
+  });
+});
+
+describe("study returned by 1.1", () => {
+  it("accepts_the_new_saved_study_when_backend_created_it", () => {
+    expect(
+      resolveAppliedStudy(
+        "D:\\studies\\ELD.zxst",
+        "D:\\studies\\AL209.zxst",
+        true
+      )
+    ).toBe("D:\\studies\\AL209.zxst");
+  });
+
+  it("keeps_strict_identity_when_existing_study_was_reused", () => {
+    expect(() =>
+      resolveAppliedStudy(
+        "D:\\studies\\ELD.zxst",
+        "D:\\studies\\OTRO.zxst",
+        false
+      )
+    ).toThrow(/STUDY_IDENTITY_MISMATCH/);
   });
 });

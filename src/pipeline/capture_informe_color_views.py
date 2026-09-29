@@ -184,7 +184,10 @@ def native_color_evidence_from_existing(
         "scenario": scenario,
         "color_type": color_type,
         "capture_method": sidecar.get("export"),
-        "window_identity": _current_cymdist_window_identity(),
+        "window_identity": (
+            sidecar.get("window_identity")
+            or _current_cymdist_window_identity()
+        ),
         "png_path": path,
         "png_sha256": sha256_file(path) if os.path.isfile(path) else "",
         "color_verified": sidecar.get("color_verified") is True,
@@ -649,7 +652,9 @@ def _run_python_in_cyme(app, script_text, settings=None):
                     pass
 
 
-def _select_color_layer_inside_cyme(app, color_type, network_id=None):
+def _select_color_layer_inside_cyme(
+    app, color_type, network_id=None, export_path=None
+):
     """
     In-process: EnableColorCoding + ColorCodingType + LF (crea capas %)
     + SelectColorCodingLayer con nombre ES exacto.
@@ -660,6 +665,16 @@ def _select_color_layer_inside_cyme(app, color_type, network_id=None):
 import cympy
 import time
 sim = cympy.sim.LoadFlow()
+try:
+    _nets_before = [str(_n) for _n in list(cympy.study.ListNetworks() or [])]
+    _log("networks_before=" + " | ".join(_nets_before))
+except Exception as ex:
+    _log("networks_before_FAIL=" + repr(ex))
+try:
+    _study_api = [str(_n) for _n in dir(cympy.study) if any(_k in str(_n).lower() for _k in ("network", "view", "display", "locate", "load"))]
+    _log("study_api=" + " | ".join(_study_api))
+except Exception as ex:
+    _log("study_api_FAIL=" + repr(ex))
 enable = "ParametersConfigurations[0].FlowAnalysisOutput.EnableColorCoding"
 ctype = "ParametersConfigurations[0].FlowAnalysisOutput.ColorCodingLayer.ColorCodingType"
 try:
@@ -713,15 +728,22 @@ try:
 except Exception:
     pass
 time.sleep(0.3)
+if EXPORT_PATH:
+    try:
+        cympy.app.ExportActiveView(EXPORT_PATH, cympy.enums.ImageFormat.Png)
+        _log("export_active_view=" + EXPORT_PATH)
+    except Exception as ex:
+        _log("export_active_view_FAIL=" + repr(ex))
 """
     preamble = (
         "COLOR_TYPE = %r\n"
         "LAYER_NAME = %r\n"
         "NETWORK_ID = %r\n"
-        % (str(color_type), layer, net)
+        "EXPORT_PATH = %r\n"
+        % (str(color_type), layer, net, str(export_path or ""))
     )
     ok, notes, text = _run_python_in_cyme(app, preamble + script)
-    notes.append("inside_out=" + text.replace("\n", " | ")[:700])
+    notes.append("inside_out=" + text.replace("\n", " | ")[:4000])
     return ok, notes
 
 
@@ -861,7 +883,9 @@ def _select_color_coding_layer(cympy, color_type):
         return False, notes + ["Select FAIL: %s" % ex]
 
 
-def _apply_color_and_rerun_lf_com(settings, color_type, app=None):
+def _apply_color_and_rerun_lf_com(
+    settings, color_type, app=None, export_path=None
+):
     """
     COM GUI abierta + LF + script in-process que selecciona
     'Colorear por nivel de tensión/carga (%)'.
@@ -914,7 +938,12 @@ def _apply_color_and_rerun_lf_com(settings, color_type, app=None):
     notes.append("skip_rerun_lf (usar resultado previo)")
 
     # Clave: seleccionar capa DENTRO de Cyme
-    ok_sel, sel_notes = _select_color_layer_inside_cyme(app, color_type, network_id=net)
+    ok_sel, sel_notes = _select_color_layer_inside_cyme(
+        app,
+        color_type,
+        network_id=net,
+        export_path=export_path,
+    )
     notes.extend(sel_notes)
     notes.append("inside_select=%s" % bool(ok_sel))
     if not ok_sel:
@@ -1325,10 +1354,21 @@ def capture_informe_color_views(settings=None, scenarios=None, open_gui=True, fo
                         s, color_type, raw
                     )
                     color_notes.extend(list(notes_cap or []))
+                    result["notes"].extend(
+                        "%s %s intento=%s · %s" % (scen, color_type, attempt, note)
+                        for note in color_notes
+                    )
                     if isinstance(color_notes, list):
                         lf_colored = any("Run" in str(n) for n in color_notes)
                     if export_ok:
-                        export_method = "com_capture"
+                        export_method = (
+                            "exportactiveview"
+                            if any(
+                                "inside_export_active_view=OK" in str(n)
+                                for n in color_notes
+                            )
+                            else "com_capture"
+                        )
                 except Exception as ex:
                     export_err = str(ex)
 
@@ -1403,6 +1443,7 @@ def capture_informe_color_views(settings=None, scenarios=None, open_gui=True, fo
                 "color_notes": color_notes,
                 "title": title,
                 "source": "cymdist_color",
+                "window_identity": _current_cymdist_window_identity(),
                 "lf_converged": True,
                 "lf_colored": bool(lf_colored) or bool(color_notes),
                 "composed": False,
@@ -1674,6 +1715,23 @@ def _is_schematic_png(png_path):
         nonwhite = 1.0 - white_ratio
         if nonwhite >= 0.12 and gray_ratio < 0.50 and (color_ratio >= 0.01 or chroma_ratio >= 0.02):
             return True
+        # Los radiales largos exportados por CYMDIST pueden ocupar menos de 2 %
+        # del lienzo. El muestreo 96x64 pierde esos trazos finos; confirmar con
+        # el histograma de mayor resolución y exigir colores de banda, no iconos
+        # dispersos de la carcasa Datos/Mensajes.
+        hist = _map_region_histogram(png_path)
+        bands = hist.get("bands") or {}
+        band_ratio = sum(
+            float(bands.get(name) or 0.0)
+            for name in ("blue", "green", "yellow", "orange", "red", "darkred")
+        )
+        if (
+            hist.get("ok")
+            and int(hist.get("chroma") or 0) >= 40
+            and band_ratio >= 0.70
+            and gray_ratio < 0.25
+        ):
+            return True
         return False
     except Exception:
         return False
@@ -1807,10 +1865,36 @@ def _try_com_color_and_capture(settings, color_type, out_path):
         except Exception as ex:
             notes.append("pre_show: %s" % ex)
 
-        ran, color_notes = _apply_color_and_rerun_lf_com(settings, color_type, app=None)
+        if os.path.isfile(out_path):
+            os.remove(out_path)
+        ran, color_notes = _apply_color_and_rerun_lf_com(
+            settings, color_type, app=None, export_path=out_path
+        )
         notes.extend(color_notes or [])
         if not ran:
             notes.append("AVISO: select no confirmo — se intenta captura igual")
+
+        # ExportActiveView se ejecuta dentro de Cyme, donde la vista MDI
+        # localizada es inequívoca. PrintWindow queda solo como respaldo.
+        if os.path.isfile(out_path) and _is_schematic_png(out_path):
+            notes.append("inside_export_active_view=OK")
+            return True, None, notes
+        if os.path.isfile(out_path):
+            notes.append("inside_export_active_view=no_schematic")
+            try:
+                rejected = out_path + ".inside_rejected.png"
+                shutil.copy2(out_path, rejected)
+                notes.append("inside_rejected_saved=" + rejected)
+                try:
+                    notes.append(
+                        "inside_rejected_histogram="
+                        + json.dumps(_map_region_histogram(rejected), ensure_ascii=False)
+                    )
+                except Exception as ex_hist:
+                    notes.append("inside_rejected_histogram_FAIL=" + str(ex_hist))
+                os.remove(out_path)
+            except Exception:
+                pass
 
         # Confirmación visual adicional sobre el combo real. Es fail-safe: no
         # selecciona combo[0] ni usa coordenadas si no encuentra el nombre.

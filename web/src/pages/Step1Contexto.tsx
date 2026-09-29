@@ -5,6 +5,9 @@ import { useFeeder } from "../state/feeder";
 import {
   acceptDiscoveryResult,
   beginDatabaseSelection,
+  chooseStudyForFeeder,
+  deriveFeederReadiness,
+  resolveAppliedStudy,
   selectFeeder as selectContextFeeder,
   selectStudy,
   type SelectionState,
@@ -12,8 +15,8 @@ import {
 
 type CtxFiles = {
   ok?: boolean;
-  databases?: { path: string; name?: string }[] | string[];
-  studies?: { path: string; name?: string; feeder_id?: string }[] | string[];
+  databases?: { path: string; name?: string; canonical_path?: string }[] | string[];
+  studies?: { path: string; name?: string; feeder_id?: string; ext?: string }[] | string[];
   feeders?: {
     feeder_id: string;
     network_id?: string;
@@ -160,8 +163,23 @@ function mapCodeForFeeder(fid: string): string {
   return m ? m[1] : u;
 }
 
+function scenarioIdFor(mode: "single" | "transfer", primary: string, peer = "") {
+  const clean = (value: string) => value.trim().toUpperCase().replace(/[^A-Z0-9_-]+/g, "_");
+  if (mode === "transfer") {
+    return `transfer_${clean(primary)}_${clean(peer)}`;
+  }
+  return `single_${clean(primary)}`;
+}
+
 export function Step1Contexto() {
-  const { feeder, network, setFeeder, setContext } = useFeeder();
+  const {
+    feeder,
+    network,
+    studyMode,
+    transferPeer,
+    setFeeder,
+    setContext,
+  } = useFeeder();
   const [files, setFiles] = useState<CtxFiles>({});
   const [db, setDb] = useState("");
   const [study, setStudy] = useState("");
@@ -170,6 +188,9 @@ export function Step1Contexto() {
   const [mapAlimentadores, setMapAlimentadores] = useState<MapAlimentador[]>([]);
   const [codigoAlimentador, setCodigoAlimentador] = useState("");
   const [medicionFile, setMedicionFile] = useState("");
+  const [transferDemandRows, setTransferDemandRows] = useState<Json[]>([]);
+  const [transferPeerCabecera, setTransferPeerCabecera] = useState<Json | null>(null);
+  const [transferPeerFile, setTransferPeerFile] = useState("");
   const [medidor, setMedidor] = useState("");
   const [pKw, setPKw] = useState("");
   const [qKvar, setQKvar] = useState("");
@@ -295,7 +316,7 @@ export function Step1Contexto() {
     return j;
   }
 
-  async function onPickDatabase(path: string, canonicalPath?: string) {
+  function onSelectDatabase(path: string, canonicalPath?: string) {
     setDb(path);
     setCymdistReady(false);
     setCymdistSyncNote("");
@@ -305,7 +326,6 @@ export function Step1Contexto() {
       setFiles((prev) => ({ ...prev, feeders: [], n_feeders: 0 }));
       return;
     }
-    setBusy(true);
     const started = beginDatabaseSelection(selectionRef.current, path, canonicalPath);
     selectionRef.current = started;
     setSelection(started);
@@ -314,7 +334,17 @@ export function Step1Contexto() {
     clearMedicionFields();
     setFiles((prev) => ({ ...prev, feeders: [], n_feeders: 0 }));
     const dbName = path.split(/[/\\]/).pop() || path;
-    setMsg(`Descubriendo redes reales de ${dbName} en CYMDIST…`);
+    setContext({ feeder: "", network: "", studyPath: study, databaseMdb: path });
+    setMsg(`BD ${dbName} seleccionada · pulse Cargar alimentadores para abrir CYMDIST`);
+  }
+
+  async function loadDatabaseFeeders(path: string, canonicalPath?: string) {
+    setBusy(true);
+    const started = beginDatabaseSelection(selectionRef.current, path, canonicalPath);
+    selectionRef.current = started;
+    setSelection(started);
+    const dbName = path.split(/[/\\]/).pop() || path;
+    setMsg(`Abriendo CYMDIST y leyendo alimentadores reales de ${dbName}…`);
     try {
       await loadFiles({ database_mdb: path, study_path: study });
       const discovered = await runDetachedJob(
@@ -322,27 +352,27 @@ export function Step1Contexto() {
         { database_mdb: path },
         (job) => setMsg(String(job.message || `Descubriendo ${dbName}…`))
       );
-      setSelection(() => {
-        const current = selectionRef.current;
-        const accepted = acceptDiscoveryResult(
-          current,
-          started.databaseRequestId,
-          discovered as Json
-        );
-        if (accepted !== current) {
-          setFiles((previous) => ({
-            ...previous,
-            feeders: accepted.feeders,
-            n_feeders: accepted.feeders.length,
-            networks_source: String(discovered.source || "cympy"),
-          }));
-          setMsg(
-            `BD ${dbName} · ${accepted.feeders.length} alimentadores reales · elija alimentador y estudio`
-          );
-        }
+      const current = selectionRef.current;
+      const accepted = acceptDiscoveryResult(
+        current,
+        started.databaseRequestId,
+        discovered as Json
+      );
+      if (accepted !== current) {
+        // Consolidar fuera de un setter de React: catálogo y selector reciben
+        // exactamente la misma respuesta de la MDB vigente.
         selectionRef.current = accepted;
-        return accepted;
-      });
+        setSelection(accepted);
+        setFiles((previous) => ({
+          ...previous,
+          feeders: accepted.feeders,
+          n_feeders: accepted.feeders.length,
+          networks_source: String(discovered.source || "cymdist_com"),
+        }));
+        setMsg(
+          `BD ${dbName} · ${accepted.feeders.length} alimentadores reales · elija alimentador y estudio`
+        );
+      }
       setContext({ feeder: "", network: "", studyPath: study, databaseMdb: path });
     } catch (e) {
       setMsg(String(e));
@@ -376,7 +406,7 @@ export function Step1Contexto() {
       }
       if (!result.ok || !result.path) throw new Error(result.error || "Selector sin ruta");
       if (kind === "database") {
-        await onPickDatabase(result.path, result.canonical_path);
+        onSelectDatabase(result.path, result.canonical_path);
       } else {
         onPickStudy(result.path);
         await loadFiles({ database_mdb: db, study_path: result.path });
@@ -567,42 +597,29 @@ export function Step1Contexto() {
         const fid = String(catalog.current_feeder || "").trim();
         const networkId = String(catalog.current_network || "").trim();
         if (fid) {
-          setFeederPick(fid);
+          // Conservar el contexto lateral, pero no simular que el alimentador
+          // pertenece al catálogo hasta que el usuario cargue esa MDB.
           setFeeder(fid, networkId);
         }
         if (initialDb) {
+          const initialDbRow = (catalog.databases || []).find(
+            (item) => normPath(asPath(item)) === normPath(initialDb)
+          );
+          const initialCanonical =
+            typeof initialDbRow === "object" && initialDbRow
+              ? initialDbRow.canonical_path
+              : undefined;
           const started = beginDatabaseSelection(
             selectionRef.current,
             initialDb,
-            normPath(initialDb)
+            initialCanonical || normPath(initialDb)
           );
-          const restored = selectContextFeeder(
-            selectStudy(started, catalog.current_study || ""),
-            fid,
-            networkId
-          );
+          const restored = selectStudy(started, catalog.current_study || "");
           selectionRef.current = restored;
           setSelection(restored);
-          const discovered = await runDetachedJob(
-            "contexto_descubrir_redes",
-            { database_mdb: initialDb },
-            (job) => setMsg(String(job.message || "Descubriendo redes reales en CYMDIST…"))
+          setMsg(
+            `BD ${(initialDb.split(/[/\\]/).pop() || initialDb)} lista · pulse Cargar alimentadores para consultar CYMDIST`
           );
-          setSelection(() => {
-            const accepted = acceptDiscoveryResult(
-              selectionRef.current,
-              restored.databaseRequestId,
-              discovered as Json
-            );
-            selectionRef.current = accepted;
-            setFiles((previous) => ({
-              ...previous,
-              feeders: accepted.feeders,
-              n_feeders: accepted.feeders.length,
-              networks_source: String(discovered.source || "cympy"),
-            }));
-            return accepted;
-          });
         }
         if (fid) await loadCabecera(fid);
       } catch (e) {
@@ -848,17 +865,35 @@ export function Step1Contexto() {
       (item) => String(item.feeder_id).toUpperCase() === String(fid).toUpperCase()
     );
     const networkId = String(row?.network_id || "");
+    const matchedStudy = chooseStudyForFeeder(
+      (files.studies || [])
+        .filter((item): item is Exclude<typeof item, string> => typeof item === "object")
+        .map((item) => ({
+          path: item.path,
+          feeder_id: item.feeder_id,
+          ext: item.ext,
+        })),
+      fid
+    );
     setSelection((current) => {
-      const next = selectContextFeeder(current, fid, networkId);
+      const next = selectStudy(
+        selectContextFeeder(current, fid, networkId),
+        matchedStudy
+      );
       selectionRef.current = next;
       return next;
     });
     setFeederPick(fid);
     setFeeder(fid, networkId);
-    // Solo alimentador: no cambiar ni filtrar el estudio elegido
+    setStudy(matchedStudy);
+    setContext({ studyPath: matchedStudy });
+    if (!matchedStudy) {
+      setMsg(`No existe estudio para ${fid}; 1.1 creará ${fid}.zxst y cargará ${networkId}`);
+    }
     void syncFeederStudyCabecera({
       feederId: fid,
-      keepStudy: true,
+      studyPath: matchedStudy,
+      keepStudy: false,
       extract: opts?.extract !== false,
     });
   }
@@ -881,6 +916,21 @@ export function Step1Contexto() {
     });
   }
 
+  function createNewStudy() {
+    setCymdistReady(false);
+    setCymdistSyncNote("");
+    setSelection((current) => {
+      const next = selectStudy(current, "");
+      selectionRef.current = next;
+      return next;
+    });
+    setStudy("");
+    setContext({ studyPath: "" });
+    setMsg(
+      `Nuevo estudio preparado · 1.1 creará ${feederPick || "el alimentador seleccionado"}.zxst con ${network || "la red seleccionada"}`
+    );
+  }
+
   async function applyContext() {
     setBusy(true);
     setMsg("1.1 · Verificando BD en CYMDIST (existe → conectar; no existe → crear) y activando estudio…");
@@ -899,9 +949,6 @@ export function Step1Contexto() {
       if (!fid) {
         throw new Error("Seleccione el alimentador (BD) antes de 1.1");
       }
-      if (!stPath) {
-        throw new Error("Seleccione el estudio (.zxst/.xst) antes de 1.1");
-      }
       if (!networkId) {
         throw new Error("El alimentador seleccionado no tiene NetworkID descubierto");
       }
@@ -917,6 +964,8 @@ export function Step1Contexto() {
         database_mdb?: string;
         database_connection_name?: string;
         context_fingerprint?: string;
+        study_created?: boolean;
+        study_reused?: boolean;
         msg?: string;
         cymdist_sync?: {
           ok?: boolean;
@@ -946,10 +995,13 @@ export function Step1Contexto() {
       });
       if (!j.ok) throw new Error(j.error || "Error contexto");
 
-      const returnedStudy = j.ui_study_path || j.study_path || "";
+      const returnedStudy = resolveAppliedStudy(
+        stPath,
+        j.ui_study_path || j.study_path || "",
+        j.study_created === true
+      );
       const identityMatches =
         normPath(String(j.database_mdb || "")) === normPath(db) &&
-        normPath(returnedStudy) === normPath(stPath) &&
         String(j.feeder_id || "").toUpperCase() === fid.toUpperCase() &&
         String(j.network_id || "").toUpperCase() === networkId.toUpperCase();
       if (!identityMatches) {
@@ -969,10 +1021,25 @@ export function Step1Contexto() {
       if (resolved) {
         setFeederPick(resolved);
         setFeeder(resolved, j.network_id || networkId);
+        // 1.1 confirmó este contexto en CYMDIST: actualizar el catálogo que
+        // alimenta la tarjeta de estado, sin inventar el gate independiente de Excel.
+        setFiles((previous) => ({
+          ...previous,
+          feeders: (previous.feeders || []).map((item) =>
+            String(item.feeder_id).toUpperCase() === resolved.toUpperCase()
+              ? { ...item, operational: true }
+              : item
+          ),
+        }));
       }
       // Conservar elección UI (.xst); CYMDIST abre study_path (.zxst) en backend
-      const uiStudy = j.ui_study_path || stPath || j.study_path || "";
-      if (uiStudy) setStudy(uiStudy);
+      const uiStudy = returnedStudy;
+      if (uiStudy) {
+        setStudy(uiStudy);
+        const selectedStudy = selectStudy(selectionRef.current, uiStudy);
+        selectionRef.current = selectedStudy;
+        setSelection(selectedStudy);
+      }
       setContext({
         feeder: resolved || "",
         network: j.network_id || networkId,
@@ -1006,6 +1073,32 @@ export function Step1Contexto() {
       setCymdistSyncNote(syncNote);
       setCymdistReady(true);
 
+      if (studyMode === "transfer" && transferPeer) {
+        const peerRow = (files.feeders || []).find(
+          (item) => String(item.feeder_id).toUpperCase() === transferPeer.toUpperCase()
+        );
+        if (peerRow?.network_id) {
+          setMsg(`${syncNote} · preparando ambos alimentadores y máxima demanda…`);
+          const prepared = await prepareTransferRequest({
+            primary: resolved || fid,
+            peer: transferPeer,
+            databaseMdb: db,
+            studyPath: uiStudy || j.study_path || stPath,
+            primaryNetworkId: j.network_id || networkId,
+            peerNetworkId: peerRow.network_id,
+          });
+          if (!prepared.ok) {
+            throw new Error(prepared.error || "No se pudo preparar el alimentador receptor");
+          }
+        }
+      }
+
+      // Un estudio recién creado debe aparecer y quedar seleccionado sin
+      // obligar al usuario a pulsar "Actualizar listas".
+      if (j.study_created === true) {
+        await loadFiles({ database_mdb: db, study_path: uiStudy });
+      }
+
       // Solo después de conectar CYMDIST: cargar mediciones de cabecera (Excel → formulario)
       skipCabeceraReload.current = true;
       await syncFeederStudyCabecera({
@@ -1023,6 +1116,91 @@ export function Step1Contexto() {
     } catch (e) {
       setCymdistReady(false);
       setCymdistSyncNote("");
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function prepareTransferRequest(input: {
+    primary: string;
+    peer: string;
+    databaseMdb: string;
+    studyPath: string;
+    primaryNetworkId: string;
+    peerNetworkId: string;
+  }) {
+    const result = await api<{
+      ok?: boolean;
+      prepared?: boolean;
+      error?: string;
+      msg?: string;
+      max_demand?: { networks?: Json[] };
+    }>("/api/contexto/preparar-transferencia", {
+      method: "POST",
+      body: JSON.stringify({
+        database_mdb: input.databaseMdb,
+        study_path: input.studyPath,
+        feeder_id: input.primary,
+        network_id: input.primaryNetworkId,
+        peer_feeder_id: input.peer,
+        peer_network_id: input.peerNetworkId,
+        allowed_networks: [
+          { feeder_id: input.primary, network_id: input.primaryNetworkId },
+          { feeder_id: input.peer, network_id: input.peerNetworkId },
+        ],
+        medicion_file: medicionFile || undefined,
+      }),
+      timeoutMs: 900000,
+    });
+    setTransferDemandRows(result.max_demand?.networks || []);
+    if (result.ok && result.prepared) {
+      setContext({
+        studyMode: "transfer",
+        transferPeer: input.peer,
+        scenarioId: scenarioIdFor("transfer", input.primary, input.peer),
+      });
+    }
+    return result;
+  }
+
+  async function extractTransferPeerCabecera(peer: string) {
+    const code = peer.trim();
+    if (!code) {
+      setTransferPeerCabecera(null);
+      setTransferPeerFile("");
+      return;
+    }
+    setBusy(true);
+    setMsg(`Extrayendo cabecera propia de ${code}…`);
+    try {
+      const resolved = await api<{
+        ok?: boolean;
+        error?: string;
+        medidor?: string;
+        Vll_kV?: number;
+        suggested_file?: string;
+      }>("/api/cabecera/medicion/resolver", {
+        method: "POST",
+        body: JSON.stringify({ feeder: code }),
+        timeoutMs: 60000,
+      });
+      if (!resolved.ok) throw new Error(resolved.error || `No se pudo resolver ${code}`);
+      const extracted = await api<Json>("/api/cabecera/medicion/extraer", {
+        method: "POST",
+        body: JSON.stringify({
+          feeder: code,
+          medicion_file: resolved.suggested_file || null,
+          auto_find_file: true,
+        }),
+        timeoutMs: 180000,
+      });
+      if (!extracted.ok) throw new Error(String(extracted.error || `No se pudo extraer ${code}`));
+      setTransferPeerCabecera(extracted);
+      setTransferPeerFile(String(extracted.medicion_file || resolved.suggested_file || ""));
+      setMsg(String(extracted.msg || `Cabecera de ${code} extraída`));
+    } catch (e) {
+      setTransferPeerCabecera(null);
       setMsg(String(e));
     } finally {
       setBusy(false);
@@ -1143,11 +1321,13 @@ export function Step1Contexto() {
   const selectedFeeder = feeders.find(
     (f) => String(f.feeder_id).toUpperCase() === (feederPick || feeder).toUpperCase()
   );
+  const selectedReadiness = deriveFeederReadiness(selectedFeeder, cymdistReady);
   const showPhases = Boolean(vLl);
 
   const dbOptions = dbs.map((d) => {
     const p = asPath(d);
-    return { value: p, label: asLabel(d), searchText: p };
+    const canonicalPath = typeof d === "object" && d ? d.canonical_path : undefined;
+    return { value: p, label: asLabel(d), searchText: p, canonicalPath };
   });
   const feederOptions = feeders.map((f) => {
     const nid = String(f.network_id || "").trim();
@@ -1194,14 +1374,37 @@ export function Step1Contexto() {
         fuente (solo con 1.1 OK).
       </p>
 
-      <div className="grid">
+      <div className="grid context-grid">
+        <div>
+          <label>Tipo de estudio</label>
+          <select
+            value={studyMode}
+            disabled={busy}
+            onChange={(event) => {
+              const value = event.target.value === "transfer" ? "transfer" : "single";
+              setContext({
+                studyMode: value,
+                transferPeer: value === "single" ? "" : transferPeer,
+                scenarioId: value === "single"
+                  ? scenarioIdFor(value, feederPick || feeder)
+                  : scenarioIdFor(value, feederPick || feeder, transferPeer),
+              });
+            }}
+          >
+            <option value="single">Análisis de un alimentador</option>
+            <option value="transfer">Estudio de transferencia</option>
+          </select>
+        </div>
         <div>
           <label>Base de datos (.mdb)</label>
           <SearchableSelect
             value={db}
             options={dbOptions}
             disabled={busy}
-            onChange={(v) => onPickDatabase(v)}
+            onChange={(v) => {
+              const option = dbOptions.find((item) => normPath(item.value) === normPath(v));
+              onSelectDatabase(v, option?.canonicalPath);
+            }}
             placeholder="Buscar .mdb…"
             emptyLabel="—"
           />
@@ -1214,11 +1417,25 @@ export function Step1Contexto() {
           >
             Examinar MDB…
           </button>
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy || !db}
+            onClick={() => {
+              const option = dbOptions.find(
+                (item) => normPath(item.value) === normPath(db)
+              );
+              void loadDatabaseFeeders(db, option?.canonicalPath);
+            }}
+            style={{ marginTop: 6, marginLeft: 8 }}
+          >
+            Cargar alimentadores
+          </button>
           {db && <p className="muted path-full">{db}</p>}
         </div>
         <div>
           <label>
-            Alimentador (BD)
+            {studyMode === "transfer" ? "Alimentador 1 (origen)" : "Alimentador (BD)"}
             {feeders.length ? ` · ${feeders.length}` : ""}
           </label>
           <SearchableSelect
@@ -1252,18 +1469,20 @@ export function Step1Contexto() {
           <button
             type="button"
             className="ghost"
-            disabled={busy}
-            onClick={() => browseContextFile("study")}
+            disabled={busy || !feederPick}
+            onClick={createNewStudy}
             style={{ marginTop: 6 }}
           >
-            Examinar estudio…
+            Crear nuevo estudio…
           </button>
           {study && <p className="muted path-full">{study}</p>}
           <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
             {(() => {
               const name = (study || "").split(/[/\\]/).pop() || "";
               if (!study) {
-                return "Elija el estudio (independiente del alimentador); luego 1.1.";
+                return feederPick
+                  ? `No existe estudio dedicado; 1.1 creará ${feederPick}.zxst y cargará ${network || "la red seleccionada"}.`
+                  : "Elija primero el alimentador; si no tiene estudio, 1.1 lo creará.";
               }
               return (
                 `${name}` +
@@ -1274,6 +1493,30 @@ export function Step1Contexto() {
             })()}
           </p>
         </div>
+        {studyMode === "transfer" && (
+          <div>
+            <label>Alimentador 2 (receptor)</label>
+            <SearchableSelect
+              value={transferPeer}
+              options={feederOptions.filter(
+                (option) => option.value.toUpperCase() !== (feederPick || feeder).toUpperCase()
+              )}
+              disabled={busy}
+              placeholder="Seleccionar alimentador de transferencia…"
+              emptyLabel="— elegir —"
+              onChange={(value) => {
+                setContext({
+                  transferPeer: value,
+                  scenarioId: scenarioIdFor("transfer", feederPick || feeder, value),
+                });
+                void extractTransferPeerCabecera(value);
+              }}
+            />
+            <p className="muted" style={{ marginTop: 5, fontSize: 12 }}>
+              Al confirmar 1.1 se cargarán en CYMDIST el origen y el receptor, cada uno con sus propios valores P/Q/S.
+            </p>
+          </div>
+        )}
       </div>
       <p className="muted" style={{ marginTop: 8 }}>
         Activo: <b>{feederPick || feeder || "—"}</b>
@@ -1288,11 +1531,44 @@ export function Step1Contexto() {
           </>
         )}
       </p>
+      {studyMode === "transfer" && transferDemandRows.length > 0 && (
+        <div className="pathbox" style={{ marginTop: 10, overflowX: "auto" }}>
+          <b>Máxima demanda cargada en CYMDIST</b>
+          <table style={{ width: "100%", marginTop: 6 }}>
+            <thead>
+              <tr>
+                <th>Alimentador</th>
+                <th>P máx (kW)</th>
+                <th>Q (kvar)</th>
+                <th>S (kVA)</th>
+                <th>Medidor</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transferDemandRows.map((row) => (
+                <tr key={String(row.network_id || row.feeder_short)}>
+                  <td>{String(row.feeder_short || row.network_id || "—")}</td>
+                  <td>{String(row.P_kW ?? "—")}</td>
+                  <td>{String(row.Q_kvar ?? "—")}</td>
+                  <td>{String(row.S_kVA ?? "—")}</td>
+                  <td>{String(row.medidor || "—")}</td>
+                  <td>{row.ok ? "OK" : String(row.error || "ERROR")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       {selectedFeeder && (
-        <div className={selectedFeeder.inputs_ready ? "pathbox ok" : "pathbox bad"}>
-          Contexto CYMDIST: {selectedFeeder.operational ? "disponible" : "incompleto"}
-          {" · "}Entradas Excel: {selectedFeeder.inputs_ready ? "listas" : "bloqueadas"}
-          {!selectedFeeder.inputs_ready && selectedFeeder.input_errors?.length
+        <div
+          className={`pathbox${
+            selectedReadiness.tone === "neutral" ? "" : ` ${selectedReadiness.tone}`
+          }`}
+        >
+          Contexto CYMDIST: {selectedReadiness.contextLabel}
+          {" · "}Entradas Excel: {selectedReadiness.inputsLabel}
+          {selectedFeeder.inputs_ready === false && selectedFeeder.input_errors?.length
             ? ` · ${selectedFeeder.input_errors.map((e) => e.message || e.code).join(" · ")}`
             : ""}
         </div>
@@ -1301,7 +1577,7 @@ export function Step1Contexto() {
         <button
           type="button"
           className="secondary"
-          disabled={busy || !db || !study || !feederPick || selectedFeeder?.operational === false}
+          disabled={busy || !db || !feederPick || selectedFeeder?.operational === false}
           onClick={applyContext}
           title="Verifica si la BD existe en CYMDIST; si no, la crea; luego activa el estudio"
         >
@@ -1478,6 +1754,45 @@ export function Step1Contexto() {
         </div>
       </div>
       {cabAdjNote ? <p className="muted" style={{ marginTop: 8 }}>{cabAdjNote}</p> : null}
+
+      {studyMode === "transfer" && (
+        <div className="transfer-cabecera-grid" style={{ marginTop: 12 }}>
+          <div className="transfer-cabecera-title">
+            <h3 style={{ margin: 0 }}>Cabecera del alimentador 2 (receptor)</h3>
+            <p className="muted" style={{ margin: "4px 0 0" }}>
+              Valores independientes que se cargarán en CYMDIST al confirmar §1.1.
+            </p>
+          </div>
+          <div>
+            <label>Código alimentador 2</label>
+            <input value={transferPeer} readOnly />
+          </div>
+          <div>
+            <label>Medidor alimentador 2</label>
+            <input value={String(transferPeerCabecera?.medidor || "")} readOnly placeholder="Se extrae al seleccionar" />
+          </div>
+          <div>
+            <label>Vll (kV) alimentador 2</label>
+            <input value={String(transferPeerCabecera?.Vll_kV ?? "")} readOnly placeholder="Se extrae al seleccionar" />
+          </div>
+          <div>
+            <label>Excel alimentador 2</label>
+            <input value={transferPeerFile} readOnly placeholder="Auto-localizado" />
+          </div>
+          <div>
+            <label>P máximo 2 (kW)</label>
+            <input value={String(transferPeerCabecera?.P_kW ?? "")} readOnly placeholder="—" />
+          </div>
+          <div>
+            <label>Q máximo 2 (kvar)</label>
+            <input value={String(transferPeerCabecera?.Q_kvar ?? "")} readOnly placeholder="—" />
+          </div>
+          <div>
+            <label>S máximo 2 (kVA)</label>
+            <input value={String(transferPeerCabecera?.S_kVA ?? "")} readOnly placeholder="—" />
+          </div>
+        </div>
+      )}
 
       {showPhases && (
         <>

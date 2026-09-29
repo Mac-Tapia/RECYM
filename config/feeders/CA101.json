@@ -15,8 +15,8 @@
     "CN101"
   ],
   "transfer_pair_note": "Par por calidad de tensión en CA101V2 (confirmable). Baseline: máxima demanda multi-alimentador.",
-  "study_file": "CA101V2.sxst",
-  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101V2.sxst",
+  "study_file": "CA101.sxst",
+  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
   "voltage_ll_kv": 10.0,
   "region": "Chincha",
   "substation": "",
@@ -26,7 +26,7 @@
   "output_dir": "data\\output\\feeders\\CA101",
   "notes": "Actualizado 2026-09-24: CA101V2.sxst + BD 260924.mdb · multi-red máxima demanda",
   "synthesized": false,
-  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101V2.sxst",
-  "ui_study_file": "CA101V2.sxst",
+  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
+  "ui_study_file": "CA101.sxst",
   "via_eld": false
 }

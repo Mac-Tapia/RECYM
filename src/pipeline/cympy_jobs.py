@@ -14,10 +14,39 @@ sys.path.insert(0, os.path.join(ROOT, "src", "core"))
 sys.path.insert(0, os.path.join(ROOT, "src", "pipeline"))
 
 
+def _json_safe(value, active=None):
+    """Remove COM cycles before writing the isolated worker result as JSON."""
+    if active is None:
+        active = set()
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    marker = id(value)
+    if marker in active:
+        return "<circular-reference>"
+    if isinstance(value, dict):
+        active.add(marker)
+        try:
+            return {str(key): _json_safe(item, active) for key, item in value.items()}
+        finally:
+            active.remove(marker)
+    if isinstance(value, (list, tuple, set)):
+        active.add(marker)
+        try:
+            return [_json_safe(item, active) for item in value]
+        finally:
+            active.remove(marker)
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _out(path, data):
+    safe_data = _json_safe(data)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    print("JOB_RESULT", json.dumps({"ok": data.get("ok"), "error": data.get("error")}, ensure_ascii=False))
+        json.dump(safe_data, f, ensure_ascii=False, indent=2)
+    print("JOB_RESULT", json.dumps({"ok": safe_data.get("ok"), "error": safe_data.get("error")}, ensure_ascii=False))
 
 
 def job_cabecera(payload):
@@ -29,7 +58,7 @@ def job_cabecera(payload):
     s = load_settings(feeder_id=feeder, synthesize=True)
     # Override rutas si vienen del UI
     for k in ("study_path", "database_mdb", "network_id", "ui_study_path",
-              "database_connection_name", "run_id", "context_fingerprint"):
+              "database_connection_name", "run_id", "context_fingerprint", "scenario_id"):
         if payload.get(k):
             s[k] = payload[k]
     # Conservar elección UI exacta (.xst) para OpenStudy COM / GUI

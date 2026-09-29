@@ -334,7 +334,7 @@ def main():
     out = output_path(s, "clientes", "apply_cymdist_report.csv")
     write_csv(
         out, report,
-        ["Suministro", "Cliente", "SED", "LoadID", "EA", "Pot", "KWH_antes", "KWH_despues", "KWH_ok", "Estado", "Activo", "Detalle"],
+        ["Suministro", "Cliente", "SED", "LoadID", "EA", "Pot", "KWH_antes", "KWH_despues", "KWH_ok", "Estado", "Activo", "ConnectionStatus", "Detalle"],
     )
     ok = sum(1 for r in report if r.get("Estado") == "OK")
     excl = sum(1 for r in report if r.get("Estado") == "EXCLUIDO")

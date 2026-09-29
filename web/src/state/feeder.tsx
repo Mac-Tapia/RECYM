@@ -10,6 +10,12 @@ type Ctx = {
   contextVersion: number;
   inputsReady: boolean | null;
   inputErrors: string[];
+  studyMode: "single" | "transfer";
+  transferPeer: string;
+  scenarioId: string;
+  transferNode: string;
+  transferSectionalizer: string;
+  transferTieSwitch: string;
   setFeeder: (f: string, network?: string) => void;
   setContext: (opts: {
     feeder?: string;
@@ -19,6 +25,12 @@ type Ctx = {
     contextFingerprint?: string;
     inputsReady?: boolean | null;
     inputErrors?: string[];
+    studyMode?: "single" | "transfer";
+    transferPeer?: string;
+    scenarioId?: string;
+    transferNode?: string;
+    transferSectionalizer?: string;
+    transferTieSwitch?: string;
   }) => void;
 };
 
@@ -33,6 +45,12 @@ export function FeederProvider({ children }: { children: ReactNode }) {
   const [contextVersion, setContextVersion] = useState(0);
   const [inputsReady, setInputsReady] = useState<boolean | null>(null);
   const [inputErrors, setInputErrors] = useState<string[]>([]);
+  const [studyMode, setStudyMode] = useState<"single" | "transfer">("single");
+  const [transferPeer, setTransferPeer] = useState("");
+  const [scenarioId, setScenarioId] = useState("");
+  const [transferNode, setTransferNode] = useState("");
+  const [transferSectionalizer, setTransferSectionalizer] = useState("");
+  const [transferTieSwitch, setTransferTieSwitch] = useState("");
   const value = useMemo<Ctx>(
     () => ({
       feeder,
@@ -43,6 +61,12 @@ export function FeederProvider({ children }: { children: ReactNode }) {
       contextVersion,
       inputsReady,
       inputErrors,
+      studyMode,
+      transferPeer,
+      scenarioId,
+      transferNode,
+      transferSectionalizer,
+      transferTieSwitch,
       setFeeder: (f, n) => {
         if ((f || "") !== feeder) {
           setInputsReady(null);
@@ -75,6 +99,12 @@ export function FeederProvider({ children }: { children: ReactNode }) {
         if (identityChanged) setContextVersion((value) => value + 1);
         if (opts.inputsReady !== undefined) setInputsReady(opts.inputsReady);
         if (opts.inputErrors !== undefined) setInputErrors(opts.inputErrors);
+        if (opts.studyMode !== undefined) setStudyMode(opts.studyMode);
+        if (opts.transferPeer !== undefined) setTransferPeer(opts.transferPeer || "");
+        if (opts.scenarioId !== undefined) setScenarioId(opts.scenarioId || "");
+        if (opts.transferNode !== undefined) setTransferNode(opts.transferNode || "");
+        if (opts.transferSectionalizer !== undefined) setTransferSectionalizer(opts.transferSectionalizer || "");
+        if (opts.transferTieSwitch !== undefined) setTransferTieSwitch(opts.transferTieSwitch || "");
         setActiveContext({
           feeder: opts.feeder !== undefined ? opts.feeder || "" : undefined,
           network: opts.network,
@@ -98,6 +128,12 @@ export function FeederProvider({ children }: { children: ReactNode }) {
       contextVersion,
       inputsReady,
       inputErrors,
+      studyMode,
+      transferPeer,
+      scenarioId,
+      transferNode,
+      transferSectionalizer,
+      transferTieSwitch,
     ]
   );
   return <FeederCtx.Provider value={value}>{children}</FeederCtx.Provider>;

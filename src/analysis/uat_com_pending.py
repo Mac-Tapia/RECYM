@@ -15,6 +15,7 @@ FEEDER = os.environ.get("RECYM_FEEDER") or "IN112"
 OUT = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "..", "data", "output", "system", "uat_com_report.json"
 ))
+UAT_CONTEXT = {}
 
 
 def req(method, path, body=None, timeout=600, headers=None):
@@ -50,7 +51,9 @@ def req(method, path, body=None, timeout=600, headers=None):
 
 def wait_job(action, payload=None, timeout_sec=300):
     """POST /api/jobs y espera status ok|error."""
-    r = req("POST", "/api/jobs", {"action": action, "payload": payload or {}, "feeder": FEEDER}, timeout=60)
+    job_payload = dict(UAT_CONTEXT)
+    job_payload.update(payload or {})
+    r = req("POST", "/api/jobs", {"action": action, "payload": job_payload, "feeder": FEEDER}, timeout=60)
     body = r.get("body") or {}
     if not body.get("job_id"):
         return {
@@ -115,6 +118,7 @@ def emit(case_row):
 
 
 def main():
+    global UAT_CONTEXT
     cases = []
     print("UAT COM feeder=%s base=%s" % (FEEDER, BASE))
     sys.stdout.flush()
@@ -124,12 +128,24 @@ def main():
     body = r.get("body") or {}
     db = body.get("current_database")
     st = body.get("current_study")
+    net = body.get("current_network")
+    UAT_CONTEXT = {
+        "database_mdb": db,
+        "study_path": st,
+        "network_id": net,
+        "feeder": FEEDER,
+        "feeder_id": FEEDER,
+    }
     if isinstance(db, dict):
         db = db.get("path")
     if isinstance(st, dict):
         st = st.get("path")
     r = req("POST", "/api/contexto/aplicar", {
-        "database_mdb": db, "study_path": st, "feeder": FEEDER,
+        "database_mdb": db,
+        "study_path": st,
+        "feeder_id": FEEDER,
+        "network_id": net,
+        "allowed_networks": [{"feeder_id": FEEDER, "network_id": net}],
     }, timeout=60)
     b = r.get("body") or {}
     cases.append(emit(case("1.1 Aplicar BD+estudio", 1, b.get("ok") and r.get("http") == 200,

@@ -1,0 +1,59 @@
+{
+  "counts": {
+    "blocked": 0,
+    "failed": 0,
+    "passed": 2,
+    "pending_real": 0
+  },
+  "generated_at_utc": "2026-09-28T04:51:26.874238+00:00",
+  "identity": {
+    "context_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "database_mdb": "D:\\modelos nuevos\\red real.mdb",
+    "feeder_id": "XX999",
+    "network_id": "NET_DINAMICA_999",
+    "study_path": "D:\\estudios varios\\Caso norte.zxst"
+  },
+  "ok": true,
+  "run_id": "run-z",
+  "stages": [
+    {
+      "detail": {
+        "identity": {
+          "context_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "database_mdb": "D:\\modelos nuevos\\red real.mdb",
+          "feeder_id": "XX999",
+          "network_id": "NET_DINAMICA_999",
+          "study_path": "D:\\estudios varios\\Caso norte.zxst"
+        }
+      },
+      "identity": {
+        "context_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "database_mdb": "D:\\modelos nuevos\\red real.mdb",
+        "feeder_id": "XX999",
+        "network_id": "NET_DINAMICA_999",
+        "study_path": "D:\\estudios varios\\Caso norte.zxst"
+      },
+      "message": "Ejecucion creada",
+      "run_id": "run-z",
+      "seq": 1,
+      "stage": "run",
+      "status": "passed",
+      "timestamp_utc": "2026-09-28T04:51:26.828588+00:00"
+    },
+    {
+      "identity": {
+        "context_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "database_mdb": "D:\\modelos nuevos\\red real.mdb",
+        "feeder_id": "XX999",
+        "network_id": "NET_DINAMICA_999",
+        "study_path": "D:\\estudios varios\\Caso norte.zxst"
+      },
+      "message": "ok",
+      "run_id": "run-z",
+      "seq": 2,
+      "stage": "1.1",
+      "status": "passed",
+      "timestamp_utc": "2026-09-28T04:51:26.846692+00:00"
+    }
+  ]
+}
