@@ -4,9 +4,8 @@ import { useFeeder } from "../state/feeder";
 import { ContextBind, useHasSectionContext } from "../components/ContextBind";
 
 export function Step7Suite() {
-  const { feeder, inputsReady, inputErrors } = useFeeder();
+  const { feeder } = useFeeder();
   const hasCtx = useHasSectionContext();
-  const [force, setForce] = useState(false);
   const [msg, setMsg] = useState("");
   const [out, setOut] = useState("");
   const [busy, setBusy] = useState(false);
@@ -62,74 +61,7 @@ export function Step7Suite() {
       <h2>7 · Optimización + Suite</h2>
       <ContextBind hint="Optimización y herramientas sobre el estudio/BD de §1" />
       <p className="muted">Herramientas del pipeline · alimentador {feeder || "—"}.</p>
-      {inputsReady === false && (
-        <div className="pathbox bad">
-          Entradas Excel bloqueadas: {inputErrors.join(" · ") || "revise §1"}
-        </div>
-      )}
-
-      <h3>7.1 Optimización CYMDIST</h3>
-      <p className="muted" style={{ marginTop: 0 }}>
-        Si en §2.1 hay muchas caídas de tensión: ejecute <b>primero 7.1c</b> (bancos /
-        CapacitorPlacement con equipo BC22.9KV) y <b>después 7.1b</b> (reguladores /
-        RegulatorPlacement). Ambos usan equipos ya creados en la biblioteca CYMDIST.
-      </p>
-      <div className="actions">
-        <label style={{ display: "inline-flex", gap: 6, alignItems: "center", margin: 0 }}>
-          <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
-          Forzar
-        </label>
-        <button type="button" className="secondary" disabled={busy}
-          onClick={() => job("optimizacion_reclosers", "7.1a Reclosers", { force })}>
-          7.1a · Reconectadores
-        </button>
-        <button type="button" className="secondary" disabled={busy}
-          onClick={() => job("optimizacion_capacitors", "7.1c Capacitors", { force })}>
-          7.1c · Capacitores (1º si hay caídas de V)
-        </button>
-        <button type="button" className="secondary" disabled={busy}
-          onClick={() => job("optimizacion_regulators", "7.1b Regulators", { force })}>
-          7.1b · Reguladores (2º)
-        </button>
-      </div>
-
-      <h3>7.2 Entorno y conexión</h3>
-      <div className="actions">
-        <button type="button" className="ghost" disabled={busy}
-          onClick={() => call("/api/suite/entorno", "Entorno", undefined, "GET")}>
-          7.2a · Validar entorno
-        </button>
-        <button type="button" className="secondary" disabled={busy}
-          onClick={() => job("suite_conexion", "Conexión")}>
-          7.2b · Probar conexión CYMDIST
-        </button>
-        <button type="button" className="ghost" disabled={busy}
-          onClick={() => call("/api/suite/validar_entradas", "Validar entradas")}>
-          7.2c · Validar entradas Excel
-        </button>
-        <button type="button" className="ghost" disabled={busy}
-          onClick={() => job("suite_inventario_cargas", "Inventario", { system: true })}>
-          7.2d · Inventario SpotLoad (96)
-        </button>
-      </div>
-
-      <h3>7.3 Equipos / modelo</h3>
-      <div className="actions">
-        <button type="button" className="secondary" disabled={busy || inputsReady === false}
-          onClick={() => job("suite_sync_equipos", "Sync equipos")}>
-          7.3a · Sync equipos Excel → CYMDIST
-        </button>
-        <button type="button" className="ghost" disabled={busy}
-          onClick={() => job("suite_fix_default", "Fix DEFAULT")}>
-          7.3b · Cerrar DEFAULT AAAC/XLPE
-        </button>
-        <button type="button" className="ghost" disabled={busy}
-          onClick={() => job("suite_export_ascii", "Export ASCII")}>
-          7.3c · Exportar ASCII
-        </button>
-      </div>
-
-      <h3>7.4 Nuevo alimentador</h3>
+      <h3>7.1 Nuevo alimentador</h3>
       <div className="grid">
         <div>
           <label>ID</label>
@@ -153,18 +85,18 @@ export function Step7Suite() {
           onClick={() => call("/api/suite/nuevo_alimentador", "Nuevo feeder", {
             feeder_id: nfId, name: nfName, network_id: nfNet, voltage_kv: Number(nfKv),
           })}>
-          7.4 · Crear alimentador
+          7.1 · Crear alimentador
         </button>
       </div>
 
-      <h3>7.5 Pipeline batch</h3>
+      <h3>7.2 Pipeline batch</h3>
       <div className="actions">
-        <button type="button" className="secondary" disabled={busy || inputsReady === false}
+        <button type="button" className="secondary" disabled={busy || !hasCtx}
           onClick={() => {
             if (!confirm("Ejecutar pipeline completo. ¿Continuar?")) return;
             job("suite_pipeline", "Pipeline");
           }}>
-          7.5 · Ejecutar pipeline alimentador
+          7.2 · Ejecutar pipeline alimentador
         </button>
         <span className="muted">{msg}</span>
       </div>

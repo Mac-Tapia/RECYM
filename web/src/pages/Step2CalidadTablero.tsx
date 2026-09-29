@@ -207,6 +207,7 @@ export function Step2CalidadTablero() {
   const [board, setBoard] = useState<Board | null>(null);
   const [systemDiag, setSystemDiag] = useState<SystemDiag | null>(null);
   const [activo, setActivo] = useState<Record<string, boolean>>({});
+  const [forceOptimization, setForceOptimization] = useState(false);
 
   const studyFile = (studyPath || "").split(/[/\\]/).pop() || "";
   const dbFile = (databaseMdb || "").split(/[/\\]/).pop() || "";
@@ -648,6 +649,28 @@ export function Step2CalidadTablero() {
             onClick={() => job("calidad_eld", "2.8")}>2.8 · Diagnosticar ELD</button>
         </div>
         <pre className="out muted">{msg}</pre>
+        <h3>2.9 · Optimización CYMDIST</h3>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Ejecute primero capacitores y después reguladores cuando el diagnóstico muestre caídas de tensión.
+        </p>
+        <div className="actions">
+          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", margin: 0 }}>
+            <input type="checkbox" checked={forceOptimization} onChange={(e) => setForceOptimization(e.target.checked)} />
+            Forzar
+          </label>
+          <button type="button" className="secondary" disabled={Boolean(busy) || !hasCtx}
+            onClick={() => job("optimizacion_reclosers", "2.9a Reclosadores", { force: forceOptimization })}>
+            2.9a · Reconectadores
+          </button>
+          <button type="button" className="secondary" disabled={Boolean(busy) || !hasCtx}
+            onClick={() => job("optimizacion_capacitors", "2.9b Capacitores", { force: forceOptimization })}>
+            2.9b · Capacitores
+          </button>
+          <button type="button" className="secondary" disabled={Boolean(busy) || !hasCtx}
+            onClick={() => job("optimizacion_regulators", "2.9c Reguladores", { force: forceOptimization })}>
+            2.9c · Reguladores
+          </button>
+        </div>
         {voptTriggered && (
           <div className="panel" style={{ marginTop: 12, borderLeft: "3px solid #0f766e" }}>
             <h3 style={{ marginTop: 0 }}>Recomendación ante caídas de tensión</h3>

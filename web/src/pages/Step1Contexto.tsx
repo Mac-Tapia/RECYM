@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, runDetachedJob, type Json } from "../api/client";
+import { api, runDetachedJob, runJob, type Json } from "../api/client";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { useFeeder } from "../state/feeder";
 import {
@@ -1207,6 +1207,36 @@ export function Step1Contexto() {
     }
   }
 
+  async function runContextSuite(action: string, label: string, payload: Json = {}) {
+    if (!db || !study) {
+      setMsg("Seleccione MDB y estudio antes de ejecutar esta herramienta");
+      return;
+    }
+    setBusy(true);
+    setMsg(`${label}…`);
+    try {
+      const result = await runJob(action, payload, (state) => setMsg(String(state.message || label)));
+      setMsg(String(result.msg || (result.ok ? "OK" : result.error) || label));
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function callContextSuite(path: string, label: string) {
+    setBusy(true);
+    setMsg(`${label}…`);
+    try {
+      const result = await api<Json>(path, { method: "GET", timeoutMs: 120000 });
+      setMsg(String(result.msg || (result.ok ? "OK" : result.error) || label));
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveHead(previewOnly = false) {
     if (!previewOnly && !cymdistReady) {
       setMsg(
@@ -1531,6 +1561,21 @@ export function Step1Contexto() {
           </>
         )}
       </p>
+      <h3>1.3 · Entorno y conexión</h3>
+      <div className="actions">
+        <button type="button" className="ghost" disabled={busy}
+          onClick={() => void callContextSuite("/api/suite/entorno", "Validar entorno")}>
+          1.3a · Validar entorno
+        </button>
+        <button type="button" className="secondary" disabled={busy || !db || !study}
+          onClick={() => void runContextSuite("suite_conexion", "Probar conexión CYMDIST")}>
+          1.3b · Probar conexión CYMDIST
+        </button>
+        <button type="button" className="ghost" disabled={busy || !db || !study}
+          onClick={() => void callContextSuite("/api/suite/validar_entradas", "Validar entradas Excel")}>
+          1.3c · Validar entradas Excel
+        </button>
+      </div>
       {studyMode === "transfer" && transferDemandRows.length > 0 && (
         <div className="pathbox" style={{ marginTop: 10, overflowX: "auto" }}>
           <b>Máxima demanda cargada en CYMDIST</b>
