@@ -62,6 +62,8 @@ scripts/                          # .bat de entorno, pipeline, UI
 
 ## Uso rápido
 
+En Windows, ejecutar `Abrir RECYM.bat` desde la raíz del proyecto para iniciar la API local y abrir la interfaz en el navegador.
+
 ```bat
 scripts\01_check_environment.bat
 scripts\03_test_cymdist_connection.bat
