@@ -110,6 +110,18 @@ Selección de alimentador (prioridad):
 
 ## 4. Flujo operativo SPA (§§1–7)
 
+### Escenarios de estudio
+
+§1 define el escenario activo antes de ejecutar el resto de módulos:
+
+- **Individual:** un alimentador, un estudio y su cabecera P/Q/S.
+- **Transferencia:** alimentador 1 (origen), alimentador 2 (receptor), sus medidores,
+  Vll y máximas demandas independientes, más el `scenario_id` del par.
+
+Cada job recibe la identidad del escenario para evitar mezclar resultados entre
+alimentadores o sentidos de transferencia. En §5 el escenario de transferencia
+incluye sentido, nodo, seccionador y punto de enlace seleccionados.
+
 Orden de trabajo recomendado (detalle en [`FLUJO_TRABAJO.md`](FLUJO_TRABAJO.md)):
 
 | § | Panel | Qué hace |
@@ -121,6 +133,12 @@ Orden de trabajo recomendado (detalle en [`FLUJO_TRABAJO.md`](FLUJO_TRABAJO.md))
 | **5** | Flujos | Situacional (desconecta §4) / proyectado (conecta §4) / general |
 | **6** | Informes | Meta OCR PDF + relleno Word/PDF de entrega |
 | **7** | Opt + Suite | Optimización equipos; herramientas batch / sync / nuevo feeder |
+
+En transferencia, §1 carga ambas redes y sus cabeceras antes de §2–§5. §2 registra
+el punto de seccionamiento y §5 ejecuta el análisis del sentido seleccionado. La
+maniobra física solo debe confirmarse cuando CYMDIST identifica inequívocamente los
+equipos; después se ejecuta LoadFlow y se conservan cargabilidad, tensiones y caídas
+para §6.
 
 **Reglas de acoplamiento:**
 

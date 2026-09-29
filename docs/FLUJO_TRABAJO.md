@@ -40,6 +40,17 @@ flowchart TD
 
 ## Campaña interactiva (SPA)
 
+### Selección del escenario
+
+En §1 seleccione una de estas rutas:
+
+1. **Análisis de un alimentador:** complete una cabecera y continúe por §§2–7.
+2. **Transferencia:** seleccione origen y receptor. §1 resuelve por separado código
+  de medidor, medidor, Vll, Excel y P/Q/S máximo de ambos alimentadores; al confirmar
+  1.1 carga las dos redes en CYMDIST y conserva un `scenario_id` propio.
+
+No se reutilizan los valores de cabecera del origen para el receptor.
+
 ### §1 — Contexto + cabecera
 
 | Paso | Acción | Resultado |
@@ -58,6 +69,9 @@ Plantilla CYME al guardar/distribuir: Total ON, aguas abajo Consumo kWh, FdC 65 
 | 2.x | Diagnosticar feeder → proponer → aplicar correcciones |
 | Opcional | Diagnosticar sistema (96) / ELD |
 | Gate | 0 Error/Warning/Hint + convergencia antes de §3 |
+
+En un escenario de transferencia, registre aquí el nodo, el seccionador que se
+abrirá y el interruptor/punto de enlace que se cerrará. Estos datos pasan a §5.
 
 Tablero: `GET /api/tablero` (cards + códigos + clientes Incluir).
 
@@ -83,6 +97,10 @@ Tolerancias: `precision_tol_kwh`, `precision_tol_kw` en settings.
 - **No** volver a ejecutar §3.3 después de conectar SpotLoad.
 
 ### §5 — Flujos de carga
+
+Para transferencia, seleccione el sentido origen → receptor y el nodo manualmente.
+La secuencia prevista es: abrir seccionador del origen, cerrar enlace, ejecutar
+LoadFlow y revisar cargabilidad y caída de tensión antes de aceptar la maniobra.
 
 | Escenario | Comportamiento |
 |-----------|----------------|
