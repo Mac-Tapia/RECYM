@@ -585,7 +585,7 @@ export function Step4SpotLoad() {
         4.2 · Nueva carga concentrada (una)
       </h3>
       <p className="muted" style={{ marginTop: 0 }}>
-        Busque el nodo y pulse <b>Buscar</b>. Con 1 coincidencia se cargan Nodo y SectionID.
+        Busque el nodo y pulse <b>Buscar nodo 4.2</b>. Con 1 coincidencia se cargan Nodo y SectionID.
         Al conectar se guarda en el .zxst y se genera el mapa de ubicación.
       </p>
 
@@ -601,7 +601,7 @@ export function Step4SpotLoad() {
         </div>
         <div style={{ display: "flex", alignItems: "end" }}>
           <button type="button" className="ghost" disabled={busy} onClick={search}>
-            Buscar
+            Buscar nodo 4.2
           </button>
         </div>
         <div>
@@ -725,7 +725,7 @@ export function Step4SpotLoad() {
         </div>
         <div style={{ display: "flex", alignItems: "end" }}>
           <button type="button" className="ghost" disabled={busy} onClick={searchU}>
-            Buscar
+            Buscar nodo 4.3
           </button>
         </div>
         <div>
