@@ -22,13 +22,13 @@ const initial: SelectionState = {
 };
 
 describe("independent CYMDIST selection", () => {
-  it("changing_database_keeps_study_and_clears_feeder", () => {
+  it("changing_database_clears_study_and_feeder", () => {
     const next = beginDatabaseSelection(
       initial,
       "D:\\other\\a.mdb",
       "d:\\other\\a.mdb"
     );
-    expect(next.studyPath).toBe(initial.studyPath);
+    expect(next.studyPath).toBe("");
     expect(next.feederId).toBe("");
     expect(next.networkId).toBe("");
     expect(next.feeders).toEqual([]);
@@ -42,10 +42,10 @@ describe("independent CYMDIST selection", () => {
     expect(next.networkId).toBe(initial.networkId);
   });
 
-  it("changing_feeder_keeps_database_and_study", () => {
+  it("changing_feeder_keeps_database_and_clears_study", () => {
     const next = selectFeeder(initial, "CA101", "NET_2030_131_CA101");
     expect(next.databaseMdb).toBe(initial.databaseMdb);
-    expect(next.studyPath).toBe(initial.studyPath);
+    expect(next.studyPath).toBe("");
     expect(next.feederId).toBe("CA101");
     expect(next.networkId).toBe("NET_2030_131_CA101");
   });

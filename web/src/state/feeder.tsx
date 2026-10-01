@@ -68,18 +68,25 @@ export function FeederProvider({ children }: { children: ReactNode }) {
       transferSectionalizer,
       transferTieSwitch,
       setFeeder: (f, n) => {
-        if ((f || "") !== feeder) {
+        const nextFeeder = f || "";
+        const nextNetwork = n === undefined ? network : n || "";
+        const identityChanged = nextFeeder !== feeder || nextNetwork !== network;
+        if (nextFeeder !== feeder) {
           setInputsReady(null);
           setInputErrors([]);
         }
-        if ((f || "") !== feeder || (n !== undefined && (n || "") !== network)) {
+        if (identityChanged) {
           setContextFingerprint("");
           setContextVersion((value) => value + 1);
         }
-        setF(f || "");
+        setF(nextFeeder);
         if (n !== undefined) setN(n || "");
-        setActiveFeeder(f || "");
-        setActiveContext({ feeder: f || "", network: n, contextFingerprint: "" });
+        setActiveFeeder(nextFeeder);
+        setActiveContext({
+          feeder: nextFeeder,
+          network: n,
+          ...(identityChanged ? { contextFingerprint: "" } : {}),
+        });
       },
       setContext: (opts) => {
         const identityChanged =

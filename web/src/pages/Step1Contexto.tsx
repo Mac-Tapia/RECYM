@@ -5,7 +5,6 @@ import { useFeeder } from "../state/feeder";
 import {
   acceptDiscoveryResult,
   beginDatabaseSelection,
-  chooseStudyForFeeder,
   deriveFeederReadiness,
   resolveAppliedStudy,
   selectFeeder as selectContextFeeder,
@@ -175,6 +174,7 @@ export function Step1Contexto() {
   const {
     feeder,
     network,
+    contextFingerprint,
     studyMode,
     transferPeer,
     setFeeder,
@@ -203,6 +203,7 @@ export function Step1Contexto() {
   const [vcKv, setVcKv] = useState("");
   const [fecha, setFecha] = useState("");
   const [msg, setMsg] = useState("");
+  const [contextSuiteMsg, setContextSuiteMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [cabAdjNote, setCabAdjNote] = useState("");
   /** true tras 1.1: BD verificada/creada en CYMDIST y estudio activo */
@@ -292,23 +293,25 @@ export function Step1Contexto() {
 
   async function loadFiles(opts?: { database_mdb?: string; study_path?: string }) {
     const mdb = (opts?.database_mdb || db || "").trim();
+    const hasStudyOption = Boolean(opts && "study_path" in opts);
+    const selectedStudy = hasStudyOption
+      ? String(opts?.study_path || "").trim()
+      : study.trim();
     const qs = new URLSearchParams();
     if (mdb) qs.set("database_mdb", mdb);
-    if (opts?.study_path || study) qs.set("study_path", opts?.study_path || study);
+    if (selectedStudy) qs.set("study_path", selectedStudy);
     const q = qs.toString() ? `?${qs.toString()}` : "";
     const j = await api<CtxFiles>(`/api/contexto/archivos${q}`, { timeoutMs: 30000 });
     if (!j.ok && j.error) throw new Error(j.error);
     setFiles((previous) => ({ ...j, feeders: previous.feeders || [] }));
     const initialDb = mdb || j.current_database || "";
-    const initialStudy = opts?.study_path || study || j.current_study || "";
     if (!db && initialDb) setDb(initialDb);
-    if (!study && initialStudy) setStudy(initialStudy);
     setSelection((current) => {
       const next = {
         ...current,
         databaseMdb: current.databaseMdb || initialDb,
         canonicalDatabaseMdb: current.canonicalDatabaseMdb || normPath(initialDb),
-        studyPath: current.studyPath || initialStudy,
+        studyPath: current.studyPath || selectedStudy,
       };
       selectionRef.current = next;
       return next;
@@ -322,31 +325,41 @@ export function Step1Contexto() {
     setCymdistSyncNote("");
     if (!path) {
       setFeederPick("");
+      setStudy("");
       clearMedicionFields();
       setFiles((prev) => ({ ...prev, feeders: [], n_feeders: 0 }));
+      setContext({ feeder: "", network: "", studyPath: "", databaseMdb: "" });
       return;
     }
     const started = beginDatabaseSelection(selectionRef.current, path, canonicalPath);
     selectionRef.current = started;
     setSelection(started);
     setFeederPick("");
+    setStudy("");
     setFeeder("", "");
     clearMedicionFields();
     setFiles((prev) => ({ ...prev, feeders: [], n_feeders: 0 }));
     const dbName = path.split(/[/\\]/).pop() || path;
-    setContext({ feeder: "", network: "", studyPath: study, databaseMdb: path });
+    setContext({ feeder: "", network: "", studyPath: "", databaseMdb: path });
     setMsg(`BD ${dbName} seleccionada · pulse Cargar alimentadores para abrir CYMDIST`);
   }
 
   async function loadDatabaseFeeders(path: string, canonicalPath?: string) {
     setBusy(true);
+    setCymdistReady(false);
+    setCymdistSyncNote("");
     const started = beginDatabaseSelection(selectionRef.current, path, canonicalPath);
     selectionRef.current = started;
     setSelection(started);
+    setFeederPick("");
+    setStudy("");
+    setFeeder("", "");
+    clearMedicionFields();
+    setContext({ feeder: "", network: "", studyPath: "", databaseMdb: path });
     const dbName = path.split(/[/\\]/).pop() || path;
     setMsg(`Abriendo CYMDIST y leyendo alimentadores reales de ${dbName}…`);
     try {
-      await loadFiles({ database_mdb: path, study_path: study });
+      await loadFiles({ database_mdb: path, study_path: "" });
       const discovered = await runDetachedJob(
         "contexto_descubrir_redes",
         { database_mdb: path },
@@ -614,9 +627,9 @@ export function Step1Contexto() {
             initialDb,
             initialCanonical || normPath(initialDb)
           );
-          const restored = selectStudy(started, catalog.current_study || "");
-          selectionRef.current = restored;
-          setSelection(restored);
+          selectionRef.current = started;
+          setSelection(started);
+          setStudy("");
           setMsg(
             `BD ${(initialDb.split(/[/\\]/).pop() || initialDb)} lista · pulse Cargar alimentadores para consultar CYMDIST`
           );
@@ -865,40 +878,28 @@ export function Step1Contexto() {
       (item) => String(item.feeder_id).toUpperCase() === String(fid).toUpperCase()
     );
     const networkId = String(row?.network_id || "");
-    const matchedStudy = chooseStudyForFeeder(
-      (files.studies || [])
-        .filter((item): item is Exclude<typeof item, string> => typeof item === "object")
-        .map((item) => ({
-          path: item.path,
-          feeder_id: item.feeder_id,
-          ext: item.ext,
-        })),
-      fid
-    );
     setSelection((current) => {
-      const next = selectStudy(
-        selectContextFeeder(current, fid, networkId),
-        matchedStudy
-      );
+      const next = selectContextFeeder(current, fid, networkId);
       selectionRef.current = next;
       return next;
     });
     setFeederPick(fid);
     setFeeder(fid, networkId);
-    setStudy(matchedStudy);
-    setContext({ studyPath: matchedStudy });
-    if (!matchedStudy) {
-      setMsg(`No existe estudio para ${fid}; 1.1 creará ${fid}.zxst y cargará ${networkId}`);
-    }
+    setStudy("");
+    setContext({ studyPath: "" });
     void syncFeederStudyCabecera({
       feederId: fid,
-      studyPath: matchedStudy,
+      studyPath: "",
       keepStudy: false,
       extract: opts?.extract !== false,
     });
   }
 
   function onPickStudy(path: string) {
+    if (!feederPick) {
+      setMsg("Seleccione primero el alimentador (BD)");
+      return;
+    }
     setCymdistReady(false);
     setCymdistSyncNote("");
     setSelection((current) => {
@@ -908,7 +909,6 @@ export function Step1Contexto() {
     });
     setStudy(path);
     setContext({ studyPath: path });
-    // Solo estudio: no cambiar el alimentador (un .sxst puede tener N redes)
     void syncFeederStudyCabecera({
       studyPath: path,
       keepFeeder: true,
@@ -916,19 +916,75 @@ export function Step1Contexto() {
     });
   }
 
-  function createNewStudy() {
+  async function createNewStudy() {
+    if (!feederPick) {
+      setMsg("Seleccione primero el alimentador (BD)");
+      return;
+    }
+    if (!db || !network) {
+      setMsg("Seleccione la BD y cargue el alimentador antes de crear el estudio");
+      return;
+    }
     setCymdistReady(false);
     setCymdistSyncNote("");
-    setSelection((current) => {
-      const next = selectStudy(current, "");
-      selectionRef.current = next;
-      return next;
-    });
-    setStudy("");
-    setContext({ studyPath: "" });
-    setMsg(
-      `Nuevo estudio preparado · 1.1 creará ${feederPick || "el alimentador seleccionado"}.zxst con ${network || "la red seleccionada"}`
-    );
+    setBusy(true);
+    setMsg(`Creando y guardando estudio dedicado para ${feederPick} en CYMDIST…`);
+    try {
+      const result = await api<{
+        ok?: boolean;
+        error?: string;
+        study_path?: string;
+        study_file?: string;
+        created?: boolean;
+        msg?: string;
+      }>("/api/contexto/estudio/crear", {
+        method: "POST",
+        body: JSON.stringify({
+          database_mdb: db,
+          feeder_id: feederPick,
+          network_id: network,
+        }),
+        timeoutMs: 180000,
+      });
+      if (!result.ok || !result.study_path) {
+        throw new Error(result.error || "CYMDIST no devolvió la ruta del estudio");
+      }
+      const path = result.study_path;
+      const studyOption = {
+        path,
+        name: result.study_file || path.split(/[/\\]/).pop() || path,
+        feeder_id: feederPick,
+        ext: ".zxst",
+      };
+      setFiles((previous) => {
+        const existingStudies = (previous.studies || []).map((item) =>
+          typeof item === "string"
+            ? { path: item, name: item.split(/[/\\]/).pop() || item }
+            : item
+        );
+        return {
+          ...previous,
+          studies: [
+            studyOption,
+            ...existingStudies.filter((item) => normPath(asPath(item)) !== normPath(path)),
+          ],
+        };
+      });
+      setStudy(path);
+      setSelection((current) => {
+        const next = selectStudy(current, path);
+        selectionRef.current = next;
+        return next;
+      });
+      setContext({ studyPath: path });
+      setMsg(
+        `${result.msg || `Estudio guardado para ${feederPick}`} · selector actualizado · continúe con 1.1`
+      );
+    } catch (error) {
+      setMsg(String(error));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function applyContext() {
@@ -977,6 +1033,7 @@ export function Step1Contexto() {
           database_connection_name?: string;
           study_path?: string;
           database_mdb?: string;
+          loaded_networks?: string[];
         };
         cymdist_sync_error?: string;
       }>("/api/contexto/aplicar", {
@@ -1006,6 +1063,10 @@ export function Step1Contexto() {
         String(j.network_id || "").toUpperCase() === networkId.toUpperCase();
       if (!identityMatches) {
         throw new Error("CONTEXT_IDENTITY_MISMATCH: 1.1 devolvió otro contexto");
+      }
+      const appliedFingerprint = String(j.context_fingerprint || "").trim();
+      if (!appliedFingerprint) {
+        throw new Error("1.1 no devolvió la huella del contexto; vuelva a verificar BD y estudio");
       }
 
       const sync = j.cymdist_sync || {};
@@ -1045,7 +1106,7 @@ export function Step1Contexto() {
         network: j.network_id || networkId,
         studyPath: uiStudy || j.study_path || "",
         databaseMdb: db || j.database_mdb || "",
-        contextFingerprint: j.context_fingerprint || "",
+        contextFingerprint: appliedFingerprint,
         inputsReady: (files.feeders || []).find(
           (f) => String(f.feeder_id).toUpperCase() === resolved.toUpperCase()
         )?.inputs_ready ?? null,
@@ -1069,7 +1130,18 @@ export function Step1Contexto() {
         dbBit = "BD activada por ruta";
       }
       const studyName = (uiStudy || sync.study_path || "").split(/[/\\]/).pop() || "—";
-      const syncNote = `${dbBit} · estudio ${studyName} activo en CYMDIST`;
+      const studyAction = j.study_created
+        ? "estudio nuevo creado"
+        : j.study_reused
+          ? "estudio existente reutilizado"
+          : "estudio activado";
+      const loadedNetworks = Array.isArray(sync.loaded_networks)
+        ? sync.loaded_networks.map(String)
+        : [];
+      const loadedNetworksNote = loadedNetworks.length
+        ? ` · CYMDIST reporta ${loadedNetworks.length} red(es): ${loadedNetworks.join(", ")}`
+        : " · CYMDIST no devolvió el detalle de redes cargadas";
+      const syncNote = `${dbBit} · ${studyAction}: ${studyName} activo en CYMDIST${loadedNetworksNote}`;
       setCymdistSyncNote(syncNote);
       setCymdistReady(true);
 
@@ -1208,30 +1280,61 @@ export function Step1Contexto() {
   }
 
   async function runContextSuite(action: string, label: string, payload: Json = {}) {
+    if (action === "suite_conexion" && (!cymdistReady || !contextFingerprint)) {
+      const message = "Complete 1.1 correctamente; falta la huella del contexto para probar CYMDIST";
+      setContextSuiteMsg(message);
+      setMsg(message);
+      return;
+    }
     if (!db || !study) {
-      setMsg("Seleccione MDB y estudio antes de ejecutar esta herramienta");
+      const message = "Seleccione MDB y estudio antes de ejecutar esta herramienta";
+      setContextSuiteMsg(message);
+      setMsg(message);
       return;
     }
     setBusy(true);
+    setContextSuiteMsg(`${label}…`);
     setMsg(`${label}…`);
     try {
-      const result = await runJob(action, payload, (state) => setMsg(String(state.message || label)));
-      setMsg(String(result.msg || (result.ok ? "OK" : result.error) || label));
+      const result = await runJob(action, payload, (state) => {
+        const message = String(state.message || label);
+        setContextSuiteMsg(message);
+        setMsg(message);
+      });
+      const message = String(result.msg || (result.ok ? "OK" : result.error) || label);
+      setContextSuiteMsg(message);
+      setMsg(message);
     } catch (e) {
-      setMsg(String(e));
+      const message = String(e);
+      setContextSuiteMsg(message);
+      setMsg(message);
     } finally {
       setBusy(false);
     }
   }
 
-  async function callContextSuite(path: string, label: string) {
+  async function callContextSuite(
+    path: string,
+    label: string,
+    method: "GET" | "POST" = "GET",
+    payload: Json = {}
+  ) {
     setBusy(true);
+    setContextSuiteMsg(`${label}…`);
     setMsg(`${label}…`);
     try {
-      const result = await api<Json>(path, { method: "GET", timeoutMs: 120000 });
-      setMsg(String(result.msg || (result.ok ? "OK" : result.error) || label));
+      const result = await api<Json>(path, {
+        method,
+        ...(method === "POST" ? { body: JSON.stringify(payload) } : {}),
+        timeoutMs: 120000,
+      });
+      const message = String(result.msg || (result.ok ? "OK" : result.error) || label);
+      setContextSuiteMsg(message);
+      setMsg(message);
     } catch (e) {
-      setMsg(String(e));
+      const message = String(e);
+      setContextSuiteMsg(message);
+      setMsg(message);
     } finally {
       setBusy(false);
     }
@@ -1396,12 +1499,11 @@ export function Step1Contexto() {
     <section className="panel">
       <h2>1 · Contexto + cabecera</h2>
       <p className="muted">
-        1) Elija <b>base .mdb</b>, <b>alimentador</b> y <b>estudio</b>{" "}
-        <i>(independientes: un estudio puede tener varios alimentadores)</i>. 2) Pulse{" "}
-        <b>1.1</b>: RECYM verifica si esa BD ya está en CYMDIST — si <b>no</b> existe
-        la crea y la vincula; si <b>sí</b> existe solo la conecta — y activa el
-        estudio. 3) Luego cargue mediciones y pulse <b>1.2</b> para escribir en la
-        fuente (solo con 1.1 OK).
+        1) Elija la <b>base .mdb</b> y pulse <b>Cargar alimentadores</b>. 2) Seleccione
+        el <b>Alimentador (BD)</b>. 3) Seleccione manualmente un estudio existente o
+        pulse <b>Crear estudio para alimentador</b> para guardar uno dedicado. 4) Pulse{" "}
+        <b>1.1</b> para verificar y activar el estudio; luego cargue mediciones y
+        pulse <b>1.2</b>.
       </p>
 
       <div className="grid context-grid">
@@ -1491,19 +1593,20 @@ export function Step1Contexto() {
           <SearchableSelect
             value={study}
             options={studyOptions}
-            disabled={busy}
+            disabled={busy || !feederPick}
             onChange={(v) => onPickStudy(v)}
-            placeholder="Buscar estudio…"
+            placeholder={feederPick ? "Elegir estudio existente…" : "Primero seleccione alimentador…"}
             emptyLabel="—"
           />
           <button
             type="button"
             className="ghost"
-            disabled={busy || !feederPick}
+            disabled={busy || !feederPick || !db || !network || Boolean(study)}
             onClick={createNewStudy}
+            title="Crea y guarda en CYMDIST un estudio con la red del alimentador seleccionado"
             style={{ marginTop: 6 }}
           >
-            Crear nuevo estudio…
+            Crear estudio para alimentador…
           </button>
           {study && <p className="muted path-full">{study}</p>}
           <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
@@ -1511,8 +1614,8 @@ export function Step1Contexto() {
               const name = (study || "").split(/[/\\]/).pop() || "";
               if (!study) {
                 return feederPick
-                  ? `No existe estudio dedicado; 1.1 creará ${feederPick}.zxst y cargará ${network || "la red seleccionada"}.`
-                  : "Elija primero el alimentador; si no tiene estudio, 1.1 lo creará.";
+                  ? `Seleccione manualmente un estudio existente o cree uno dedicado para ${feederPick}; después pulse 1.1.`
+                  : "Seleccione primero el alimentador (BD). Después podrá elegir o crear su estudio.";
               }
               return (
                 `${name}` +
@@ -1556,26 +1659,64 @@ export function Step1Contexto() {
           <span className="ok">CYMDIST listo · {cymdistSyncNote || "BD + estudio"}</span>
         ) : (
           <>
-            Pulse <b>1.1</b> para verificar/crear la BD y activar el estudio en CYMDIST
+            Pulse <b>1.1</b> para verificar/conectar la BD y activar el estudio seleccionado en CYMDIST
             antes de la cabecera.
           </>
         )}
       </p>
+      <div className="actions">
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy || !db || !feederPick || !study || selectedFeeder?.operational === false}
+          onClick={applyContext}
+          title={study ? "Verifica y activa la BD y el estudio seleccionados" : "Seleccione o cree un estudio antes de continuar"}
+        >
+          1.1 · Verificar y conectar en CYMDIST
+        </button>
+      </div>
+      {selectedFeeder && (
+        <div
+          className={`pathbox${
+            selectedReadiness.tone === "neutral" ? "" : ` ${selectedReadiness.tone}`
+          }`}
+        >
+          Contexto CYMDIST: {selectedReadiness.contextLabel}
+          {" · "}Entradas Excel: {selectedReadiness.inputsLabel}
+          {selectedFeeder.inputs_ready === false && selectedFeeder.input_errors?.length
+            ? ` · ${selectedFeeder.input_errors.map((e) => e.message || e.code).join(" · ")}`
+            : ""}
+        </div>
+      )}
       <h3>1.3 · Entorno y conexión</h3>
       <div className="actions">
         <button type="button" className="ghost" disabled={busy}
           onClick={() => void callContextSuite("/api/suite/entorno", "Validar entorno")}>
           1.3a · Validar entorno
         </button>
-        <button type="button" className="secondary" disabled={busy || !db || !study}
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy || !db || !study || !cymdistReady || !contextFingerprint}
+          title={cymdistReady && contextFingerprint ? "Prueba la conexión con el contexto activo" : "Complete 1.1 correctamente para generar la huella del contexto"}
           onClick={() => void runContextSuite("suite_conexion", "Probar conexión CYMDIST")}>
           1.3b · Probar conexión CYMDIST
         </button>
         <button type="button" className="ghost" disabled={busy || !db || !study}
-          onClick={() => void callContextSuite("/api/suite/validar_entradas", "Validar entradas Excel")}>
+          onClick={() => void callContextSuite(
+            "/api/suite/validar_entradas",
+            "Validar entradas Excel",
+            "POST",
+            { feeder: feederPick || feeder }
+          )}>
           1.3c · Validar entradas Excel
         </button>
       </div>
+      {contextSuiteMsg && (
+        <div className="pathbox" role="status" aria-live="polite">
+          {contextSuiteMsg}
+        </div>
+      )}
       {studyMode === "transfer" && transferDemandRows.length > 0 && (
         <div className="pathbox" style={{ marginTop: 10, overflowX: "auto" }}>
           <b>Máxima demanda cargada en CYMDIST</b>
@@ -1605,35 +1746,20 @@ export function Step1Contexto() {
           </table>
         </div>
       )}
-      {selectedFeeder && (
-        <div
-          className={`pathbox${
-            selectedReadiness.tone === "neutral" ? "" : ` ${selectedReadiness.tone}`
-          }`}
-        >
-          Contexto CYMDIST: {selectedReadiness.contextLabel}
-          {" · "}Entradas Excel: {selectedReadiness.inputsLabel}
-          {selectedFeeder.inputs_ready === false && selectedFeeder.input_errors?.length
-            ? ` · ${selectedFeeder.input_errors.map((e) => e.message || e.code).join(" · ")}`
-            : ""}
-        </div>
-      )}
+      <h3>Medición de cabecera</h3>
+      <p className="muted">
+        Primero complete <b>1.1</b>. Elija <b>código alimentador</b> (medidor/Vll) y
+        luego <b>uno de los 4 Excel</b> medicioncabecera (Chincha / Ica / Nasca /
+        Pisco): al seleccionarlo se extraen P/Q/S de la hoja del medidor. También
+        puede pulsar <b>Extraer máximos</b>. Luego <b>1.2</b> escribe en la fuente.
+      </p>
       <div className="actions">
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy || !db || !feederPick || selectedFeeder?.operational === false}
-          onClick={applyContext}
-          title="Verifica si la BD existe en CYMDIST; si no, la crea; luego activa el estudio"
-        >
-          1.1 · Verificar y conectar en CYMDIST
-        </button>
         <button
           type="button"
           className="ghost"
           disabled={busy}
           title="Solo refresca código alimentador / Excel medicioncabecera / Vll (no toca BD, alimentador ni estudio de arriba)"
-            onClick={async () => {
+          onClick={async () => {
             const keepCode = (codigoAlimentador || "").trim();
             const keepExcel = (medicionFileRef.current || medicionFile || "").trim();
             setBusy(true);
@@ -1675,14 +1801,6 @@ export function Step1Contexto() {
           Actualizar listas
         </button>
       </div>
-
-      <h3>Medición de cabecera</h3>
-      <p className="muted">
-        Primero complete <b>1.1</b>. Elija <b>código alimentador</b> (medidor/Vll) y
-        luego <b>uno de los 4 Excel</b> medicioncabecera (Chincha / Ica / Nasca /
-        Pisco): al seleccionarlo se extraen P/Q/S de la hoja del medidor. También
-        puede pulsar <b>Extraer máximos</b>. Luego <b>1.2</b> escribe en la fuente.
-      </p>
 
       <div className="grid">
         <div>

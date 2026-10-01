@@ -32,6 +32,12 @@ class ContextApplyRequest(BaseModel):
     allowed_networks: List[Dict[str, Any]]
 
 
+class ContextStudyCreateRequest(BaseModel):
+    database_mdb: str
+    feeder_id: str
+    network_id: str
+
+
 class TransferLoadRequest(ContextApplyRequest):
     peer_feeder_id: str
     peer_network_id: str
@@ -49,6 +55,62 @@ def context_files(database_mdb: Optional[str] = None, study_path: Optional[str] 
         selected_database=database_mdb,
         selected_study=study_path,
     )
+
+
+@router.post("/contexto/estudio/crear")
+def context_create_study(body: ContextStudyCreateRequest):
+    """Create or find the selected feeder's dedicated study without applying §1.1."""
+    try:
+        from core.cymdist_com import ensure_feeder_study_com
+        from core.feeder_context import load_settings
+
+        settings = load_settings(
+            feeder_id=body.feeder_id,
+            synthesize=True,
+            persist_synth=False,
+        )
+        settings.update({
+            "database_mdb": body.database_mdb,
+            "feeder_id": body.feeder_id,
+            "network_id": body.network_id,
+        })
+        ensured = ensure_feeder_study_com(settings, selected_study="")
+        if not isinstance(ensured, dict) or not ensured.get("ok"):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": (ensured or {}).get("error_code")
+                    if isinstance(ensured, dict)
+                    else "STUDY_ENSURE_FAILED",
+                    "error": (ensured or {}).get("error")
+                    if isinstance(ensured, dict)
+                    else "CYMDIST no respondió al crear el estudio",
+                },
+                status_code=409,
+            )
+
+        study_path = ensured.get("ui_study_path") or ensured.get("study_path") or ""
+        if not study_path:
+            return JSONResponse(
+                {"ok": False, "error": "CYMDIST no devolvió la ruta del estudio"},
+                status_code=409,
+            )
+        created = bool(ensured.get("created"))
+        return {
+            "ok": True,
+            "study_path": study_path,
+            "study_file": os.path.basename(study_path),
+            "created": created,
+            "reused": bool(ensured.get("reused")),
+            "loaded_networks": ensured.get("loaded_networks") or [],
+            "msg": (
+                "Estudio nuevo creado y guardado para %s · %s"
+                if created
+                else "Estudio existente encontrado para %s · %s"
+            ) % (body.feeder_id, os.path.basename(study_path)),
+        }
+    except Exception as ex:
+        return JSONResponse({"ok": False, "error": str(ex)}, status_code=409)
 
 
 @router.post("/contexto/aplicar")

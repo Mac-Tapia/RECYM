@@ -166,6 +166,43 @@ class TestStrictContextApplication(unittest.TestCase):
 
 
 class TestContextApplyCreatesStudy(unittest.TestCase):
+    def test_create_study_saves_selected_network_without_applying_context(self):
+        from api_app.routers.context import ContextStudyCreateRequest, context_create_study
+
+        body = ContextStudyCreateRequest(
+            database_mdb=r"D:\bases\260924.mdb",
+            feeder_id="AL209",
+            network_id="NET_2030_861579_AL209",
+        )
+        ensured = {
+            "ok": True,
+            "created": True,
+            "reused": False,
+            "study_path": r"D:\projects\AL209.zxst",
+            "loaded_networks": [body.network_id],
+        }
+
+        with mock.patch(
+            "core.feeder_context.load_settings",
+            return_value={"projects_dir": r"D:\projects"},
+        ), mock.patch(
+            "core.cymdist_com.ensure_feeder_study_com",
+            return_value=ensured,
+        ) as ensure, mock.patch(
+            "api_app.routers.context.apply_context_selection"
+        ) as apply_context:
+            result = context_create_study(body)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["created"])
+        self.assertEqual(result["study_path"], ensured["study_path"])
+        self.assertEqual(result["loaded_networks"], [body.network_id])
+        ensure.assert_called_once_with(
+            mock.ANY,
+            selected_study="",
+        )
+        apply_context.assert_not_called()
+
     def test_empty_study_is_created_with_selected_network_before_context_persists(self):
         from api_app.routers.context import ContextApplyRequest, context_apply
 

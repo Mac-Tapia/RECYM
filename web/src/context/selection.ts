@@ -128,6 +128,7 @@ export function beginDatabaseSelection(
     ...state,
     databaseMdb: (path || "").trim(),
     canonicalDatabaseMdb: (canonicalPath || fallbackCanonical(path)).trim(),
+    studyPath: "",
     feederId: "",
     networkId: "",
     feeders: [],
@@ -146,6 +147,7 @@ export function selectFeeder(
 ): SelectionState {
   return {
     ...state,
+    studyPath: "",
     feederId: (feederId || "").trim(),
     networkId: (networkId || "").trim(),
   };
