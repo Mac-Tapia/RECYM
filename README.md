@@ -67,6 +67,7 @@ En Windows, ejecutar `Abrir RECYM.bat` desde la raíz del proyecto para iniciar 
 ```bat
 scripts\01_check_environment.bat
 scripts\03_test_cymdist_connection.bat
+scripts\30_contract_tests.bat
 
 scripts\10_pipeline_dryrun.bat
 scripts\11_run_feeder.bat --feeder PA217
@@ -90,6 +91,10 @@ cd web
 npm install
 npm run build
 ```
+
+## Harness de verificación
+
+Ejecute `scripts\30_contract_tests.bat` para correr Vitest, TypeScript, build de producción, toda la suite Python y el smoke de readiness en un solo paso. Requiere el runtime `.tools\python37-win32` y las dependencias web ya instaladas (`cd web && npm ci`); el runner no instala paquetes durante la prueba. Los tests de contexto usan MDB/estudios temporales y COM simulado, por lo que cubren alimentadores y rutas arbitrarios sin escribir en la base real.
 
 ## Flujo de contexto CYMDIST (UI §§1–1.3)
 

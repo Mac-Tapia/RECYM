@@ -126,15 +126,28 @@ class TestFeederInputContract(unittest.TestCase):
         from api_app.security import get_or_create_api_key
 
         client = TestClient(app)
-        response = client.post(
-            "/api/suite/validar_entradas",
-            headers={"X-Api-Key": get_or_create_api_key(), "X-Feeder": "CA101"},
-            json={"feeder": "CA101"},
-        )
+        expected = {
+            "ok": False,
+            "feeder_id": "CA101",
+            "network_id_config": "NET_2030_131_CA101",
+            "network_id_excel": "NET_2030_179_PA217",
+            "inputs_ready": False,
+            "errors": [{"code": "NETWORK_ID_MISMATCH", "message": "Red no coincide"}],
+        }
+        with mock.patch(
+            "pipeline.validate_inputs.inspect_feeder_inputs",
+            return_value=expected,
+        ) as inspect_inputs:
+            response = client.post(
+                "/api/suite/validar_entradas",
+                headers={"X-Api-Key": get_or_create_api_key(), "X-Feeder": "CA101"},
+                json={"feeder": "CA101"},
+            )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertFalse(payload["ok"])
-        self.assertTrue(payload["errors"])
+        self.assertEqual(payload["errors"][0]["code"], "NETWORK_ID_MISMATCH")
+        self.assertEqual(inspect_inputs.call_args[0][0]["feeder_id"], "CA101")
 
 
 class TestContextSelectionContract(unittest.TestCase):

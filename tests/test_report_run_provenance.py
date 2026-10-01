@@ -26,7 +26,11 @@ class TestReportRunProvenance(unittest.TestCase):
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
         self.assertIn("5.1 · Flujo proyectado", source)
-        self.assertNotIn("5.2 ·", source)
+        self.assertIn(
+            '{studyMode === "transfer" ? <h3>5.2 · Transferencia de carga</h3> : null}',
+            source,
+        )
+        self.assertIn("studyMode === \"transfer\" ? (", source)
         self.assertNotIn("5.3 ·", source)
         self.assertNotIn('run("situacional"', source)
 

@@ -48,6 +48,29 @@ class TestContextIdentity(unittest.TestCase):
             self.assertRegex(second_fp, r"^[0-9a-f]{16}$")
             self.assertNotEqual(first_fp, second_fp)
 
+    def test_fingerprint_supports_arbitrary_mdb_and_feeder_identities(self):
+        from core.context_identity import build_context_identity, context_fingerprint
+
+        cases = [
+            (r"D:\modelos\base norte.mdb", r"D:\estudios\TM105.zxst", "TM105", "NET_2030_174_TM105"),
+            (r"E:\redes\base sur.mdb", r"E:\casos\PA217.zxst", "PA217", "NET_2030_179_PA217"),
+            (r"F:\modelos\otra base.mdb", r"F:\proyectos\XX999.zxst", "XX999", "NET_CUSTOM_999"),
+        ]
+        fingerprints = set()
+        for database, study, feeder, network in cases:
+            identity = build_context_identity(
+                {
+                    "database_mdb": database,
+                    "study_path": study,
+                    "feeder_id": feeder,
+                    "network_id": network,
+                },
+                require_complete=True,
+            )
+            fingerprints.add(context_fingerprint(identity))
+
+        self.assertEqual(len(fingerprints), len(cases))
+
     def test_complete_identity_requires_four_fields(self):
         from core.context_identity import ContextIdentityError, build_context_identity
 

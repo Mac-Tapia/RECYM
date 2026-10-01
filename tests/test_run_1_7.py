@@ -1,13 +1,17 @@
 import json
+import io
 import os
 import sys
-
-import pytest
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
-if SCRIPTS not in sys.path:
-    sys.path.insert(0, SCRIPTS)
+SRC = os.path.join(ROOT, "src")
+for path in (SCRIPTS, SRC):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 from run_cierre_1_7 import UniversalRunner, parse_args
 from pipeline.run_evidence import RunEvidence
@@ -32,6 +36,15 @@ class FakeClient(object):
         self.calls.append((method, path, body))
         if self.fail_action == path:
             raise RuntimeError("fallo real")
+        if method == "GET" and path.startswith("/api/cabecera?"):
+            return {"P_kW": 100.0, "Q_kvar": 25.0, "mode": "KW_KVAR"}
+        if method == "POST" and path == "/api/cabecera":
+            return {
+                "ok": True,
+                "study_saved": True,
+                "db_updated": True,
+                "project_saved": True,
+            }
         if path == "/api/clientes/archivos":
             return {"ok": True, "suministro": ["fuente.xlsx"], "clientesimportantes": ["ci.xlsx"]}
         if path == "/api/cargas/conectadas":
@@ -52,70 +65,94 @@ class SoftFalseClient(FakeClient):
         return super(SoftFalseClient, self).job(action, payload, timeout, poll)
 
 
-def test_cli_requires_four_identity_fields():
-    with pytest.raises(SystemExit):
-        parse_args(["--mdb", "a.mdb", "--study", "b.zxst", "--feeder", "F"])
+class TestUniversalRunner(unittest.TestCase):
+    def test_cli_requires_four_identity_fields(self):
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parse_args(["--mdb", "a.mdb", "--study", "b.zxst", "--feeder", "F"])
 
 
-def test_read_only_run_is_dynamic_and_records_pending_writes(tmp_path):
-    evidence = RunEvidence(str(tmp_path / "run-x"), "run-x", IDENTITY)
-    client = FakeClient()
-    UniversalRunner(client, evidence, allow_write=False).run()
-    rows = evidence.events()
-    pending = {row["stage"] for row in rows if row["status"] == "pending_real"}
-    assert {"1.1", "1.2", "2.3", "3.3", "3.4", "5.1", "6.1", "7.4"} <= pending
-    wire = json.dumps(client.calls)
-    assert "XX999" in wire
-    assert "PA217" not in wire and "PE104" not in wire and "CA101" not in wire
-    table_call = next(call for call in client.calls if call[1] == "/api/clientes/tabla")
-    assert table_call[2]["clientes_file"] == "ci.xlsx"
-    assert table_call[2]["suministro_file"] == "fuente.xlsx"
+    def test_read_only_run_is_dynamic_and_records_pending_writes(self):
+        with tempfile.TemporaryDirectory() as work:
+            evidence = RunEvidence(os.path.join(work, "run-x"), "run-x", IDENTITY)
+            client = FakeClient()
+            with redirect_stdout(io.StringIO()):
+                UniversalRunner(client, evidence, allow_write=False).run()
+            rows = evidence.events()
+            pending = {row["stage"] for row in rows if row["status"] == "pending_real"}
+            required = {"1.1", "1.2", "2.3", "3.3", "3.4", "5.1", "6.1", "7.4"}
+            self.assertTrue(required <= pending)
+            wire = json.dumps(client.calls)
+            self.assertIn("XX999", wire)
+            self.assertNotIn("PA217", wire)
+            self.assertNotIn("PE104", wire)
+            self.assertNotIn("CA101", wire)
+            table_call = next(call for call in client.calls if call[1] == "/api/clientes/tabla")
+            self.assertEqual(table_call[2]["clientes_file"], "ci.xlsx")
+            self.assertEqual(table_call[2]["suministro_file"], "fuente.xlsx")
 
 
-def test_apply_context_sends_discovered_network_objects(tmp_path):
-    evidence = RunEvidence(str(tmp_path / "run-write"), "run-write", IDENTITY)
-    client = FakeClient()
-    # Stop after the first later mutating job; 1.1 must already be observable.
-    client.fail_action = "calidad_diagnosticar"
-    with pytest.raises(RuntimeError):
-        UniversalRunner(client, evidence, allow_write=True).run()
-    call = next(item for item in client.calls if item[1] == "/api/contexto/aplicar")
-    assert call[2]["allowed_networks"] == [{
-        "feeder_id": "XX999", "network_id": "NET_DINAMICA_999",
-    }]
+    def test_apply_context_sends_discovered_network_objects(self):
+        with tempfile.TemporaryDirectory() as work:
+            evidence = RunEvidence(os.path.join(work, "run-write"), "run-write", IDENTITY)
+            client = FakeClient()
+            # Stop after the first later mutating job; 1.1 must already be observable.
+            client.fail_action = "calidad_diagnosticar"
+            with redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "fallo real"):
+                    UniversalRunner(client, evidence, allow_write=True).run()
+            call = next(item for item in client.calls if item[1] == "/api/contexto/aplicar")
+            self.assertEqual(
+                call[2]["allowed_networks"],
+                [{"feeder_id": "XX999", "network_id": "NET_DINAMICA_999"}],
+            )
 
 
-def test_failed_gate_stops_downstream(tmp_path):
-    evidence = RunEvidence(str(tmp_path / "run-y"), "run-y", IDENTITY)
-    client = FakeClient(fail_action="contexto_descubrir_redes")
-    with pytest.raises(RuntimeError, match="fallo real"):
-        UniversalRunner(client, evidence).run()
-    assert not any(call[1] == "/api/clientes/archivos" for call in client.calls)
-    assert evidence.events()[-1]["stage"] == "1.discovery"
-    assert evidence.events()[-1]["status"] == "failed"
+    def test_failed_gate_stops_downstream(self):
+        with tempfile.TemporaryDirectory() as work:
+            evidence = RunEvidence(os.path.join(work, "run-y"), "run-y", IDENTITY)
+            client = FakeClient(fail_action="contexto_descubrir_redes")
+            with redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "fallo real"):
+                    UniversalRunner(client, evidence).run()
+            self.assertFalse(
+                any(call[1] == "/api/clientes/archivos" for call in client.calls)
+            )
+            self.assertEqual(evidence.events()[-1]["stage"], "1.discovery")
+            self.assertEqual(evidence.events()[-1]["status"], "failed")
 
 
-def test_error_code_is_never_accepted_as_passed(tmp_path):
-    evidence = RunEvidence(str(tmp_path / "run-soft"), "run-soft", IDENTITY)
-    with pytest.raises(Exception, match="NATIVE_DIAGNOSTIC_CAPTURE_FAILED"):
-        UniversalRunner(SoftFalseClient(), evidence).run()
-    assert evidence.events()[-1]["stage"] == "2.1"
-    assert evidence.events()[-1]["status"] == "failed"
+    def test_error_code_is_never_accepted_as_passed(self):
+        with tempfile.TemporaryDirectory() as work:
+            evidence = RunEvidence(os.path.join(work, "run-soft"), "run-soft", IDENTITY)
+            with redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(Exception, "NATIVE_DIAGNOSTIC_CAPTURE_FAILED"):
+                    UniversalRunner(SoftFalseClient(), evidence).run()
+            self.assertEqual(evidence.events()[-1]["stage"], "2.1")
+            self.assertEqual(evidence.events()[-1]["status"], "failed")
 
 
-def test_resume_rejects_crossed_context(tmp_path):
-    target = tmp_path / "resume"
-    RunEvidence(str(target), "same-run", IDENTITY)
-    crossed = dict(IDENTITY, feeder_id="OTRO")
-    with pytest.raises(ValueError, match="RESUME_CONTEXT_MISMATCH"):
-        RunEvidence(str(target), "same-run", crossed, resume=True)
+    def test_resume_rejects_crossed_context(self):
+        with tempfile.TemporaryDirectory() as work:
+            target = os.path.join(work, "resume")
+            RunEvidence(target, "same-run", IDENTITY)
+            crossed = dict(IDENTITY, feeder_id="OTRO")
+            with self.assertRaisesRegex(ValueError, "RESUME_CONTEXT_MISMATCH"):
+                RunEvidence(target, "same-run", crossed, resume=True)
 
 
-def test_manifest_hashes_all_summary_artifacts(tmp_path):
-    evidence = RunEvidence(str(tmp_path / "run-z"), "run-z", IDENTITY)
-    evidence.append("1.1", "passed", "ok")
-    evidence.finalize()
-    with open(evidence.manifest_path, "r", encoding="utf-8") as handle:
-        manifest = json.load(handle)
-    assert len(manifest["artifacts"]) == 3
-    assert all(len(row["sha256"]) == 64 for row in manifest["artifacts"])
+    def test_manifest_hashes_all_summary_artifacts(self):
+        with tempfile.TemporaryDirectory() as work:
+            evidence = RunEvidence(os.path.join(work, "run-z"), "run-z", IDENTITY)
+            evidence.append("1.1", "passed", "ok")
+            evidence.finalize()
+            with open(evidence.manifest_path, "r", encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            self.assertEqual(len(manifest["artifacts"]), 3)
+            self.assertTrue(
+                all(len(row["sha256"]) == 64 for row in manifest["artifacts"])
+            )
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

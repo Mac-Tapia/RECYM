@@ -528,6 +528,43 @@ class TestEnsureFeederStudyCom(unittest.TestCase):
             self.assertEqual(result["loaded_networks"], ["NET_2030_861579_AL209"])
             self.assertEqual(app.new_calls, 1)
 
+    def test_creation_matrix_uses_each_mdb_and_network_without_hardcoded_feeder(self):
+        from core.cymdist_com import ensure_feeder_study_com
+
+        cases = [
+            ("AL209", "NET_2030_861579_AL209", "database north.mdb"),
+            ("TM105", "NET_2030_174_TM105", "database south.mdb"),
+            ("XX999", "NET_CUSTOM_999", "customer model.mdb"),
+        ]
+        with tempfile.TemporaryDirectory(dir=ROOT) as root:
+            for feeder_id, network_id, database_name in cases:
+                with self.subTest(feeder_id=feeder_id, database_name=database_name):
+                    work = os.path.join(root, feeder_id)
+                    os.makedirs(work)
+                    mdb = os.path.join(work, database_name)
+                    with open(mdb, "wb") as handle:
+                        handle.write(b"mdb")
+                    app = self.App()
+                    result = ensure_feeder_study_com(
+                        {
+                            "database_mdb": mdb,
+                            "projects_dir": work,
+                            "feeder_id": feeder_id,
+                            "network_id": network_id,
+                        },
+                        selected_study="",
+                        app=app,
+                        access_version=2000,
+                    )
+
+                    self.assertTrue(result["ok"], result)
+                    self.assertTrue(result["created"])
+                    self.assertEqual(result["database_mdb"], os.path.abspath(mdb))
+                    self.assertEqual(result["loaded_networks"], [network_id])
+                    self.assertEqual(
+                        os.path.basename(result["study_path"]), feeder_id + ".zxst"
+                    )
+
     def test_reuses_existing_study_only_when_it_contains_selected_network(self):
         from core.cymdist_com import ensure_feeder_study_com
 
