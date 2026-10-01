@@ -10,6 +10,25 @@ export type StudyOption = {
   ext?: string;
 };
 
+export function studiesForFeeder(
+  studies: Array<StudyOption | string>,
+  feederId: string
+): Array<StudyOption | string> {
+  const wanted = (feederId || "").trim().toUpperCase();
+  if (!wanted) return [];
+
+  return (studies || []).filter((study) => {
+    const path = typeof study === "string" ? study : study.path;
+    const stem = path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") || "";
+    const owner = (typeof study === "string" ? stem : study.feeder_id || stem)
+      .trim()
+      .toUpperCase();
+    if (owner === "ELD") return true;
+    const family = owner.match(/^([A-Z]{1,3}\d{2,4})/)?.[1] || owner;
+    return family === wanted;
+  });
+}
+
 /** Estudio dedicado exacto del alimentador; nunca reutiliza otro por defecto. */
 export function chooseStudyForFeeder(
   studies: StudyOption[],

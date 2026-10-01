@@ -9,6 +9,7 @@ import {
   resolveAppliedStudy,
   selectFeeder as selectContextFeeder,
   selectStudy,
+  studiesForFeeder,
   type SelectionState,
 } from "../context/selection";
 
@@ -900,6 +901,11 @@ export function Step1Contexto() {
       setMsg("Seleccione primero el alimentador (BD)");
       return;
     }
+    const allowedStudies = studiesForFeeder(files.studies || [], feederPick);
+    if (!allowedStudies.some((item) => normPath(asPath(item)) === normPath(path))) {
+      setMsg(`El estudio seleccionado no corresponde a ${feederPick}; elija el estudio de ese alimentador o ELD.zxst`);
+      return;
+    }
     setCymdistReady(false);
     setCymdistSyncNote("");
     setSelection((current) => {
@@ -1183,7 +1189,7 @@ export function Step1Contexto() {
         `Listo · ${syncNote}` +
           (resolved ? ` · alimentador ${resolved}` : "") +
           (j.network_id ? ` · red ${j.network_id}` : "") +
-          " · ya puede cargar mediciones en la fuente (1.2)"
+          " · ya puede cargar mediciones en la fuente (1.4)"
       );
     } catch (e) {
       setCymdistReady(false);
@@ -1478,8 +1484,8 @@ export function Step1Contexto() {
     label: a.feeder_raw || a.feeder_id,
     searchText: `${a.feeder_id} ${a.feeder_raw || ""} ${a.medidor || ""} ${a.siglas || ""}`,
   }));
-  // Todos los estudios del catálogo (no filtrar ni priorizar por alimentador)
-  const studyOptions = studies
+  // No ofrecer estudios de otro alimentador; ELD queda como estudio compartido.
+  const studyOptions = studiesForFeeder(studies, feederPick)
     .map((s) => {
       const p = asPath(s);
       return {
@@ -1503,7 +1509,7 @@ export function Step1Contexto() {
         el <b>Alimentador (BD)</b>. 3) Seleccione manualmente un estudio existente o
         pulse <b>Crear estudio para alimentador</b> para guardar uno dedicado. 4) Pulse{" "}
         <b>1.1</b> para verificar y activar el estudio; luego cargue mediciones y
-        pulse <b>1.2</b>.
+        pulse <b>1.4</b>.
       </p>
 
       <div className="grid context-grid">
@@ -1751,7 +1757,7 @@ export function Step1Contexto() {
         Primero complete <b>1.1</b>. Elija <b>código alimentador</b> (medidor/Vll) y
         luego <b>uno de los 4 Excel</b> medicioncabecera (Chincha / Ica / Nasca /
         Pisco): al seleccionarlo se extraen P/Q/S de la hoja del medidor. También
-        puede pulsar <b>Extraer máximos</b>. Luego <b>1.2</b> escribe en la fuente.
+        puede pulsar <b>Extraer máximos</b>. Luego <b>1.4</b> escribe en la fuente.
       </p>
       <div className="actions">
         <button
@@ -1991,7 +1997,7 @@ export function Step1Contexto() {
               : "Debe pulsar 1.1 antes (verificar/crear BD y activar estudio)"
           }
         >
-          1.2 · Cargar en la fuente
+          1.4 · Cargar en la fuente
         </button>
         <button type="button" className="ghost" disabled={busy} onClick={() => saveHead(true)}>
           Recalcular P/Q

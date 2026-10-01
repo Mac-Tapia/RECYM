@@ -98,7 +98,7 @@ npm run build
 3. Seleccione manualmente un estudio existente. Si no existe uno dedicado, pulse **Crear estudio para alimentador**; RECYM crea y guarda un `.zxst` con la red elegida y actualiza el selector.
 4. Con un estudio seleccionado, pulse **1.1 · Verificar y conectar en CYMDIST**. El paso solo queda listo si el backend devuelve la huella del contexto.
 5. Después de 1.1, ejecute **1.3b · Probar conexión CYMDIST**. Este botón requiere una huella válida; si se cambia BD, alimentador o estudio, vuelva a aplicar 1.1.
-6. Cargue las mediciones y use **1.2 · Cargar en la fuente**.
+6. Cargue las mediciones y use **1.4 · Cargar en la fuente**.
 
 ## WRITE en CYMDIST
 

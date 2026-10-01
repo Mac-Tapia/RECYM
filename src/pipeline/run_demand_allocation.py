@@ -1466,7 +1466,7 @@ def run_load_allocation_module(settings, session=None, activo_map=None, restar_m
 
     if sess.get("P_kW") in (None, ""):
         raise RuntimeError(
-            "Falta cabecera §1. Guarde medicion (1.2 · Cargar en la fuente) antes de 3.3."
+            "Falta cabecera §1. Guarde medicion (1.4 · Cargar en la fuente) antes de 3.3."
         )
 
     Phead, Qhead = compute_head_pq(

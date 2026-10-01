@@ -56,7 +56,7 @@ No se reutilizan los valores de cabecera del origen para el receptor.
 | Paso | Acción | Resultado |
 |------|--------|-----------|
 | 1.1 | Aplicar BD + estudio | Sesión CYMDIST alineada al alimentador |
-| 1.2 | Medición cabecera (Excel) o P/Q manual → Guardar | Entrada Connected+Total (kW-kvar) para LoadAllocation |
+| 1.4 | Medición cabecera (Excel) o P/Q manual → Cargar en la fuente | Entrada Connected+Total (kW-kvar) para LoadAllocation |
 
 Plantilla CYME al guardar/distribuir: Total ON, aguas abajo Consumo kWh, FdC 65 %, k = 0,3.
 

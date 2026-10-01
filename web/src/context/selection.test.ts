@@ -7,6 +7,7 @@ import {
   resolveAppliedStudy,
   selectFeeder,
   selectStudy,
+  studiesForFeeder,
   type SelectionState,
 } from "./selection";
 import * as selectionModule from "./selection";
@@ -120,6 +121,26 @@ describe("feeder readiness presentation", () => {
 });
 
 describe("study resolution for selected feeder", () => {
+  it("only_offers_studies_for_the_selected_feeder_family_or_shared_eld", () => {
+    const studies = [
+      { path: "D:\\projects\\TM104.xst", feeder_id: "TM104", ext: ".xst" },
+      { path: "D:\\projects\\TM105.zxst", feeder_id: "TM105", ext: ".zxst" },
+      { path: "D:\\projects\\TM105V2.sxst", feeder_id: "TM105V2", ext: ".sxst" },
+      { path: "D:\\projects\\ELD.zxst", feeder_id: "ELD", ext: ".zxst" },
+    ];
+
+    expect(
+      studiesForFeeder(studies, "TM105").map((study) =>
+        typeof study === "string" ? study : study.path
+      )
+    ).toEqual([
+      "D:\\projects\\TM105.zxst",
+      "D:\\projects\\TM105V2.sxst",
+      "D:\\projects\\ELD.zxst",
+    ]);
+    expect(studiesForFeeder(studies, "")).toEqual([]);
+  });
+
   it("selects_the_exact_feeder_study_with_engine_extension_priority", () => {
     const studies = [
       { path: "D:\\projects\\ELD.zxst", feeder_id: "ELD", ext: ".zxst" },

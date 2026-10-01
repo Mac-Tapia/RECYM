@@ -29,7 +29,7 @@ Orden obligatorio (SPA numerada):
 
 - Elija BD + estudio y pulse **1.1 Aplicar BD + estudio**.
 - En **Medición de cabecera**: elija alimentador + Excel de `medicioncabecera` → se busca el medidor en `medidoralimentador.xlsx`, se lee la hoja del medidor y se rellenan P máx, Q, kVA, Vll, fecha, P promedio y factor de carga (Pprom/Pmáx).
-- También puede ingresar P/Q manualmente (o P+cosφ / I+V+cosφ en legacy) y **1.2 Guarde**.
+- También puede ingresar P/Q manualmente (o P+cosφ / I+V+cosφ en legacy) y **1.4 Cargar en la fuente**.
 - Esa demanda es la entrada de **LoadAllocation** (demanda Connected+Total, tipo kW-kvar).
 - Al guardar/distribuir RECYM deja la plantilla CYME: **Total ON**, aguas abajo **Consumo kW-h**, **FdC 65 %**, **k = 0,3**, pérdidas 0 W/fase.
 - Guardar cabecera **restablece** artefactos de sesión de §§3–5 para evitar mezclar campañas.
