@@ -12,12 +12,12 @@ Arquitectura: [`ARQUITECTURA.md`](ARQUITECTURA.md) · Campaign v7: [`CAMPAIGN_V7
 flowchart TD
   A[§1 Contexto: BD + estudio + cabecera P/Q] --> B[§2 Calidad: diagnosticar / corregir / gate]
   B --> C[§3 Clientes: armar tabla → EA/Pot → Incluir]
-  C --> D[§3 Distribución LoadAllocation Consumo kWh]
-  D --> E[§4 SpotLoad: opcional Locked]
+  C --> D[§3.3 Distribución LoadAllocation Consumo kWh fijo]
+  D --> D2[§3.3b Excel distribución: Kw/Kvar real, SE/M]
+  D --> D3[§3.4 Situacional + captura · §3.4b Reportes CYMDIST]
+  E[§4 SpotLoad: opcional Locked + Verificar en CYMDIST] --> F1
   D --> F1[§5 Situacional: desconecta SpotLoad si hay → LF]
-  D --> F2[§5 Proyectado: conecta SpotLoad si hay → LF]
-  E --> F1
-  E --> F2
+  D --> F2[§5 Proyectado: conecta SpotLoad si hay → LF · §5.1b Reportes CYMDIST]
   F1 --> G[§6 Informes: meta + captura Cyme + doc sin Cyme]
   F2 --> G
   G --> H[§7 Opt / Suite opcional]
@@ -84,9 +84,16 @@ Jobs largos: `calidad_diagnosticar`, `calidad_aplicar`, `calidad_sistema`, `cali
 | 3.1 | Armar tabla (NIS) | Cruce suministro × clientes importantes |
 | Incluir | On = escribe CYMDIST; Off = desconecta SED + 0 kW | Columna en Tablero §2 |
 | 3.2 | Cargar EA/Pot | EA → Consumo (kWh); Pot → kW Locked |
-| 3.3 | Distribución | Por Consumo (kWh); actualiza kW residual |
+| 3.3 | Distribución | **Método fijo Consumo (kWh)** — no configurable por payload (ver §6 `core/cymdist_com.py`); actualiza kW residual |
+| 3.3b | Descargar distribución (Excel) | Kw/Kvar = demanda **real** leída del estudio (nunca energía/Pot contratada); SE sin consumo = REVISAR obligatorio, M (medidor gemelo) = informativo |
+| 3.4 | Estado situacional + capturas nativas | LoadFlow situacional + coloreo VoltageLevel/LoadingLevel; si la captura sale bien el resultado queda **guardado** (no se restaura) |
+| 3.4b | Reportes CYMDIST (sin proyecto) | Selección guardada en CYMDIST `RECYM_Informe` (Barras/Cables/Cargas + Flujo de carga) sobre el estado situacional → Excel en `informe_reportes/` |
 
 Tolerancias: `precision_tol_kwh`, `precision_tol_kw` en settings.
+
+**Nunca se inventa un valor** cuando falta un dato (kWh vacío, ConnectedKVA insuficiente): se marca
+REVISAR/needs_review para corregir en la fuente, nunca se escribe un número fabricado
+(ver 260044 `raise_connected_kva`, ahora solo lectura).
 
 ### §4 — SpotLoad concentrada
 
@@ -95,6 +102,9 @@ Tolerancias: `precision_tol_kwh`, `precision_tol_kw` en settings.
 - P trifásica → A/B/C = P/3, Q/3; estado **Locked**.
 - Genera figura de ubicación (`topologia.png`) cuando aplica.
 - **No** volver a ejecutar §3.3 después de conectar SpotLoad.
+- **Verificar en CYMDIST**: relee en vivo (COM, solo lectura) cada carga §4 contra el
+  estudio activo — confirma que existe y está `Connected`, no solo que el CSV/sesión
+  local lo diga. Columna *Verificado CYMDIST* en la tabla de cargas §4.
 
 ### §5 — Flujos de carga
 
@@ -111,6 +121,10 @@ LoadFlow y revisar cargabilidad y caída de tensión antes de aceptar la maniobr
 §4 es **opcional**: sin SpotLoad, 5.1/5.2 corren sobre el modelo actual.  
 Motor: COM (`loadflow_engine: COM`). Tras **5.2 proyectado** el job entrega el informe completo
 (capturas CYMDIST de coloreo + Excel/Word/PDF). Tras 5.1 solo actualiza cuadros numéricos.
+
+**5.1b · Reportes CYMDIST:** LoadFlow proyectado + captura nativa VoltageLevel/LoadingLevel
+(con la carga nueva de §4 ya conectada) + selección guardada `RECYM_Informe` → Excel en
+`informe_reportes/`. Análogo a 3.4b pero en escenario proyectado.
 
 ### §6 — Informes de entrega (autonómico)
 

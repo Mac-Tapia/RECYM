@@ -19,9 +19,12 @@ Configurado en `config/settings.json` (+ overlay local `config/settings.local.js
 Por cada alimentador:
 
 1. **Calidad de modelo** — diagnóstico + corrección masiva (nodos / equipos DEFAULT) + tensiones base.
-2. **Clientes importantes → SED** — cruzar NIS; cargar **EA→Consumo (kWh)** / **Pot→kW**; distribución por **Consumo (kWh)**.
-3. **SpotLoad concentrada** — P trifásica → A/B/C monofásica (Locked).
-4. **Flujos** — **situacional** (desconecta SpotLoad) / **proyectado** (conecta SpotLoad) + informes.
+2. **Clientes importantes → SED** — cruzar NIS; cargar **EA→Consumo (kWh)** / **Pot→kW**; distribución por **Consumo (kWh)** (método fijo, no configurable); Excel de verificación §3.3b con potencia real (no energía/Pot contratada).
+3. **SpotLoad concentrada** — P trifásica → A/B/C monofásica (Locked); verificación en vivo contra CYMDIST.
+4. **Flujos** — **situacional** (desconecta SpotLoad) / **proyectado** (conecta SpotLoad) + informes; reportes nativos CYMDIST (§3.4b / §5.1b, selección guardada `RECYM_Informe`).
+
+**Regla general:** cuando falta un dato real (kWh, capacidad conectada, carga §4), el sistema
+marca REVISAR/needs_review — nunca inventa un valor.
 
 ## Documentación
 

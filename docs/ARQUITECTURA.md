@@ -72,7 +72,7 @@ Principios:
 | **UI SPA** | `web/src/` | Navegación §§1–7, formularios, tablero, polling/SSE de jobs |
 | **API** | `src/api_app/` | Contrato REST, jobs (`POST /api/jobs`), tablero nativo, estáticos `web/dist` |
 | **UI legacy** | `src/ui/demand_app.py` | Handlers Flask reutilizados vía puente FastAPI |
-| **Pipeline** | `src/pipeline/` | Pasos de negocio: clientes, SpotLoad, LoadAllocation, LoadFlow, informes |
+| **Pipeline** | `src/pipeline/` | Pasos de negocio: clientes, SpotLoad, LoadAllocation, LoadFlow, informes, reporte distribución (`distribution_report.py`), reportes CYMDIST (`generate_cymdist_reports.py`) |
 | **Análisis** | `src/analysis/` | Diagnóstico red/sistema/ELD, tablero, validación, precisión EA/Pot |
 | **Optimización** | `src/optimization/` | Reclosers, reguladores, capacitores (§7) |
 | **Core** | `src/core/` | Settings multi-feeder, Excel I/O, adaptador CymPy, COM LoadFlow |
@@ -128,9 +128,9 @@ Orden de trabajo recomendado (detalle en [`FLUJO_TRABAJO.md`](FLUJO_TRABAJO.md))
 |---|-------|----------|
 | **1** | Contexto + cabecera | BD + estudio; medición de cabecera (P/Q máx) → entrada LoadAllocation |
 | **2** | Calidad + Tablero | NetworkDiagnostic (feeder / sistema 96 / ELD); correcciones; gate 0 errores |
-| **3** | Clientes + distribución | Cruce NIS → EA/Pot en SED; Incluir on/off; LoadAllocation por Consumo (kWh) |
-| **4** | SpotLoad nueva | Carga concentrada en nodo existente (P₃φ → A/B/C = P/3, Q/3); Locked |
-| **5** | Flujos | Situacional (desconecta §4) / proyectado (conecta §4) / general |
+| **3** | Clientes + distribución | Cruce NIS → EA/Pot en SED; Incluir on/off; LoadAllocation por Consumo (kWh) fijo · **3.3b** Excel distribución (Kw/Kvar real) · **3.4** situacional + captura · **3.4b** Reportes CYMDIST |
+| **4** | SpotLoad nueva | Carga concentrada en nodo existente (P₃φ → A/B/C = P/3, Q/3); Locked; Verificar en CYMDIST (lectura en vivo) |
+| **5** | Flujos | Situacional (desconecta §4) / proyectado (conecta §4) / general · **5.1b** Reportes CYMDIST (LF proyectado + coloreo + Excel `RECYM_Informe`) |
 | **6** | Informes | Meta OCR PDF + relleno Word/PDF de entrega |
 | **7** | Opt + Suite | Optimización equipos; herramientas batch / sync / nuevo feeder |
 
@@ -193,11 +193,16 @@ Scripts de entrada:
 | Módulo | Rol |
 |--------|-----|
 | `core/cympy_adapter.py` | Apertura estudio/BD, lectura/escritura cargas, customers, SpotLoad |
-| `core/cymdist_com.py` | LoadFlow y operaciones vía API COM (`loadflow_engine: COM`) |
+| `core/cymdist_com.py` | LoadFlow y operaciones vía API COM (`loadflow_engine: COM`); **Consumo (kWh) es el único método de LoadAllocation** — `run_loadallocation_com` ignora cualquier otro valor pedido por payload |
 | `core/feeder_context.py` | Merge settings + feeder; resolución de rutas `.zxst`/`.mdb` |
 | `config/cympy_api_map.json` | Mapa de campos/API CymPy |
 
 Campos clave (consumidor SED / SpotLoad): ver tabla en [`MANUAL_UI_DEMANDA.md`](MANUAL_UI_DEMANDA.md).
+
+**Regla "no inventar":** cuando falta un dato real en CYMDIST (KWHUsage vacío, ConnectedKVA
+insuficiente, SpotLoad no verificable), el código marca REVISAR/needs_review y deja el
+valor en 0 o sin tocar — nunca escribe un número fabricado (ver `raise_load_connected_kva`
+en `core/cympy_adapter.py`, ahora solo lectura; y `distribution_report.py` §3.3b).
 
 WRITE en modelo:
 
@@ -215,6 +220,9 @@ Contrato completo: [`API_CONTRATO_UI.md`](API_CONTRATO_UI.md).
 - Contexto: header `X-Feeder` o query/body `feeder`
 - Operaciones largas (§2 calidad, §3 distribución, §5 flujo):  
   `POST /api/jobs` → `GET /api/jobs/{id}` / SSE `.../events`
+- Jobs nuevos de esta sesión (aislados, ver `core/cympy_isolation.py`):
+  `reportes_informe` (§3.4b/§5.1b, selección CYMDIST `RECYM_Informe`),
+  `cargas_verificar_cymdist` (§4, lectura COM en vivo de SpotLoad)
 - Tablero: `GET /api/tablero` (JSON); `tablero.html` ya no es producto
 
 Puente: rutas `/api/*` no nativas de FastAPI se reenvían a Flask (`demand_app`).
@@ -228,6 +236,7 @@ data/output/feeders/<ID>/
   clientes/          # tabla + apply report
   demand/            # allocation, loadflow_*, session, informe_meta
   diagnostics/       # tablero.json, dashboard_summary*
+  informe_reportes/  # reportes_cymdist_<situacional|proyectado>_*.xlsx (§3.4b/§5.1b)
   informe_images/    # topología, tensión/cargabilidad situacional|proyectado
   inventory/         # loads.json, nodes.json
 ```
