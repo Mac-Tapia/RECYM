@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, getActiveFeeder, type Json } from "../api/client";
+import { api, getActiveFeeder, runJob, type Json } from "../api/client";
 import { useFeeder } from "../state/feeder";
 import { ContextBind, useHasSectionContext } from "../components/ContextBind";
 
@@ -43,6 +43,11 @@ type ConnectedRow = {
   Q_kvar?: string | number;
   cosfi?: string | number;
   Estado?: string;
+  verificado?: boolean;
+  existe?: boolean;
+  conectado?: boolean;
+  P_kW_actual?: number | null;
+  detalle?: string;
 };
 
 async function downloadTemplate(fmt: "xlsx" | "csv") {
@@ -118,11 +123,35 @@ export function Step4SpotLoad() {
     }
   }
 
+  async function verifyConnectedLive() {
+    if (!hasCtx) {
+      setConnectedMsg("Aplique 1.1 antes de verificar en vivo contra CYMDIST");
+      return;
+    }
+    setConnectedMsg("Verificando en vivo contra CYMDIST (solo lectura)…");
+    try {
+      const j = await runJob("cargas_verificar_cymdist", {}, (job) => {
+        if (job.message) setConnectedMsg(String(job.message));
+      });
+      const rows = (j.rows as Json[] | undefined) || [];
+      setConnected(rows as unknown as ConnectedRow[]);
+      setConnectedMsg(
+        `${j.all_verified ? "OK" : "REVISAR"} · ${String(j.msg || "")}`
+      );
+    } catch (e) {
+      setConnectedMsg(String(e));
+    }
+  }
+
   useEffect(() => {
     void loadConnected();
   }, [feeder]);
 
   async function resolveNode(nid: string, nameHint?: string) {
+    if (!hasCtx) {
+      setMsg("Aplique 1.1 al contexto actual antes de buscar o resolver nodos");
+      return;
+    }
     const id = String(nid || "").trim();
     if (!id) return;
     setNodeId(id);
@@ -159,6 +188,10 @@ export function Step4SpotLoad() {
   }
 
   async function search() {
+    if (!hasCtx) {
+      setMsg("Aplique 1.1 al contexto actual antes de buscar nodos");
+      return;
+    }
     const query = q.trim();
     if (!query) {
       setMsg("Indique un ID de nodo (parcial o exacto).");
@@ -199,6 +232,10 @@ export function Step4SpotLoad() {
   }
 
   async function connect() {
+    if (!hasCtx) {
+      setMsg("Aplique 1.1 al contexto actual antes de conectar SpotLoads");
+      return;
+    }
     if (!nodeId.trim()) {
       setMsg("Seleccione un nodo (Buscar → clic en fila, o coincidencia única).");
       return;
@@ -286,6 +323,10 @@ export function Step4SpotLoad() {
   }
 
   async function connectBatch(rows?: BatchRow[]) {
+    if (!hasCtx) {
+      setBatchMsg("Aplique 1.1 al contexto actual antes de conectar SpotLoads");
+      return;
+    }
     const payload = rows || batchRows;
     if (!payload.length) {
       setBatchMsg("Cargue primero un CSV/Excel o añada una fila desde el formulario 4.3.");
@@ -346,6 +387,10 @@ export function Step4SpotLoad() {
   }
 
   async function resolveUNode(nid: string, nameHint?: string) {
+    if (!hasCtx) {
+      setUMsg("Aplique 1.1 al contexto actual antes de buscar o resolver nodos");
+      return;
+    }
     const id = String(nid || "").trim();
     if (!id) return;
     setUNodeId(id);
@@ -382,6 +427,10 @@ export function Step4SpotLoad() {
   }
 
   async function searchU() {
+    if (!hasCtx) {
+      setUMsg("Aplique 1.1 al contexto actual antes de buscar nodos");
+      return;
+    }
     const query = uQ.trim();
     if (!query) {
       setUMsg("Indique un ID de nodo (parcial o exacto).");
@@ -448,6 +497,10 @@ export function Step4SpotLoad() {
   }
 
   async function updateOneAndConnect() {
+    if (!hasCtx) {
+      setUMsg("Aplique 1.1 al contexto actual antes de actualizar cargas");
+      return;
+    }
     const row = buildURow("ACTUALIZAR");
     if (!row) return;
     setBusy(true);
@@ -525,6 +578,10 @@ export function Step4SpotLoad() {
         <button type="button" className="ghost" disabled={busy || !hasCtx} onClick={() => void loadConnected()}>
           Actualizar listado
         </button>
+        <button type="button" className="secondary" disabled={busy || !hasCtx} onClick={() => void verifyConnectedLive()}
+          title="Reabre el estudio (solo lectura) y confirma que cada carga §4 realmente existe y esta Connected en CYMDIST">
+          Verificar en CYMDIST
+        </button>
         <span className="muted">{connectedMsg}</span>
       </div>
       <div className="wrap" style={{ marginTop: 6 }}>
@@ -537,12 +594,13 @@ export function Step4SpotLoad() {
               <th>P_kW</th>
               <th>Q_kvar</th>
               <th>Estado</th>
+              <th>Verificado CYMDIST</th>
             </tr>
           </thead>
           <tbody>
             {connected.length === 0 ? (
               <tr>
-                <td colSpan={6} className="muted">
+                <td colSpan={7} className="muted">
                   Ninguna aún — conecte con 4.2 (una) o 4.3 (bloque). 4.3 no es obligatorio.
                 </td>
               </tr>
@@ -555,6 +613,13 @@ export function Step4SpotLoad() {
                   <td>{r.P_kW ?? ""}</td>
                   <td>{r.Q_kvar ?? ""}</td>
                   <td>{r.Estado}</td>
+                  <td title={r.detalle || ""}>
+                    {r.verificado === undefined
+                      ? "— pulse Verificar"
+                      : r.verificado
+                        ? "✓ OK"
+                        : `✗ ${r.detalle || "revisar"}`}
+                  </td>
                 </tr>
               ))
             )}
@@ -600,7 +665,7 @@ export function Step4SpotLoad() {
           />
         </div>
         <div style={{ display: "flex", alignItems: "end" }}>
-          <button type="button" className="ghost" disabled={busy} onClick={search}>
+          <button type="button" className="ghost" disabled={busy || !hasCtx} onClick={search}>
             Buscar nodo 4.2
           </button>
         </div>
@@ -655,7 +720,7 @@ export function Step4SpotLoad() {
       <div className="actions">
         <button
           type="button"
-          disabled={busy || !nodeId || !loadName || !sectionId}
+          disabled={busy || !hasCtx || !nodeId || !loadName || !sectionId}
           onClick={connect}
         >
           4.2 · Conectar y guardar en CYMDIST
@@ -724,7 +789,7 @@ export function Step4SpotLoad() {
           />
         </div>
         <div style={{ display: "flex", alignItems: "end" }}>
-          <button type="button" className="ghost" disabled={busy} onClick={searchU}>
+          <button type="button" className="ghost" disabled={busy || !hasCtx} onClick={searchU}>
             Buscar nodo 4.3
           </button>
         </div>
@@ -777,7 +842,7 @@ export function Step4SpotLoad() {
       <div className="actions">
         <button
           type="button"
-          disabled={busy || !uNodeId || !uLoadName || !uSectionId}
+          disabled={busy || !hasCtx || !uNodeId || !uLoadName || !uSectionId}
           onClick={() => void updateOneAndConnect()}
           title="Actualiza P/Q de esta carga y la escribe en CYMDIST"
         >
@@ -897,7 +962,7 @@ export function Step4SpotLoad() {
         />
         <button
           type="button"
-          disabled={busy || !batchRows.some((r) => r.ok !== false)}
+          disabled={busy || !hasCtx || !batchRows.some((r) => r.ok !== false)}
           onClick={() => void connectBatch()}
           title="Conecta/actualiza todas las filas válidas en CYMDIST (bloque)"
         >

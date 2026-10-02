@@ -4680,7 +4680,7 @@ def api_cabecera_medicion_archivos():
     """Lista Excel de medicioncabecera + códigos/medidores de medidoralimentador."""
     try:
         from core.cabecera_medicion_excel import (
-            list_map_alimentadores,
+            list_all_medidores,
             list_medicioncabecera_files,
             medidoralimentador_path,
             medicioncabecera_dir,
@@ -4691,7 +4691,8 @@ def api_cabecera_medicion_archivos():
         alimentadores = []
         map_err = None
         try:
-            alimentadores = list_map_alimentadores(global_s, only_feeders=True)
+            # Todos los medidores del Excel (alimentadores, LT, barras…).
+            alimentadores = list_all_medidores(global_s)
         except Exception as ex_map:
             map_err = str(ex_map)
         return jsonify({
@@ -4859,6 +4860,9 @@ def api_cabecera_transfer_voltage_quality():
             "network_id": s.get("network_id"),
             "network_ids": body.get("network_ids") or s.get("network_ids"),
             "transfer_pair": body.get("transfer_pair") or s.get("transfer_pair"),
+            "transfer_node_id": (body.get("node_id") or "").strip(),
+            "transfer_sectionalizer_id": (body.get("sectionalizer_id") or "").strip(),
+            "transfer_tie_switch_id": (body.get("tie_switch_id") or "").strip(),
             "vmin_limit_pu": body.get("vmin_limit_pu") or 0.95,
             "vmax_limit_pu": body.get("vmax_limit_pu") or 1.05,
             "apply_switch": bool(body.get("apply_switch")),
@@ -5882,12 +5886,21 @@ def api_clientes_aplicar():
         released = {}
         keep_ids = set()
         commit = None
+        plantilla_32 = {"ok": False, "skipped": True}
 
         def _mutate_clientes_32():
-            nonlocal report, released, keep_ids
+            nonlocal report, released, keep_ids, plantilla_32
             report, released, keep_ids = refresh_clientes_in_cymdist(
                 a, rows, fp=fp, previous_ids=prev_ids
             )
+            # Diálogo de distribución listo para §3.3: Consumo (kWh), modelo y
+            # parámetros DEFAULT, demanda sin «Conectado». Se guarda con 3.2.
+            try:
+                from pipeline.run_demand_allocation import apply_allocation_template_32
+                plantilla_32 = apply_allocation_template_32(c, s.get("network_id"))
+            except Exception as ex_tpl:
+                plantilla_32 = {"ok": False, "error": str(ex_tpl)}
+                print("AVISO plantilla distribución 3.2:", ex_tpl)
             return {
                 "requested_values": {
                     "n_rows": len(rows),
@@ -5987,7 +6000,15 @@ def api_clientes_aplicar():
         # Reabrir GUI limpia tras CymPy (anti AV 0xc0000005: no Save/CymPy+COM juntos)
         open_gui = True if body.get("open_gui") is None else bool(body.get("open_gui"))
         com = {"ok": True, "cymdist_open": False, "deferred": True}
-        if open_gui:
+        in_job_worker = (os.environ.get("RECYM_JOB_WORKER") or "").strip().lower() in (
+            "1", "true", "yes",
+        )
+        if open_gui and in_job_worker:
+            # Proceso hijo aislado: un hilo diferido moriría al terminar el job.
+            # La API (proceso padre) reabre CYMDIST al recibir el resultado.
+            set_keep_open(s, True, reason="cargar_ea_pot")
+            com = {"ok": True, "cymdist_open": False, "reopen_in_parent": True}
+        elif open_gui:
             set_keep_open(s, True, reason="cargar_ea_pot")
             try:
                 import threading
@@ -6049,7 +6070,9 @@ def api_clientes_aplicar():
             "report_path": report_path,
             "from_saved_table": bool(meta.get("from_saved_table")),
             "cymdist_open": bool(com.get("cymdist_open")),
+            "reopen_gui_in_parent": bool(com.get("reopen_in_parent")),
             "cabecera_ajustada": cab_adj,
+            "plantilla_distribucion": plantilla_32,
             "P_kW": (cab_adj or {}).get("P_kW"),
             "Q_kvar": (cab_adj or {}).get("Q_kvar"),
             "P_kW_medicion": (cab_adj or {}).get("P_kW_medicion"),

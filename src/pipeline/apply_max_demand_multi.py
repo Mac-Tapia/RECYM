@@ -62,8 +62,15 @@ def resolve_study_network_ids(settings, cympy=None):
     return [primary] if primary else []
 
 
-def extract_max_demanda_for_networks(settings, network_ids=None, medicion_file=None):
-    """Extrae máxima demanda por red. No aborta el lote si un medidor falta."""
+def extract_max_demanda_for_networks(
+    settings, network_ids=None, medicion_file=None, medicion_files=None
+):
+    """Extrae máxima demanda por red. No aborta el lote si un medidor falta.
+
+    medicion_files ({network_id: archivo}) tiene prioridad sobre medicion_file,
+    que se aplica a todas las redes; así el receptor de una transferencia no
+    hereda el Excel del alimentador origen.
+    """
     from core.cabecera_medicion_excel import extract_cabecera_medicion
 
     s = settings or load_settings()
@@ -90,7 +97,7 @@ def extract_max_demanda_for_networks(settings, network_ids=None, medicion_file=N
         try:
             stats = extract_cabecera_medicion(
                 short,
-                medicion_file=medicion_file,
+                medicion_file=(medicion_files or {}).get(net, medicion_file),
                 settings=s,
                 auto_find_file=True,
             )
@@ -136,6 +143,7 @@ def apply_max_demand_multi(
     use_com=False,
     extracted=None,
     run_allocation=True,
+    medicion_files=None,
 ):
     """Extrae (si hace falta) y escribe máxima demanda en cada red del estudio.
 
@@ -152,7 +160,10 @@ def apply_max_demand_multi(
     s = dict(settings or load_settings())
     api = load_json("config/cympy_api_map.json")
     pack = extracted or extract_max_demanda_for_networks(
-        s, network_ids=network_ids, medicion_file=medicion_file
+        s,
+        network_ids=network_ids,
+        medicion_file=medicion_file,
+        medicion_files=medicion_files,
     )
     if network_ids:
         wanted = set(str(x) for x in network_ids)

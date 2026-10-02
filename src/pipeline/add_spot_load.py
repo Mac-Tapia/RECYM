@@ -1044,6 +1044,110 @@ def list_connected_spot_loads(settings):
         }
     return [item]
 
+
+def verify_spot_loads_live(settings):
+    """
+    Relee en vivo (COM Cymdist.Application, solo lectura) cada carga §4 de
+    list_connected_spot_loads para confirmar que de verdad existe en el
+    estudio actual y esta Connected — no basta con el CSV/sesion local, que
+    puede quedar desactualizado (ej. si el estudio se restauro a bytes
+    previos a la conexion en algun paso intermedio).
+
+    Usa COM (no CymPy nativo): el motor CymPy standalone en esta instalacion
+    truena con Access Violation 0xC0000005 en operaciones de lectura de
+    dispositivo fuera del flujo LoadFlow/LoadAllocation ya probado.
+    """
+    from core.cymdist_com import acquire_cymdist_app, sync_cymdist_binding
+
+    rows = list_connected_spot_loads(settings)
+    if not rows:
+        return {"ok": True, "n": 0, "rows": [], "msg": "Sin cargas §4 registradas para verificar."}
+
+    app, _mode = acquire_cymdist_app(settings, show_window=True)
+    try:
+        sync_cymdist_binding(app, settings, save_before=False, register_db=True)
+    except Exception as ex:
+        print("AVISO sync antes de verificar §4:", ex)
+
+    def _find_device(lid):
+        for getter in ("FindDeviceFromID", "FindDevice", "GetDevice"):
+            fn = getattr(app, getter, None)
+            if not callable(fn):
+                continue
+            try:
+                d = fn(lid)
+            except TypeError:
+                try:
+                    d = fn(lid, 0)
+                except Exception:
+                    d = None
+            except Exception:
+                d = None
+            if d is not None:
+                return d
+        return None
+
+    out_rows = []
+    for row in rows:
+        lid = str(row.get("LoadID") or "").strip()
+        entry = dict(row, verificado=False, existe=False, conectado=False, detalle="")
+        if not lid:
+            entry["detalle"] = "LoadID vacio"
+            out_rows.append(entry)
+            continue
+        d = _find_device(lid)
+        if d is None:
+            entry["detalle"] = "No existe en el estudio (FindDeviceFromID/FindDevice/GetDevice sin resultado)"
+            out_rows.append(entry)
+            continue
+        entry["existe"] = True
+        try:
+            status = str(d.GetValue("CustomerLoads[0].ConnectionStatus") or "")
+        except Exception:
+            status = ""
+        entry["conectado"] = status.lower() == "connected"
+        try:
+            kw = float(str(d.GetValue(
+                "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0].LoadValue.KW"
+            ) or "0").replace(",", "."))
+        except Exception:
+            kw = None
+        entry["P_kW_actual"] = kw
+        p_esp = row.get("P_kW")
+        delta_ok = (
+            kw is not None and p_esp is not None
+            and abs(float(kw) - float(p_esp)) <= max(0.5, abs(float(p_esp)) * 0.02)
+        )
+        entry["verificado"] = bool(entry["conectado"] and delta_ok)
+        if not entry["conectado"]:
+            entry["detalle"] = "Existe pero ConnectionStatus=%s (no Connected)" % (status or "?")
+        elif not delta_ok:
+            entry["detalle"] = "Existe y Connected pero P_kW_actual=%s != esperado %s" % (kw, p_esp)
+        else:
+            entry["detalle"] = "OK: existe, Connected, P_kW coincide"
+        out_rows.append(entry)
+
+    n_ok = sum(1 for r in out_rows if r["verificado"])
+    all_verified = n_ok == len(out_rows)
+    # "ok" = el job corrio bien (sin excepcion); el resultado real de la
+    # verificacion va en "all_verified" — si "ok" fuera False por filas sin
+    # verificar, el frontend descarta "rows" al tratarlo como job fallido.
+    return {
+        "ok": True,
+        "all_verified": all_verified,
+        "n": len(out_rows),
+        "n_verificado": n_ok,
+        "rows": out_rows,
+        "msg": (
+            "%d/%d carga(s) §4 verificadas en vivo (existen y Connected en CYMDIST)"
+            % (n_ok, len(out_rows))
+        ) if all_verified else (
+            "%d/%d carga(s) §4 verificadas — revise detalle de las que fallan"
+            % (n_ok, len(out_rows))
+        ),
+    }
+
+
 def new_loads_as_fixed(settings):
     """Formato apply_fixed_loads: cargas §4 Locked, fuera de prorrateo."""
     rows = []

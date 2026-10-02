@@ -21,7 +21,7 @@ from datetime import datetime
 from core.clientes_suministro import resolve_dir
 
 _CACHE_LOCK = threading.Lock()
-_MAP_CACHE = {"mtime": None, "path": None, "by_feeder": {}}
+_MAP_CACHE = {"mtime": None, "path": None, "by_feeder": {}, "by_meter": {}, "rows": []}
 _SHEET_INDEX_CACHE = {}  # path -> {mtime, sheets_norm: {norm: real_name}}
 
 
@@ -193,6 +193,8 @@ def _load_medidor_map(settings=None, force=False):
     from openpyxl import load_workbook
 
     by_feeder = {}
+    by_meter = {}
+    meter_rows = []
     wb = load_workbook(path, data_only=True, read_only=True)
     try:
         ws = wb[wb.sheetnames[0]]
@@ -226,8 +228,6 @@ def _load_medidor_map(settings=None, force=False):
                 continue
             raw_code = row[col_alim] if col_alim < len(row) else ""
             code = _norm_feeder(raw_code)
-            if not code:
-                continue
             medidor_raw = row[col_med] if col_med < len(row) else ""
             medidor = str(medidor_raw or "").strip()
             if not medidor:
@@ -236,6 +236,21 @@ def _load_medidor_map(settings=None, force=False):
             siglas = ""
             if col_sig < len(row) and row[col_sig] not in (None, ""):
                 siglas = str(row[col_sig]).strip()
+            # Índice por medidor: cada fila del Excel (LT, Barra, sin código…)
+            meter_key = _norm_feeder(medidor)
+            if meter_key and meter_key not in by_meter:
+                meter_entry = {
+                    "feeder_id": code if _is_real_feeder_code(code) else meter_key,
+                    "feeder_raw": str(raw_code or "").strip(),
+                    "medidor": medidor,
+                    "Vll_kV": vll,
+                    "siglas": siglas,
+                    "is_feeder": _is_real_feeder_code(code),
+                }
+                by_meter[meter_key] = meter_entry
+                meter_rows.append(meter_entry)
+            if not code:
+                continue
             entry = {
                 "feeder_id": code,
                 "feeder_raw": str(raw_code or "").strip(),
@@ -255,7 +270,45 @@ def _load_medidor_map(settings=None, force=False):
         _MAP_CACHE["path"] = path
         _MAP_CACHE["mtime"] = mtime
         _MAP_CACHE["by_feeder"] = by_feeder
+        _MAP_CACHE["by_meter"] = by_meter
+        _MAP_CACHE["rows"] = meter_rows
     return by_feeder, path
+
+
+def _load_meter_index(settings=None):
+    """(by_meter, rows, path): todas las filas con medidor de medidoralimentador."""
+    _by_feeder, path = _load_medidor_map(settings=settings)
+    with _CACHE_LOCK:
+        return dict(_MAP_CACHE["by_meter"]), list(_MAP_CACHE["rows"]), path
+
+
+def list_all_medidores(settings=None):
+    """Una opción por medidor del Excel, en su orden (alimentadores, LT, barras…).
+
+    ``feeder_id`` es el código de alimentador si la fila lo tiene; si no, el
+    propio medidor normalizado, que ``lookup_feeder_medidor`` también resuelve.
+    """
+    _by_meter, rows, path = _load_meter_index(settings)
+    items = []
+    for e in rows:
+        med = e.get("medidor") or ""
+        vll = e.get("Vll_kV")
+        raw = e.get("feeder_raw") or ""
+        if e.get("is_feeder"):
+            label = e["feeder_id"]
+        else:
+            label = ("%s · %s" % (raw, med)) if raw else med
+        items.append({
+            "feeder_id": e["feeder_id"],
+            "feeder_raw": label,
+            "medidor": med,
+            "Vll_kV": vll,
+            "siglas": e.get("siglas") or "",
+            "is_feeder": bool(e.get("is_feeder")),
+            "label": label if vll in (None, "") else "%s · %s kV" % (label, vll),
+            "source": path,
+        })
+    return items
 
 
 def _feeder_aliases(feeder_id):
@@ -356,6 +409,13 @@ def lookup_feeder_medidor(feeder_id, settings=None):
                 break
         if entry is not None:
             break
+
+    if entry is None:
+        by_meter, _rows, _path = _load_meter_index(settings)
+        hit = by_meter.get(fid)
+        if hit is not None:
+            entry = hit
+            matched_as = hit.get("feeder_id") or fid
 
     if entry is None:
         suggestions = []

@@ -1,36 +1,104 @@
 {
   "ok": false,
   "delivery_ready": false,
-  "informe_mode": "completo",
-  "error": "Informe incompleto para entrega. Falta: loadflow_situacional, loadflow_proyectado, situacional_tension.png (falta captura CYMDIST), situacional_cargabilidad.png (falta captura CYMDIST), proyectado_tension.png (falta captura CYMDIST), proyectado_cargabilidad.png (falta captura CYMDIST). Requiere: PDF OCR §5 (cliente+potencia), LoadFlow situacional + proyectado, y 4 capturas CYMDIST live (VoltageLevel/LoadingLevel) — sin imagenes inventadas.",
-  "missing": [
-    "loadflow_situacional",
-    "loadflow_proyectado",
-    "situacional_tension.png (falta captura CYMDIST)",
-    "situacional_cargabilidad.png (falta captura CYMDIST)",
-    "proyectado_tension.png (falta captura CYMDIST)",
-    "proyectado_cargabilidad.png (falta captura CYMDIST)"
-  ],
-  "filled_at": "2026-09-29T08:37:35",
-  "feeder_id": "CA101",
-  "meta": {
-    "cliente": "UAT RECYM",
-    "ubicacion": "UAT",
-    "solicitud": "Factibilidad y Punto de Diseño",
-    "potencia_txt": "100KW",
-    "potencia_kw": 100.0,
-    "alimentador": "CA101",
-    "set": "SET CA101",
-    "tension_kv": 10.0,
-    "transformador": "Transformador SET CA101 · 10.0 kV (inventario CYMDIST)",
-    "expediente": "RECYM-CA101",
-    "meta_source": "pdf",
-    "nodo_conexion": "NODE_1080_873637_MI-873637_2",
-    "nodo_conexion_source": "new_spot_loads_report.csv",
-    "sistema_electrico": "Electro Dunas",
-    "codigo_se": "CA101"
+  "error_code": "REPORT_PROVENANCE_INCOMPLETE",
+  "error": "El informe rechaza fuentes faltantes, ajenas o no verificadas",
+  "report_sources": {
+    "ok": false,
+    "run_id": "interactive-0cdfcadd2ad9b6e6",
+    "accepted_stages": [
+      "4"
+    ],
+    "failed_stages": {
+      "1.2": {
+        "ok": false,
+        "error_code": "RUN_ID_MISMATCH",
+        "error": "Artefacto de otra ejecución: esperado interactive-0cdfcadd2ad9b6e6, recibido full-ca101-sourcefixed-20260929",
+        "different_fields": [
+          "run_id"
+        ],
+        "expected_context": {
+          "run_id": "interactive-0cdfcadd2ad9b6e6"
+        },
+        "actual_context": {
+          "run_id": "full-ca101-sourcefixed-20260929"
+        }
+      },
+      "3.2": {
+        "ok": false,
+        "error_code": "RUN_ID_MISMATCH",
+        "error": "Artefacto de otra ejecución: esperado interactive-0cdfcadd2ad9b6e6, recibido full-ca101-sourcefixed-20260929",
+        "different_fields": [
+          "run_id"
+        ],
+        "expected_context": {
+          "run_id": "interactive-0cdfcadd2ad9b6e6"
+        },
+        "actual_context": {
+          "run_id": "full-ca101-sourcefixed-20260929"
+        }
+      },
+      "3.3": {
+        "ok": false,
+        "error_code": "RUN_ID_MISMATCH",
+        "error": "Artefacto de otra ejecución: esperado interactive-0cdfcadd2ad9b6e6, recibido full-ca101-sourcefixed-20260929",
+        "different_fields": [
+          "run_id"
+        ],
+        "expected_context": {
+          "run_id": "interactive-0cdfcadd2ad9b6e6"
+        },
+        "actual_context": {
+          "run_id": "full-ca101-sourcefixed-20260929"
+        }
+      },
+      "3.4": {
+        "ok": false,
+        "error_code": "RUN_ID_MISMATCH",
+        "error": "Artefacto de otra ejecución: esperado interactive-0cdfcadd2ad9b6e6, recibido full-ca101-sourcefixed-20260929",
+        "different_fields": [
+          "run_id"
+        ],
+        "expected_context": {
+          "run_id": "interactive-0cdfcadd2ad9b6e6"
+        },
+        "actual_context": {
+          "run_id": "full-ca101-sourcefixed-20260929"
+        }
+      },
+      "5.1": {
+        "ok": false,
+        "error_code": "RUN_ID_MISMATCH",
+        "error": "Artefacto de otra ejecución: esperado interactive-0cdfcadd2ad9b6e6, recibido full-ca101-sourcefixed-20260929",
+        "different_fields": [
+          "run_id"
+        ],
+        "expected_context": {
+          "run_id": "interactive-0cdfcadd2ad9b6e6"
+        },
+        "actual_context": {
+          "run_id": "full-ca101-sourcefixed-20260929"
+        }
+      }
+    },
+    "sources": {
+      "4": {
+        "ok": true,
+        "reopen_verified": true,
+        "context_fingerprint": "0cdfcadd2ad9b6e6",
+        "manifest_path": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\commits\\20260929T083325491433-76b8e9d43aac-spotload_4.json",
+        "action": "spotload_4",
+        "commit_mode": "study",
+        "context_identity": {
+          "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
+          "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
+          "feeder_id": "CA101",
+          "network_id": "NET_2030_131_CA101"
+        },
+        "run_id": "interactive-0cdfcadd2ad9b6e6"
+      }
+    }
   },
-  "meta_source": "pdf",
   "paths": {
     "feeder_id": "CA101",
     "plantilla_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\input\\InformeModelo",
@@ -50,304 +118,7 @@
     "audit_assemble_manifest": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe\\0cdfcadd2ad9b6e6\\assemble_manifest.json",
     "audit_fill_manifest": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe\\0cdfcadd2ad9b6e6\\fill_manifest.json"
   },
-  "images_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe_images",
-  "image_slots": {
-    "topologia.png": [
-      "word/media/image1.png"
-    ],
-    "leyenda_tension.png": [
-      "word/media/image2.png",
-      "word/media/image6.png"
-    ],
-    "leyenda_cargabilidad.png": [
-      "word/media/image4.png",
-      "word/media/image8.png"
-    ],
-    "situacional_tension.png": [
-      "word/media/image3.png"
-    ],
-    "situacional_cargabilidad.png": [
-      "word/media/image5.png"
-    ],
-    "proyectado_tension.png": [
-      "word/media/image7.png"
-    ],
-    "proyectado_cargabilidad.png": [
-      "word/media/image9.png"
-    ],
-    "trafo_cargabilidad.png": [
-      "word/media/image10.png"
-    ]
-  },
-  "required_lf_images": [
-    "situacional_tension.png",
-    "situacional_cargabilidad.png",
-    "proyectado_tension.png",
-    "proyectado_cargabilidad.png"
-  ],
-  "charts_generated": [],
-  "charts": {
-    "ok": true,
-    "generated": [],
-    "skipped": [
-      {
-        "file": "situacional_tension.png",
-        "reason": "cymdist_only_no_matplotlib"
-      },
-      {
-        "file": "situacional_cargabilidad.png",
-        "reason": "cymdist_only_no_matplotlib"
-      },
-      {
-        "file": "proyectado_tension.png",
-        "reason": "cymdist_only_no_matplotlib"
-      },
-      {
-        "file": "proyectado_cargabilidad.png",
-        "reason": "cymdist_only_no_matplotlib"
-      }
-    ],
-    "pending": [],
-    "errors": []
-  },
-  "cymdist_captures": {
-    "ok": false,
-    "images_dir": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe_images",
-    "generated": [],
-    "errors": [
-      "situacional LF status=error err=LoadFlow COM sin solucion valida (KWTOT invalido). method=None ret=0.  — sin convergencia no se captura coloreo",
-      "proyectado LF status=error err=LoadFlow COM sin solucion valida (KWTOT invalido). method=None ret=0.  — sin convergencia no se captura coloreo"
-    ],
-    "skipped": [],
-    "notes": [],
-    "present": [],
-    "missing": [
-      "situacional_tension.png",
-      "situacional_cargabilidad.png",
-      "proyectado_tension.png",
-      "proyectado_cargabilidad.png"
-    ],
-    "live_verified": [],
-    "captured_at": "2026-09-29T08:37:31"
-  },
-  "location_map": {
-    "ok": true,
-    "path": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe_images\\topologia.png",
-    "file": "topologia.png",
-    "generated_at": "2026-09-29T08:37:35",
-    "location": {
-      "ok": true,
-      "NodeID": "NODE_1080_873637_MI-873637_2",
-      "LoadID": "UAT_RECYM_SPOT",
-      "SectionID": "SEC_1091_306092",
-      "P_kW": 100.0,
-      "X": 386540.128,
-      "Y": 8508639.758,
-      "lat": -13.48813831207605,
-      "lon": -76.04831282760259,
-      "utm_zone": 18,
-      "source": "new_spot_loads_report.csv",
-      "inventory": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\inventory\\nodes.json",
-      "label": "UAT_RECYM_SPOT"
-    },
-    "nearby_sections": 11,
-    "provider": {
-      "provider": "esri_world_imagery",
-      "zoom": 17,
-      "size": [
-        900,
-        640
-      ]
-    },
-    "errors": [],
-    "msg": "Mapa ubicacion carga nueva: UAT_RECYM_SPOT (-13.488138, -76.048313)",
-    "meta_path": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe_images\\topologia_meta.json"
-  },
-  "scenarios_used": {
-    "situacional": true,
-    "proyectado": true,
-    "situacional_metrics": {
-      "kw": null,
-      "kvar": null,
-      "kva": null,
-      "fp_pct": null,
-      "kw_loss": null,
-      "vpu": 1.0,
-      "v_pct_a": 100.0,
-      "v_pct_b": 100.0,
-      "v_pct_c": 100.0,
-      "i_a": null
-    },
-    "proyectado_metrics": {
-      "kw": null,
-      "kvar": null,
-      "kva": null,
-      "fp_pct": null,
-      "kw_loss": null,
-      "vpu": 1.0,
-      "v_pct_a": 100.0,
-      "v_pct_b": 100.0,
-      "v_pct_c": 100.0,
-      "i_a": null
-    },
-    "informe_mode": "completo"
-  },
-  "report_sources": {
-    "ok": false,
-    "run_id": "interactive-0cdfcadd2ad9b6e6",
-    "accepted_stages": [
-      "1.2",
-      "3.2",
-      "3.3",
-      "4",
-      "5.1"
-    ],
-    "failed_stages": {
-      "3.4": {
-        "error_code": "SOURCE_MISSING"
-      }
-    },
-    "sources": {
-      "1.2": {
-        "ok": true,
-        "reopen_verified": true,
-        "context_fingerprint": "0cdfcadd2ad9b6e6",
-        "manifest_path": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\commits\\20260929T083142082026-a1eb978b5426-cabecera_12.json",
-        "action": "cabecera_12",
-        "commit_mode": "study_and_database",
-        "context_identity": {
-          "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
-          "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
-          "feeder_id": "CA101",
-          "network_id": "NET_2030_131_CA101"
-        },
-        "run_id": "interactive-0cdfcadd2ad9b6e6"
-      },
-      "3.2": {
-        "ok": true,
-        "reopen_verified": true,
-        "context_fingerprint": "0cdfcadd2ad9b6e6",
-        "manifest_path": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\commits\\20260929T083303337364-efc13a84bf5f-clientes_aplicar_32.json",
-        "action": "clientes_aplicar_32",
-        "commit_mode": "study",
-        "context_identity": {
-          "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
-          "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
-          "feeder_id": "CA101",
-          "network_id": "NET_2030_131_CA101"
-        },
-        "run_id": "interactive-0cdfcadd2ad9b6e6"
-      },
-      "3.3": {
-        "ok": true,
-        "reopen_verified": true,
-        "context_fingerprint": "0cdfcadd2ad9b6e6",
-        "manifest_path": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\commits\\20260929T083307366511-93aef3ba2ecf-distribucion_33.json",
-        "action": "distribucion_33",
-        "commit_mode": "external_engine_saved",
-        "context_identity": {
-          "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
-          "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
-          "feeder_id": "CA101",
-          "network_id": "NET_2030_131_CA101"
-        },
-        "run_id": "interactive-0cdfcadd2ad9b6e6"
-      },
-      "4": {
-        "ok": true,
-        "reopen_verified": true,
-        "context_fingerprint": "0cdfcadd2ad9b6e6",
-        "manifest_path": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\commits\\20260929T083325491433-76b8e9d43aac-spotload_4.json",
-        "action": "spotload_4",
-        "commit_mode": "study",
-        "context_identity": {
-          "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
-          "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
-          "feeder_id": "CA101",
-          "network_id": "NET_2030_131_CA101"
-        },
-        "run_id": "interactive-0cdfcadd2ad9b6e6"
-      },
-      "5.1": {
-        "feeder_id": "CA101",
-        "network_id": "NET_2030_131_CA101",
-        "module": "LoadFlow",
-        "manual": "docs/cymdist/BalLoadFlowInd.txt (IL917123ES)",
-        "scenario": "proyectado",
-        "status": "error",
-        "note": "Cada boton es independiente: situacional desconecta cargas §4; proyectado las conecta. No redistribuir tras SpotLoad.",
-        "context_identity": {
-          "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
-          "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
-          "feeder_id": "CA101",
-          "network_id": "NET_2030_131_CA101"
-        },
-        "context_fingerprint": "0cdfcadd2ad9b6e6",
-        "run_id": "interactive-0cdfcadd2ad9b6e6",
-        "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
-        "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
-        "engine": "COM",
-        "topo": {
-          "KWTOT": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "KVARTOT": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "KWLOSS": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "KVARLOSS": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "Vpu": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "VpuA": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "VpuB": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "VpuC": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "VLN": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "VLL": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "I": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "Ia": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "Ib": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))",
-          "Ic": "ERR:(-2147467259, 'Error no especificado', ('Error : Invalid Simulation.', 'Cymdist.LoadFlow.1', None, 0, None))"
-        },
-        "source_node": "NODE_2030_131_CA101",
-        "saved": true,
-        "warnings": [],
-        "warn_file": "data\\output\\feeders\\CA101\\lf_com_warn.txt",
-        "cymdist_open": true,
-        "calculation_method": null,
-        "log_errors": [],
-        "com_elapsed_sec": 14.0,
-        "attach_mode": "create_or_reuse",
-        "new_loads_scenario": [
-          {
-            "LoadID": "UAT_RECYM_SPOT",
-            "P_kW": 100.0,
-            "Q_kvar": 32.86841051788632,
-            "role": "proyectado",
-            "Fuente": "report_csv",
-            "connected": true,
-            "ConnectionStatus": "Connected"
-          }
-        ],
-        "n_new_loads": 1,
-        "new_loads_connected": true,
-        "lf_warnings_fix": {
-          "ok": true,
-          "skipped": true,
-          "reason": "prefer_COM"
-        },
-        "error": "LoadFlow COM sin solucion valida (KWTOT invalido). method=None ret=0. ",
-        "ayuda": "LoadFlow fallo. Por defecto RECYM usa motor COM (Cymdist.Application) como en §3.3. Verifique database_mdb, study_path y que no haya otra sesion Cyme bloqueando el estudio. Si forzo CYMPY, el worker puede caer con Access Violation 0xC0000005.",
-        "saved_to": "D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\demand\\loadflow_result.json"
-      }
-    }
-  },
-  "notes": [
-    "force captura CYMDIST: LF situacional mas nuevo que situacional_tension.png",
-    "captura CYMDIST nativa: VoltageLevel/LoadingLevel situacional+proyectado (force=True)",
-    "cymdist captures: 0 ok, err: 2",
-    "capture: situacional LF status=error err=LoadFlow COM sin solucion valida (KWTOT invalido). method=None ret=0.  — sin convergencia no se captura coloreo",
-    "capture: proyectado LF status=error err=LoadFlow COM sin solucion valida (KWTOT invalido). method=None ret=0.  — sin convergencia no se captura coloreo",
-    "SIN suplir imagenes: faltan capturas CYMDIST live: situacional_tension.png, situacional_cargabilidad.png, proyectado_tension.png, proyectado_cargabilidad.png",
-    "charts: omitidos — informe solo con vistas CYMDIST nativas",
-    "topologia.png mapa carga nueva OK"
-  ],
-  "aviso_imagenes": "Solo capturas nativas CYMDIST. Modo completo. Directorio: D:\\Proyectos\\ELDICA\\RECYM\\data\\output\\feeders\\CA101\\informe_images.",
-  "msg": "Informe incompleto para entrega. Falta: loadflow_situacional, loadflow_proyectado, situacional_tension.png (falta captura CYMDIST), situacional_cargabilidad.png (falta captura CYMDIST), proyectado_tension.png (falta captura CYMDIST), proyectado_cargabilidad.png (falta captura CYMDIST). Requiere: PDF OCR §5 (cliente+potencia), LoadFlow situacional + proyectado, y 4 capturas CYMDIST live (VoltageLevel/LoadingLevel) — sin imagenes inventadas.",
+  "filled_at": "2026-09-29T15:19:42",
   "context_identity": {
     "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
     "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
@@ -358,6 +129,7 @@
   "run_id": "interactive-0cdfcadd2ad9b6e6",
   "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
   "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
+  "feeder_id": "CA101",
   "network_id": "NET_2030_131_CA101",
   "audit": {
     "context_identity": {

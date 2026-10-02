@@ -52,6 +52,48 @@ def _match_network(network_ids, feeder_short):
     return None
 
 
+def complete_transfer_network_ids(network_ids, pair, resolve_network=None):
+    """Garantiza una red por cada alimentador del par (origen y receptor).
+
+    La SPA solo conoce la red primaria del contexto §1; la red del receptor se
+    resuelve desde su configuración para que el LF no quede sin destino.
+    """
+    nets = [str(n).strip() for n in (network_ids or []) if str(n).strip()]
+    unresolved = []
+    for short in pair or []:
+        if _match_network(nets, short):
+            continue
+        net = None
+        if resolve_network is not None:
+            try:
+                net = resolve_network(short)
+            except Exception:
+                net = None
+        net = str(net or "").strip()
+        if net and _match_network([net], short):
+            nets.append(net)
+        else:
+            unresolved.append(short)
+    return nets, unresolved
+
+
+def _resolve_feeder_network(feeder_short):
+    s_peer = load_settings(feeder_id=feeder_short, synthesize=True, persist_synth=False)
+    return (s_peer or {}).get("network_id")
+
+
+def transfer_maneuver_from_settings(settings):
+    """Maniobra declarada por el usuario en §2/§5 (solo registro, no conmuta)."""
+    s = settings or {}
+    maneuver = {
+        "node_id": str(s.get("transfer_node_id") or "").strip(),
+        "sectionalizer_id": str(s.get("transfer_sectionalizer_id") or "").strip(),
+        "tie_switch_id": str(s.get("transfer_tie_switch_id") or "").strip(),
+    }
+    maneuver["complete"] = all(maneuver.values())
+    return maneuver
+
+
 def _vmin_vmax_from_lf(result):
     """Extrae Vmin/Vmax pu de un dict de loadflow (best-effort)."""
     if not isinstance(result, dict):
@@ -142,12 +184,19 @@ def _run_lf_one(adapter, network_id, settings):
         except Exception:
             pass
 
+    def _count(key):
+        value = topo.get(key)
+        return value if isinstance(value, int) else None
+
     return {
         "ok": bool(com.get("ok")),
         "error": None if com.get("ok") else (com.get("error") or com.get("msg")),
         "network_id": network_id,
         "Vmin_pu": metrics.get("Vmin_pu"),
         "Vmax_pu": metrics.get("Vmax_pu"),
+        "low_voltage_count": _count("LOW_VOLTAGE_COUNT"),
+        "high_voltage_count": _count("HIGH_VOLTAGE_COUNT"),
+        "voltage_flag_pct": topo.get("VOLTAGE_FLAG_PCT"),
         "engine": "COM",
         "P_kW": p_kw,
         "Q_kvar": q_kvar,
@@ -186,6 +235,9 @@ def evaluate_transfer_voltage_quality(
             nets = []
     if not nets and s.get("network_id"):
         nets = [str(s.get("network_id"))]
+    nets, unresolved = complete_transfer_network_ids(
+        nets, pair, resolve_network=_resolve_feeder_network
+    )
 
     src_short, dst_short = (pair + [None, None])[:2]
     src_net = _match_network(nets, src_short)
@@ -217,6 +269,19 @@ def evaluate_transfer_voltage_quality(
                 "type": "overvoltage",
                 "Vmax_pu": vmax,
                 "limit_pu": float(vmax_limit_pu),
+            })
+        # Evidencia CYME por equipos fuera de banda (cuando no hay Vmin/Vmax).
+        if vmin is None and lf.get("low_voltage_count"):
+            violations.append({
+                "type": "undervoltage",
+                "equipment_count": lf["low_voltage_count"],
+                "flag_pct": lf.get("voltage_flag_pct"),
+            })
+        if vmax is None and lf.get("high_voltage_count"):
+            violations.append({
+                "type": "overvoltage",
+                "equipment_count": lf["high_voltage_count"],
+                "flag_pct": lf.get("voltage_flag_pct"),
             })
         lf["violations"] = violations
         lf["has_voltage_quality_issue"] = bool(violations)
@@ -265,11 +330,44 @@ def evaluate_transfer_voltage_quality(
             "destination": dst_short,
         }
 
+    # Fail-closed: sin LF válido en ambas redes la evaluación no es concluyente.
+    errors = []
+    if len(pair) < 2:
+        errors.append("par de transferencia incompleto")
+    for label, name in (("source", "origen"), ("destination", "receptor")):
+        row = baseline.get(label) or {}
+        if not row.get("ok"):
+            errors.append(
+                "%s %s: %s"
+                % (name, row.get("feeder_short") or "?", row.get("error") or "LoadFlow sin resultado")
+            )
+        elif (
+            (row.get("Vmin_pu") is None or row.get("Vmax_pu") is None)
+            and (row.get("low_voltage_count") is None or row.get("high_voltage_count") is None)
+        ):
+            # Sin evidencia de tensión no se puede afirmar que no hay violación.
+            errors.append(
+                "%s %s: LoadFlow sin evidencia de tensión (Vmin/Vmax ni equipos fuera de banda)"
+                % (name, row.get("feeder_short") or "?")
+            )
+    if unresolved:
+        errors.append("redes sin resolver: %s" % ", ".join(unresolved))
+    maneuver = transfer_maneuver_from_settings(s)
+
     out = {
-        "ok": True,
+        "ok": not errors,
+        "error": "; ".join(errors) if errors else None,
+        "msg": (
+            "Transferencia %s → %s evaluada · %s"
+            % (src_short, dst_short, recommendation.get("reason"))
+            if not errors
+            else "Transferencia no concluyente · " + "; ".join(errors)
+        ),
         "feeder_id": s.get("feeder_id"),
         "study_path": s.get("study_path"),
         "transfer_pair": pair,
+        "network_ids": nets,
+        "maneuver": maneuver,
         "source_network_id": src_net,
         "destination_network_id": dst_net,
         "limits_pu": {"Vmin": float(vmin_limit_pu), "Vmax": float(vmax_limit_pu)},

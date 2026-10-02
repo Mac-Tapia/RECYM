@@ -81,7 +81,7 @@ export function Step7Suite() {
         </div>
       </div>
       <div className="actions">
-        <button type="button" disabled={busy}
+        <button type="button" disabled={busy || !hasCtx}
           onClick={() => call("/api/suite/nuevo_alimentador", "Nuevo feeder", {
             feeder_id: nfId, name: nfName, network_id: nfNet, voltage_kv: Number(nfKv),
           })}>

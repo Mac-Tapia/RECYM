@@ -611,9 +611,9 @@
       "section": "LoadFlow",
       "message": "La potencia aparente es superior a la capacidad conectada en %s %s. Favor de verificar.",
       "action": "raise_connected_kva",
-      "auto_apply": true,
+      "auto_apply": false,
       "tipo_default": "Load",
-      "fix_note": "Subir ConnectedKVA >= S aparente",
+      "fix_note": "Revisar capacidad conectada real < S aparente (no se infla el valor: la placa real se corrige en campo/BD)",
       "source": "cymdist.cymsg [LoadFlow]"
     },
     "480010": {

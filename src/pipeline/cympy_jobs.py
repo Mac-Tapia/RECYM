@@ -161,7 +161,11 @@ def job_cabecera(payload):
 
 
 def job_loadallocation_com(payload):
-    """LoadAllocation vía COM Cyme.exe en proceso aislado (evita cuelgue UI)."""
+    """LoadAllocation vía COM Cyme.exe en proceso aislado (evita cuelgue UI).
+
+    Metodo fijo = Consumo (kWh): no se lee de payload, para que ningun caller
+    pueda cambiar silenciosamente como se reparte la carga del alimentador.
+    """
     from core.feeder_context import load_settings
     from core.cymdist_com import run_loadallocation_com
 
@@ -177,7 +181,7 @@ def job_loadallocation_com(payload):
         network_id=payload.get("network_id") or s.get("network_id"),
         p_kw=payload.get("P_kW"),
         q_kvar=payload.get("Q_kvar"),
-        method=payload.get("method") or "KWH",
+        method="KWH",
         kill_existing=False,
         leave_open=True,
         disconnect_load_ids=payload.get("disconnect_load_ids") or [],
@@ -319,6 +323,7 @@ def job_max_demand_multi(payload):
         s,
         network_ids=payload.get("network_ids"),
         medicion_file=payload.get("medicion_file"),
+        medicion_files=payload.get("medicion_files") or None,
         write_cymdist=payload.get("write_cymdist", True) is not False,
         save=payload.get("save", True) is not False,
         use_com=bool(payload.get("use_com")),
@@ -334,7 +339,8 @@ def job_transfer_voltage_quality(payload):
     feeder = (payload.get("feeder_id") or "").strip() or None
     s = load_settings(feeder_id=feeder, synthesize=True)
     for k in ("study_path", "database_mdb", "network_id", "ui_study_path",
-              "database_connection_name", "network_ids", "transfer_pair"):
+              "database_connection_name", "network_ids", "transfer_pair",
+              "transfer_node_id", "transfer_sectionalizer_id", "transfer_tie_switch_id"):
         if payload.get(k):
             s[k] = payload[k]
     sp = s.get("study_path") or ""

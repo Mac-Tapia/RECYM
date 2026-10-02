@@ -21,48 +21,62 @@ def _safe_get(dev, field):
         return ""
 
 
+def inventory_row(load, network_id):
+    """Fila de inventory/loads.json desde una lectura trifásica de carga."""
+    from pipeline.distribution_report import pf_of, sed_from_load_id
+
+    kw, kvar = load["kW"], load["kvar"]
+    return {
+        "LoadID": load["LoadID"],
+        "SED": sed_from_load_id(load["LoadID"]),
+        "Tipo": load.get("Tipo") or "SpotLoad",
+        "SectionID": load.get("SectionID") or "",
+        "kW": "%.3f" % kw,
+        "kvar": "%.3f" % kvar,
+        "kVA": round((kw ** 2 + kvar ** 2) ** 0.5, 3),
+        "FP": round(pf_of(kw, kvar), 4) if (kw or kvar) else None,
+        "kWh": round(load.get("kWh") or 0.0, 3),
+        "kVA_instalado": round(load.get("kVA_instalado") or 0.0, 3),
+        "Locked": bool(load.get("locked")),
+        "Connected": bool(load.get("connected", True)),
+        "n_values": load.get("n_values") or 1,
+        "LoadValueType": load.get("LoadValueType") or "",
+        "ZoneID": load.get("ZoneID") or "",
+        "Label": "%s (%s)" % (load["LoadID"], load.get("Tipo") or "SpotLoad"),
+        "NetworkID": str(network_id or ""),
+    }
+
+
 def collect_loads(cympy, network_id):
-    rows = []
-    for dtype, label in (
-        (cympy.enums.DeviceType.SpotLoad, "SpotLoad"),
-        (cympy.enums.DeviceType.DistributedLoad, "DistributedLoad"),
-    ):
-        try:
-            devices = list(cympy.study.ListDevices(dtype, network_id))
-        except Exception:
-            devices = []
-        for d in devices:
-            load_id = getattr(d, "DeviceNumber", None) or _safe_get(d, "DeviceNumber")
-            kw = ""
-            kvar = ""
-            base = "CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[0].LoadValue"
-            for p_path, q_path in (
-                (base + ".KW", base + ".KVAR"),
-                (base + ".KW", base + ".PF"),
-                (base + ".KVA", base + ".PF"),
-            ):
-                try:
-                    kw = d.GetValue(p_path)
-                    kvar = d.GetValue(q_path)
-                    break
-                except Exception:
-                    pass
-            try:
-                vtype = d.GetValue(base + ".GetType()")
-            except Exception:
-                vtype = ""
-            rows.append({
-                "LoadID": str(load_id),
-                "Tipo": label,
-                "SectionID": str(getattr(d, "SectionID", "") or ""),
-                "kW": str(kw),
-                "kvar": str(kvar),
-                "LoadValueType": str(vtype),
-                "ZoneID": str(_safe_get(d, "ZoneID") or ""),
-                "Label": "%s (%s)" % (load_id, label),
-                "NetworkID": str(network_id or ""),
-            })
-    return rows
+    """Inventario trifásico de cargas (SpotLoad + DistributedLoad) de la red.
+
+    Suma las fases de cada carga y calcula kvar desde FP cuando el valor es
+    KW+PF (antes se leía solo la fase [0] y el PF quedaba en «kvar»).
+    kW/kvar se guardan como texto numérico para compatibilidad con los
+    consumidores existentes; los campos nuevos permiten exportar a DIgSILENT.
+    """
+    from pipeline.distribution_report import read_feeder_loads
+
+    return [
+        inventory_row(load, network_id)
+        for load in read_feeder_loads(cympy, network_id, ("SpotLoad", "DistributedLoad"))
+    ]
+
+
+def write_inventory_json(path, feeder_id, network_id, rows):
+    """Escribe inventory/loads.json sin sintetizar config de alimentador."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {
+        "feeder_id": feeder_id,
+        "network_id": network_id,
+        "n_loads": len(rows or []),
+        "timestamp": ts(),
+        "phase_mode": "three_phase_sum",
+        "loads": rows or [],
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+    return path
 
 
 def feeder_id_from_network(network_id):

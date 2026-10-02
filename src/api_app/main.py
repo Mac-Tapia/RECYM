@@ -39,6 +39,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.wsgi import WSGIMiddleware
 
@@ -46,6 +47,7 @@ from api_app.jobs import router as jobs_router
 from api_app.routers.tablero import router as tablero_router
 from api_app.routers.campaign import router as campaign_router
 from api_app.routers.context import router as context_router
+from api_app.routers.reports import router as reports_router
 from api_app.security import (
     API_KEY_COOKIE,
     auth_enabled,
@@ -122,6 +124,7 @@ app.include_router(jobs_router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(tablero_router, prefix="/api", tags=["tablero"])
 app.include_router(campaign_router)
 app.include_router(context_router, prefix="/api", tags=["contexto"])
+app.include_router(reports_router, prefix="/api", tags=["reportes"])
 
 
 @app.on_event("startup")
@@ -274,9 +277,13 @@ async def bridge_flask_api(path: str, request: Request):
     def start_response(status, headers, exc_info=None):
         status_headers[:] = [status, headers]
 
+    def _call_flask():
+        return b"".join(flask_app(environ, start_response))
+
     try:
-        result = flask_app(environ, start_response)
-        raw = b"".join(result)
+        # Flask/CymPy es bloqueante: fuera del event loop para no congelar
+        # SSE de jobs, health ni el resto de la SPA mientras dura la llamada.
+        raw = await run_in_threadpool(_call_flask)
     except Exception as ex:
         import traceback as _tb
 

@@ -1,5 +1,5 @@
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { useEffect } from "react";
+import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { useEffect, useState, type ComponentType } from "react";
 import { useFeeder } from "./state/feeder";
 import { api } from "./api/client";
 import { Step1Contexto } from "./pages/Step1Contexto";
@@ -20,8 +20,26 @@ const STEPS = [
   { n: 7, path: "/7", title: "Opt + Suite", sub: "Herramientas pipeline" },
 ];
 
+const STEP_PAGES: Record<string, ComponentType> = {
+  "/1": Step1Contexto,
+  "/2": Step2CalidadTablero,
+  "/3": Step3Clientes,
+  "/4": Step4SpotLoad,
+  "/5": Step5Flujos,
+  "/6": Step6Informes,
+  "/7": Step7Suite,
+};
+
 export function App() {
   const { feeder, studyPath, databaseMdb, setContext } = useFeeder();
+  const location = useLocation();
+  const [visited, setVisited] = useState<Set<string>>(() => new Set([location.pathname]));
+  useEffect(() => {
+    if (!STEP_PAGES[location.pathname]) return;
+    setVisited((prev) =>
+      prev.has(location.pathname) ? prev : new Set(prev).add(location.pathname)
+    );
+  }, [location.pathname]);
   const studyFile = (studyPath || "").split(/[/\\]/).pop() || "";
   const dbFile = (databaseMdb || "").split(/[/\\]/).pop() || "";
 
@@ -145,14 +163,19 @@ export function App() {
       <main className="main">
         <Routes>
           <Route path="/" element={<Navigate to="/1" replace />} />
-          <Route path="/1" element={<Step1Contexto />} />
-          <Route path="/2" element={<Step2CalidadTablero />} />
-          <Route path="/3" element={<Step3Clientes />} />
-          <Route path="/4" element={<Step4SpotLoad />} />
-          <Route path="/5" element={<Step5Flujos />} />
-          <Route path="/6" element={<Step6Informes />} />
-          <Route path="/7" element={<Step7Suite />} />
+          <Route path="*" element={null} />
         </Routes>
+        {/* Cada módulo se monta al visitarlo y queda vivo (oculto) al cambiar de
+            paso: conserva selecciones y resultados hasta Actualizar/Restablecer,
+            que recargan la página. */}
+        {STEPS.filter((s) => visited.has(s.path)).map((s) => {
+          const Page = STEP_PAGES[s.path];
+          return (
+            <div key={s.path} hidden={location.pathname !== s.path}>
+              <Page />
+            </div>
+          );
+        })}
       </main>
     </div>
   );

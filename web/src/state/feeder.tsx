@@ -12,6 +12,7 @@ type Ctx = {
   inputErrors: string[];
   studyMode: "single" | "transfer";
   transferPeer: string;
+  transferPeerNetwork: string;
   scenarioId: string;
   transferNode: string;
   transferSectionalizer: string;
@@ -27,6 +28,7 @@ type Ctx = {
     inputErrors?: string[];
     studyMode?: "single" | "transfer";
     transferPeer?: string;
+    transferPeerNetwork?: string;
     scenarioId?: string;
     transferNode?: string;
     transferSectionalizer?: string;
@@ -47,6 +49,7 @@ export function FeederProvider({ children }: { children: ReactNode }) {
   const [inputErrors, setInputErrors] = useState<string[]>([]);
   const [studyMode, setStudyMode] = useState<"single" | "transfer">("single");
   const [transferPeer, setTransferPeer] = useState("");
+  const [transferPeerNetwork, setTransferPeerNetwork] = useState("");
   const [scenarioId, setScenarioId] = useState("");
   const [transferNode, setTransferNode] = useState("");
   const [transferSectionalizer, setTransferSectionalizer] = useState("");
@@ -63,6 +66,7 @@ export function FeederProvider({ children }: { children: ReactNode }) {
       inputErrors,
       studyMode,
       transferPeer,
+      transferPeerNetwork,
       scenarioId,
       transferNode,
       transferSectionalizer,
@@ -108,6 +112,9 @@ export function FeederProvider({ children }: { children: ReactNode }) {
         if (opts.inputErrors !== undefined) setInputErrors(opts.inputErrors);
         if (opts.studyMode !== undefined) setStudyMode(opts.studyMode);
         if (opts.transferPeer !== undefined) setTransferPeer(opts.transferPeer || "");
+        if (opts.transferPeerNetwork !== undefined) {
+          setTransferPeerNetwork(opts.transferPeerNetwork || "");
+        }
         if (opts.scenarioId !== undefined) setScenarioId(opts.scenarioId || "");
         if (opts.transferNode !== undefined) setTransferNode(opts.transferNode || "");
         if (opts.transferSectionalizer !== undefined) setTransferSectionalizer(opts.transferSectionalizer || "");
@@ -123,6 +130,10 @@ export function FeederProvider({ children }: { children: ReactNode }) {
               : identityChanged
                 ? ""
                 : undefined,
+          // Escenario/par de transferencia deben viajar a jobs y rutas (§2–§6).
+          scenarioId: opts.scenarioId,
+          transferPeer: opts.transferPeer,
+          transferPeerNetwork: opts.transferPeerNetwork,
         });
       },
     }),
@@ -137,6 +148,7 @@ export function FeederProvider({ children }: { children: ReactNode }) {
       inputErrors,
       studyMode,
       transferPeer,
+      transferPeerNetwork,
       scenarioId,
       transferNode,
       transferSectionalizer,

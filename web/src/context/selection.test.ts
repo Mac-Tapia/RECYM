@@ -3,6 +3,7 @@ import {
   acceptDiscoveryResult,
   applyPickerResult,
   beginDatabaseSelection,
+  canHydratePersistedContext,
   chooseStudyForFeeder,
   resolveAppliedStudy,
   selectFeeder,
@@ -23,6 +24,65 @@ const initial: SelectionState = {
 };
 
 describe("independent CYMDIST selection", () => {
+  it("does_not_replace_a_pending_local_feeder_with_a_different_persisted_context", () => {
+    expect(
+      canHydratePersistedContext(
+        {
+          feeder: "CA101",
+          network: "NET_2030_131_CA101",
+          studyPath: "D:\\projects\\CA101.sxst",
+          databaseMdb: "D:\\bases\\selected.mdb",
+        },
+        {
+          feeder: "TM104",
+          network: "NET_2030_173_TM104",
+          studyPath: "D:\\projects\\TM104.zxst",
+          databaseMdb: "D:\\bases\\selected.mdb",
+        }
+      )
+    ).toBe(false);
+  });
+
+  it("hydrates_an_empty_client_context_and_accepts_case_or_slash_variants", () => {
+    const persisted = {
+      feeder: "CA101",
+      network: "NET_2030_131_CA101",
+      studyPath: "D:\\projects\\CA101.sxst",
+      databaseMdb: "D:\\bases\\selected.mdb",
+    };
+    expect(canHydratePersistedContext({}, persisted)).toBe(true);
+    expect(
+      canHydratePersistedContext(
+        {
+          feeder: "ca101",
+          network: "net_2030_131_ca101",
+          studyPath: "d:/PROJECTS/ca101.sxst",
+          databaseMdb: "d:/BASES/selected.mdb",
+        },
+        persisted
+      )
+    ).toBe(true);
+  });
+
+  it("rejects_same_feeder_from_a_different_mdb", () => {
+    expect(
+      canHydratePersistedContext(
+        {
+          feeder: "CA101",
+          network: "NET_2030_131_CA101",
+          studyPath: "D:\\projects\\CA101.sxst",
+          databaseMdb: "D:\\bases\\first.mdb",
+        },
+        {
+          feeder: "CA101",
+          network: "NET_2030_131_CA101",
+          studyPath: "D:\\projects\\CA101.sxst",
+          databaseMdb: "D:\\other\\first.mdb",
+        }
+      )
+    ).toBe(false);
+  });
+
   it("changing_database_clears_study_and_feeder", () => {
     const next = beginDatabaseSelection(
       initial,
@@ -182,5 +242,20 @@ describe("study returned by 1.1", () => {
         false
       )
     ).toThrow(/STUDY_IDENTITY_MISMATCH/);
+  });
+});
+
+describe("transfer study pair", () => {
+  it("offers the studies of both feeders (PE104 lives in CA101.sxst)", () => {
+    const studies = [
+      { path: "D:\p\CA101.sxst", feeder_id: "CA101", ext: ".sxst" },
+      { path: "D:\p\TM105.zxst", feeder_id: "TM105", ext: ".zxst" },
+      { path: "D:\p\ELD.zxst", feeder_id: "ELD", ext: ".zxst" },
+    ];
+    const paths = selectionModule
+      .studiesForPair(studies, "PE104", "CA101")
+      .map((s) => (typeof s === "string" ? s : s.path));
+    expect(paths).toEqual(["D:\p\ELD.zxst", "D:\p\CA101.sxst"]);
+    expect(selectionModule.studiesForFeeder(studies, "PE104").length).toBe(1);
   });
 });

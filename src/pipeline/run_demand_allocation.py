@@ -97,6 +97,78 @@ def _demand_template_defaults(settings=None):
     }
 
 
+ALLOCATION_TEMPLATE_32 = {
+    "LoadModel": "DEFAULT",
+    "Method": "KWHMethod",
+    "Method_UI": "Consumo (kWh)",
+    "LoadFlowParamConfigID": "DEFAULT",
+    "DemandType": "FeederDemand",
+    "Demand_Connected": False,
+    "Demand_Total": False,
+    "Demand_Unit": "kW-kvar",
+    "Downstream_Unit": "Consumo (kWh)",
+}
+
+
+def apply_allocation_template_32(cympy, network_id):
+    """Deja el diálogo «Análisis de distribución de carga» listo tras §3.2.
+
+    Modelo DEFAULT · método Consumo (kWh) · parámetros de flujo DEFAULT ·
+    demanda del alimentador sin «Conectado» (A/B/C = 0) · aguas abajo en kWh.
+    §3.3 escribe después la demanda de cabecera y ejecuta el módulo.
+    """
+    from cympy.properties import properties as props
+    from cympy.properties.CymeEnums import (
+        _CymdistDataEnum_DemandTypeEnum as DemandTypeEnum,
+        _CymdistDataEnum_LoadAllocationMethodEnum as MethodEnum,
+    )
+
+    net = str(network_id or "").strip()
+    if not net:
+        raise RuntimeError("Falta network_id para la plantilla de distribución §3.2")
+    tmpl = dict(ALLOCATION_TEMPLATE_32)
+    out = {"network_id": net, "template": tmpl, "errors": []}
+
+    try:
+        cympy.study.SelectLoadModel(tmpl["LoadModel"])
+    except Exception as ex:
+        out["errors"].append("SelectLoadModel: %s" % ex)
+
+    lap = props.LoadAllocation()
+    la = lap._cympyObject
+    try:
+        lap.DemandType = DemandTypeEnum.FeederDemand
+        lap.Method = MethodEnum.KWHMethod
+        lap.LoadFlowParamConfigID = tmpl["LoadFlowParamConfigID"]
+    except Exception:
+        la.SetValue(tmpl["DemandType"], "DemandType")
+        la.SetValue(tmpl["Method"], "Method")
+        la.SetValue(tmpl["LoadFlowParamConfigID"], "LoadFlowParamConfigID")
+
+    meter = cympy.study.Meter()
+    meter.Connected = False
+    meter.IsTotalDemand = False
+    meter.LoadValueType = cympy.enums.LoadValueType.KW_KVAR
+    meter.DemandA = cympy.study.LoadValue(0.0, 0.0)
+    meter.DemandB = cympy.study.LoadValue(0.0, 0.0)
+    meter.DemandC = cympy.study.LoadValue(0.0, 0.0)
+    la.SetDemand(net, meter)
+
+    readback = {}
+    for key in ("Method", "LoadFlowParamConfigID", "DemandType"):
+        try:
+            readback[key] = str(la.GetValue(key))
+        except Exception as ex:
+            readback[key] = "ERR:%s" % ex
+    out["readback"] = readback
+    out["ok"] = (
+        readback.get("Method") == tmpl["Method"]
+        and readback.get("LoadFlowParamConfigID") == tmpl["LoadFlowParamConfigID"]
+    )
+    print("[3.2] plantilla distribución:", net, readback, "errores=", out["errors"])
+    return out
+
+
 def apply_network_topo_annual_losses(cympy, network_id, load_factor_pct=65.0, loss_k=0.3):
     """Escribe FdC (%) y constante k en Topo = Pérdidas anuales de la red."""
     net = str(network_id or "").strip()
@@ -1250,6 +1322,8 @@ def validate_allocation_sed_loads(adapter, network_id, fixed_rows, p_cabecera_kw
 
     fast=True: índice hash LoadID; detalle CSV solo fijos + FAIL/WARN (no 250 OK).
     """
+    from pipeline.distribution_report import sed_from_load_id
+
     fixed_ids = {}
     for r in fixed_rows or []:
         lid = str(r.get("LoadID") or r.get("LoadID_CYMDIST") or "").strip()
@@ -1334,10 +1408,22 @@ def validate_allocation_sed_loads(adapter, network_id, fixed_rows, p_cabecera_kw
                     n_zero_residual += 1
                 else:
                     detalle = "Residual distribuido"
-            elif kwh_f is None or kwh_f <= 1.0:
+            elif str(sed_from_load_id(lid) or "").upper().startswith("M"):
+                # Medidor (M...): normal sin KWH propio, su carga vive en la
+                # SED gemela SE... · nunca se marca FAIL por esto solo.
                 if kw_f is not None and abs(kw_f) < 1e-6:
                     estado = "OK"
-                    detalle = "Sin KWH → kW=0 (esperado)"
+                    detalle = "Medidor sin KWH propio → kW=0 (esperado, carga en SED gemela)"
+                else:
+                    estado = "WARN"
+                    detalle = "Medidor sin KWH pero kW=%.3f" % (kw_f or 0)
+            else:
+                # SED (SE...): si o si debe tener consumo en la BD · nunca se
+                # inventa un kW, se marca para revisar por que no llego.
+                if kw_f is not None and abs(kw_f) < 1e-6:
+                    estado = "FAIL"
+                    detalle = "SED sin Consumo(KWH) en la BD: no se le asigna carga · revisar y cargar su consumo"
+                    n_zero_residual += 1
                 else:
                     estado = "WARN"
                     detalle = "Sin KWH pero kW=%.3f" % (kw_f or 0)

@@ -93,28 +93,62 @@ def write_lf_stamp(settings, config_id="DEFAULT", notes=None, loadallocation_nat
 
 
 def ensure_loadflow_networks(cympy, network_id):
-    """Asegura que AnalysisNetworks.SelectedNetworks incluya el alimentador."""
+    """Restrict LoadFlow to the explicitly selected feeder network only."""
     from cympy.properties import properties as props
     lf = props.LoadFlow()
     an = lf.AnalysisNetworks
-    net = str(network_id)
+    net = str(network_id or "").strip()
+    if not net:
+        raise RuntimeError("Falta network_id: LoadFlow no puede seleccionar una red implícita")
+
+    selected = an.SelectedNetworks
     try:
-        current = list(an.SelectedNetworks.GetValues())
-    except Exception:
-        current = []
-    if net not in current:
+        current = [str(value) for value in selected.GetValues()]
+    except Exception as ex:
+        raise RuntimeError("No se pudo leer SelectedNetworks de CYMDIST: %s" % ex)
+
+    if current:
         try:
-            lf._cympyObject.Execute("AnalysisNetworks.SelectedNetworks.Add('%s')" % net)
+            lf._cympyObject.Execute("AnalysisNetworks.SelectedNetworks.Clear()")
         except Exception:
             try:
-                an.SelectedNetworks.Add(net)
+                selected.Clear()
             except Exception as ex:
-                print("AVISO SelectedNetworks.Add:", ex)
+                raise RuntimeError(
+                    "No se pudieron limpiar redes LoadFlow previas %s: %s"
+                    % (current, ex)
+                )
+        try:
+            current = [str(value) for value in selected.GetValues()]
+        except Exception as ex:
+            raise RuntimeError("No se pudo verificar SelectedNetworks limpio: %s" % ex)
+        if current:
+            raise RuntimeError(
+                "SelectedNetworks no quedó limpio; se cancela LoadFlow para evitar analizar redes ajenas: %s"
+                % current
+            )
+
+    try:
+        lf._cympyObject.Execute("AnalysisNetworks.SelectedNetworks.Add('%s')" % net)
+    except Exception:
+        try:
+            selected.Add(net)
+        except Exception as ex:
+            raise RuntimeError("No se pudo seleccionar LoadFlow para %s: %s" % (net, ex))
+
     try:
         lf.ActiveConfigurationID = "DEFAULT"
     except Exception:
         pass
-    return list(an.SelectedNetworks.GetValues()) if hasattr(an, "SelectedNetworks") else []
+    try:
+        final = [str(value) for value in selected.GetValues()]
+    except Exception as ex:
+        raise RuntimeError("No se pudo verificar la red LoadFlow seleccionada: %s" % ex)
+    if final != [net]:
+        raise RuntimeError(
+            "LoadFlow exige solo %s; CYMDIST reportó %s" % (net, final)
+        )
+    return final
 
 def ensure_loadflow_convergence_tolerance(cympy, voltage_tol=0.0001, power_tol=0.0001):
     """Raíz del aviso 220011: fija Voltage/PowerTolerance en TODAS las configs LF.

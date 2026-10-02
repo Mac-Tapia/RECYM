@@ -2,8 +2,8 @@
   "name": "TM105",
   "description": "Auto desde BD/estudio (sin config/feeders previa)",
   "network_id": "NET_2030_174_TM105",
-  "study_file": "ELD.zxst",
-  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\ELD.zxst",
+  "study_file": "TM105.zxst",
+  "study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\TM105.zxst",
   "voltage_ll_kv": 22.9,
   "region": "",
   "substation": "",
@@ -12,5 +12,7 @@
   "catalog_workbook": "",
   "output_dir": "",
   "notes": "Sintetizado automáticamente para diagnóstico de red BD",
-  "synthesized": true
+  "synthesized": true,
+  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\TM105.zxst",
+  "ui_study_file": "TM105.zxst"
 }

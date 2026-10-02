@@ -4,13 +4,13 @@
   "description": "Suite universal multi-alimentador CYMDIST / CymPy - Electro Dunas",
   "cyme_root": "C:\\Program Files (x86)\\CYME\\CYME",
   "python_exe": ".tools\\python37-win32\\python.exe",
-  "active_feeder": "CA101",
+  "active_feeder": "TM105",
   "active_feeder_note": "Vacío = sin fijo. El alimentador lo define §1 (estudio o catálogo BD).",
   "studies_root": "D:\\BaseDatosElectroDunas\\260919BaseDatos",
   "projects_dir": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos",
   "database_dir": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603",
   "database_mdb": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\202603\\BASE JUL25 1.mdb",
-  "database_connection_name": "BASE JUL25 1_1",
+  "database_connection_name": "BASE JUL25 1",
   "eld_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\ELD.zxst",
   "common_equipment_dir": "data\\input\\common\\equipment",
   "suministrocliente_dir": "data\\input\\common\\suministrocliente",
@@ -71,12 +71,12 @@
     "demand_allocation",
     "report"
   ],
-  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\CA101.sxst",
-  "ui_study_file": "CA101.sxst",
+  "ui_study_path": "D:\\BaseDatosElectroDunas\\260919BaseDatos\\proyectos\\TM105.zxst",
+  "ui_study_file": "TM105.zxst",
   "informe_prefer_cymdist_captures": true,
   "informe_auto_cymdist_capture": true,
   "informe_capture_open_gui": true,
   "informe_ocr_review": true,
   "informe_ocr_review_rounds": 3,
-  "active_network_id": "NET_2030_131_CA101"
+  "active_network_id": "NET_2030_174_TM105"
 }

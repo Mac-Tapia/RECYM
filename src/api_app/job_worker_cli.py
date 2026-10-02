@@ -30,6 +30,24 @@ from core.cympy_isolation import configure_worker_error_mode
 WORKER_ERROR_MODE = configure_worker_error_mode()
 
 
+def preload_app_modules():
+    """Carga el grafo de módulos de la API antes de cualquier llamada CymPy.
+
+    Mismo orden que el proceso de la API (main.py importa ui.demand_app al
+    arrancar). Si estas librerías nativas se cargan DESPUÉS de que CymPy abrió
+    su catálogo de BD, la siguiente ConnectDatabaseByName termina en Access
+    Violation (0xC0000005) — reproducido con §3.2 en el worker aislado.
+    """
+    try:
+        import ui.demand_app  # noqa: F401
+        return {"ok": True}
+    except Exception as ex:
+        return {"ok": False, "error": "%s: %s" % (type(ex).__name__, ex)}
+
+
+APP_PRELOAD = preload_app_modules()
+
+
 def write_result_and_exit(out_path, result, exit_code):
     """Persiste el resultado y termina sin ejecutar destructores nativos.
 

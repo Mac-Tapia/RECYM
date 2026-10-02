@@ -47,8 +47,19 @@ class TestContextDiscovery(unittest.TestCase):
                     return_value={},
                 ), \
                 mock.patch(
-                    "pipeline.apply_max_demand_multi.apply_max_demand_multi",
-                    return_value={"ok": True, "n_ok": 2},
+                    "core.cympy_job.run_cympy_job",
+                    return_value={
+                        "ok": True,
+                        "n_ok": 2,
+                        "extraction": {"networks": [
+                            {"network_id": "NET_CA101", "ok": True, "P_kW": 1000.0},
+                            {"network_id": "NET_CN101", "ok": True, "P_kW": 800.0},
+                        ]},
+                        "writes": [
+                            {"network_id": "NET_CA101", "ok": True},
+                            {"network_id": "NET_CN101", "ok": True},
+                        ],
+                    },
                 ) as apply_max:
             result = context.context_prepare_transfer(body)
 
@@ -56,7 +67,43 @@ class TestContextDiscovery(unittest.TestCase):
         self.assertTrue(result["prepared"])
         self.assertEqual(result["network_ids"], ["NET_CA101", "NET_CN101"])
         self.assertEqual(result["transfer_pair"], ["CA101", "CN101"])
-        self.assertEqual(apply_max.call_args[1]["network_ids"], ["NET_CA101", "NET_CN101"])
+        job_name, job_payload = apply_max.call_args[0][:2]
+        self.assertEqual(job_name, "max_demand_multi")
+        self.assertEqual(job_payload["network_ids"], ["NET_CA101", "NET_CN101"])
+        self.assertEqual(len(result["max_demand"]["networks"]), 2)
+
+    def test_prepare_transfer_fails_when_peer_not_written(self):
+        from api_app.routers import context
+
+        body = context.TransferPrepareRequest(
+            database_mdb=r"C:\redes\modelo.mdb",
+            study_path=r"C:\proyectos\estudio.zxst",
+            feeder_id="CA101",
+            network_id="NET_CA101",
+            allowed_networks=[],
+            peer_feeder_id="CN101",
+            peer_network_id="NET_CN101",
+        )
+        loaded = {"ok": True, "loaded_networks": ["NET_CA101", "NET_CN101"]}
+        with mock.patch.object(context, "context_load_transfer", return_value=loaded), \
+                mock.patch("core.feeder_context.load_settings", return_value={}), \
+                mock.patch(
+                    "core.cympy_job.run_cympy_job",
+                    return_value={
+                        "ok": True,
+                        "n_ok": 1,
+                        "extraction": {"networks": [
+                            {"network_id": "NET_CA101", "ok": True},
+                            {"network_id": "NET_CN101", "ok": False, "error": "medidor ausente"},
+                        ]},
+                        "writes": [{"network_id": "NET_CA101", "ok": True}],
+                    },
+                ):
+            result = context.context_prepare_transfer(body)
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["prepared"])
+        self.assertIn("medidor ausente", result["error"])
 
     def test_same_basename_databases_do_not_share_cache(self):
         from pipeline.model_quality_gate import list_bd_networks

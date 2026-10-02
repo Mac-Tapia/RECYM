@@ -38,11 +38,28 @@ def norm_sed(value):
     s = s.replace(" ", "")
     return s
 
+def file_period_key(name):
+    """Periodo MMAA del nombre (0726clientesImportantes, ML_1225) -> AAAAMM, o -1."""
+    base = os.path.basename(str(name or ""))
+    m = re.search(r"(?:^|[^0-9])(\d{2})(\d{2})(?=[^0-9]|$)", base)
+    if not m:
+        return -1
+    month, year = int(m.group(1)), int(m.group(2))
+    if not 1 <= month <= 12:
+        return -1
+    return (2000 + year) * 100 + month
+
+
+def sort_by_period_desc(names):
+    """Lectura más reciente primero (desempate alfabético inverso)."""
+    return sorted(names, key=lambda n: (file_period_key(n), n), reverse=True)
+
+
 def list_suministro_files(settings=None):
     d = resolve_dir(settings, "suministrocliente_dir", "data/input/common/suministrocliente")
     if not os.path.isdir(d):
         return []
-    return sorted(
+    return sort_by_period_desc(
         f for f in os.listdir(d)
         if f.lower().endswith((".xlsx", ".xlsm", ".xls")) and not f.startswith("~")
     )
@@ -51,7 +68,7 @@ def list_clientes_importantes_files(settings=None):
     d = resolve_dir(settings, "clientesimportantes_dir", "data/input/common/clientesimportantes")
     if not os.path.isdir(d):
         return []
-    return sorted(
+    return sort_by_period_desc(
         f for f in os.listdir(d)
         if f.lower().endswith((".xlsb", ".xlsx", ".xlsm")) and not f.startswith("~")
     )

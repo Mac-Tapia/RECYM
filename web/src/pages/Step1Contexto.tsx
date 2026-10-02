@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { api, runDetachedJob, runJob, type Json } from "../api/client";
+import { api, runDetachedJob, type Json } from "../api/client";
 import { SearchableSelect } from "../components/SearchableSelect";
 import { useFeeder } from "../state/feeder";
 import {
   acceptDiscoveryResult,
   beginDatabaseSelection,
-  deriveFeederReadiness,
   resolveAppliedStudy,
   selectFeeder as selectContextFeeder,
   selectStudy,
   studiesForFeeder,
+  studiesForPair,
   type SelectionState,
 } from "../context/selection";
 
@@ -872,6 +872,16 @@ export function Step1Contexto() {
     );
   }
 
+  /** Transferencia: estudios del par (origen o receptor); análisis simple: del alimentador. */
+  function allowedStudiesFor(
+    list: Array<{ path: string; feeder_id?: string } | string>
+  ): Array<{ path: string; feeder_id?: string } | string> {
+    if (studyMode === "transfer") {
+      return transferPeer ? studiesForPair(list, feederPick, transferPeer) : [];
+    }
+    return studiesForFeeder(list, feederPick);
+  }
+
   function onPickFeeder(fid: string, opts?: { extract?: boolean }) {
     setCymdistReady(false);
     setCymdistSyncNote("");
@@ -888,6 +898,15 @@ export function Step1Contexto() {
     setFeeder(fid, networkId);
     setStudy("");
     setContext({ studyPath: "" });
+    if (studyMode === "transfer" && transferPeer.toUpperCase() === String(fid).toUpperCase()) {
+      setContext({
+        transferPeer: "",
+        transferPeerNetwork: "",
+        transferNode: "",
+        transferSectionalizer: "",
+        transferTieSwitch: "",
+      });
+    }
     void syncFeederStudyCabecera({
       feederId: fid,
       studyPath: "",
@@ -901,9 +920,13 @@ export function Step1Contexto() {
       setMsg("Seleccione primero el alimentador (BD)");
       return;
     }
-    const allowedStudies = studiesForFeeder(files.studies || [], feederPick);
+    const allowedStudies = allowedStudiesFor(files.studies || []);
     if (!allowedStudies.some((item) => normPath(asPath(item)) === normPath(path))) {
-      setMsg(`El estudio seleccionado no corresponde a ${feederPick}; elija el estudio de ese alimentador o ELD.zxst`);
+      setMsg(
+        studyMode === "transfer"
+          ? `El estudio no corresponde al par ${feederPick} / ${transferPeer}; elija el estudio de uno de ellos o ELD.zxst`
+          : `El estudio seleccionado no corresponde a ${feederPick}; elija el estudio de ese alimentador o ELD.zxst`
+      );
       return;
     }
     setCymdistReady(false);
@@ -1151,23 +1174,35 @@ export function Step1Contexto() {
       setCymdistSyncNote(syncNote);
       setCymdistReady(true);
 
-      if (studyMode === "transfer" && transferPeer) {
+      if (studyMode === "transfer") {
+        const primaryId = (resolved || fid).toUpperCase();
+        if (!transferPeer) {
+          throw new Error("Estudio de transferencia: seleccione el alimentador receptor");
+        }
+        if (transferPeer.toUpperCase() === primaryId) {
+          throw new Error("El alimentador receptor debe ser distinto del origen");
+        }
         const peerRow = (files.feeders || []).find(
           (item) => String(item.feeder_id).toUpperCase() === transferPeer.toUpperCase()
         );
-        if (peerRow?.network_id) {
-          setMsg(`${syncNote} · preparando ambos alimentadores y máxima demanda…`);
-          const prepared = await prepareTransferRequest({
-            primary: resolved || fid,
-            peer: transferPeer,
-            databaseMdb: db,
-            studyPath: uiStudy || j.study_path || stPath,
-            primaryNetworkId: j.network_id || networkId,
-            peerNetworkId: peerRow.network_id,
-          });
-          if (!prepared.ok) {
-            throw new Error(prepared.error || "No se pudo preparar el alimentador receptor");
-          }
+        if (!peerRow?.network_id) {
+          throw new Error(
+            `No se encontró la red de ${transferPeer} en la BD; no se puede preparar la transferencia`
+          );
+        }
+        setMsg(`${syncNote} · preparando ambos alimentadores y máxima demanda…`);
+        const prepared = await prepareTransferRequest({
+          primary: resolved || fid,
+          peer: transferPeer,
+          databaseMdb: db,
+          studyPath: uiStudy || j.study_path || stPath,
+          primaryNetworkId: j.network_id || networkId,
+          peerNetworkId: peerRow.network_id,
+        });
+        if (!prepared.ok || !prepared.prepared) {
+          throw new Error(
+            prepared.error || prepared.msg || "No se pudo preparar el alimentador receptor"
+          );
         }
       }
 
@@ -1228,6 +1263,8 @@ export function Step1Contexto() {
           { feeder_id: input.peer, network_id: input.peerNetworkId },
         ],
         medicion_file: medicionFile || undefined,
+        // El receptor usa su propio Excel de cabecera, nunca el del origen.
+        peer_medicion_file: transferPeerFile || undefined,
       }),
       timeoutMs: 900000,
     });
@@ -1236,6 +1273,7 @@ export function Step1Contexto() {
       setContext({
         studyMode: "transfer",
         transferPeer: input.peer,
+        transferPeerNetwork: input.peerNetworkId,
         scenarioId: scenarioIdFor("transfer", input.primary, input.peer),
       });
     }
@@ -1280,40 +1318,6 @@ export function Step1Contexto() {
     } catch (e) {
       setTransferPeerCabecera(null);
       setMsg(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function runContextSuite(action: string, label: string, payload: Json = {}) {
-    if (action === "suite_conexion" && (!cymdistReady || !contextFingerprint)) {
-      const message = "Complete 1.1 correctamente; falta la huella del contexto para probar CYMDIST";
-      setContextSuiteMsg(message);
-      setMsg(message);
-      return;
-    }
-    if (!db || !study) {
-      const message = "Seleccione MDB y estudio antes de ejecutar esta herramienta";
-      setContextSuiteMsg(message);
-      setMsg(message);
-      return;
-    }
-    setBusy(true);
-    setContextSuiteMsg(`${label}…`);
-    setMsg(`${label}…`);
-    try {
-      const result = await runJob(action, payload, (state) => {
-        const message = String(state.message || label);
-        setContextSuiteMsg(message);
-        setMsg(message);
-      });
-      const message = String(result.msg || (result.ok ? "OK" : result.error) || label);
-      setContextSuiteMsg(message);
-      setMsg(message);
-    } catch (e) {
-      const message = String(e);
-      setContextSuiteMsg(message);
-      setMsg(message);
     } finally {
       setBusy(false);
     }
@@ -1460,7 +1464,6 @@ export function Step1Contexto() {
   const selectedFeeder = feeders.find(
     (f) => String(f.feeder_id).toUpperCase() === (feederPick || feeder).toUpperCase()
   );
-  const selectedReadiness = deriveFeederReadiness(selectedFeeder, cymdistReady);
   const showPhases = Boolean(vLl);
 
   const dbOptions = dbs.map((d) => {
@@ -1485,7 +1488,7 @@ export function Step1Contexto() {
     searchText: `${a.feeder_id} ${a.feeder_raw || ""} ${a.medidor || ""} ${a.siglas || ""}`,
   }));
   // No ofrecer estudios de otro alimentador; ELD queda como estudio compartido.
-  const studyOptions = studiesForFeeder(studies, feederPick)
+  const studyOptions = allowedStudiesFor(studies)
     .map((s) => {
       const p = asPath(s);
       return {
@@ -1504,13 +1507,23 @@ export function Step1Contexto() {
   return (
     <section className="panel">
       <h2>1 · Contexto + cabecera</h2>
-      <p className="muted">
-        1) Elija la <b>base .mdb</b> y pulse <b>Cargar alimentadores</b>. 2) Seleccione
-        el <b>Alimentador (BD)</b>. 3) Seleccione manualmente un estudio existente o
-        pulse <b>Crear estudio para alimentador</b> para guardar uno dedicado. 4) Pulse{" "}
-        <b>1.1</b> para verificar y activar el estudio; luego cargue mediciones y
-        pulse <b>1.4</b>.
-      </p>
+      {studyMode === "transfer" ? (
+        <p className="muted">
+          Transferencia: 1) <b>Tipo de estudio</b> = transferencia. 2) Elija la{" "}
+          <b>base .mdb</b> y pulse <b>Cargar alimentadores</b>. 3) <b>Alimentador 1</b>{" "}
+          (origen) y <b>Alimentador 2</b> (receptor). 4) <b>Estudio</b> del par. 5) Pulse{" "}
+          <b>1.1</b>: carga ambas redes con su máxima demanda. 6) Revise la{" "}
+          <b>cabecera</b> de cada uno y pulse <b>1.4</b>. Luego §2 → §7.
+        </p>
+      ) : (
+        <p className="muted">
+          1) Elija la <b>base .mdb</b> y pulse <b>Cargar alimentadores</b>. 2) Seleccione
+          el <b>Alimentador (BD)</b>. 3) Seleccione manualmente un estudio existente o
+          pulse <b>Crear estudio para alimentador</b> para guardar uno dedicado. 4) Pulse{" "}
+          <b>1.1</b> para verificar y activar el estudio; luego cargue mediciones y
+          pulse <b>1.4</b>.
+        </p>
+      )}
 
       <div className="grid context-grid">
         <div>
@@ -1523,6 +1536,10 @@ export function Step1Contexto() {
               setContext({
                 studyMode: value,
                 transferPeer: value === "single" ? "" : transferPeer,
+                transferPeerNetwork: "",
+                transferNode: "",
+                transferSectionalizer: "",
+                transferTieSwitch: "",
                 scenarioId: value === "single"
                   ? scenarioIdFor(value, feederPick || feeder)
                   : scenarioIdFor(value, feederPick || feeder, transferPeer),
@@ -1591,6 +1608,37 @@ export function Step1Contexto() {
             onChange={(v) => onPickFeeder(v, { extract: true })}
           />
         </div>
+        {studyMode === "transfer" && (
+          <div>
+            <label>Alimentador 2 (receptor)</label>
+            <SearchableSelect
+              value={transferPeer}
+              options={feederOptions.filter(
+                (option) => option.value.toUpperCase() !== (feederPick || feeder).toUpperCase()
+              )}
+              disabled={busy || !feederPick}
+              placeholder={feederPick ? "Seleccionar alimentador receptor…" : "Primero elija el alimentador 1…"}
+              emptyLabel="— elegir —"
+              onChange={(value) => {
+                setContext({
+                  transferPeer: value,
+                  transferPeerNetwork: "",
+                  transferNode: "",
+                  transferSectionalizer: "",
+                  transferTieSwitch: "",
+                  scenarioId: scenarioIdFor("transfer", feederPick || feeder, value),
+                  studyPath: "",
+                });
+                setStudy("");
+                setCymdistReady(false);
+                void extractTransferPeerCabecera(value);
+              }}
+            />
+            <p className="muted" style={{ marginTop: 5, fontSize: 12 }}>
+              Después elija el estudio del par; al confirmar 1.1 se cargan en CYMDIST origen y receptor, cada uno con sus propios valores P/Q/S.
+            </p>
+          </div>
+        )}
         <div>
           <label>
             Estudio (.zxst/.xst)
@@ -1599,9 +1647,15 @@ export function Step1Contexto() {
           <SearchableSelect
             value={study}
             options={studyOptions}
-            disabled={busy || !feederPick}
+            disabled={busy || !feederPick || (studyMode === "transfer" && !transferPeer)}
             onChange={(v) => onPickStudy(v)}
-            placeholder={feederPick ? "Elegir estudio existente…" : "Primero seleccione alimentador…"}
+            placeholder={
+              !feederPick
+                ? "Primero seleccione alimentador…"
+                : studyMode === "transfer" && !transferPeer
+                  ? "Primero seleccione el alimentador 2…"
+                  : "Elegir estudio existente…"
+            }
             emptyLabel="—"
           />
           <button
@@ -1632,30 +1686,6 @@ export function Step1Contexto() {
             })()}
           </p>
         </div>
-        {studyMode === "transfer" && (
-          <div>
-            <label>Alimentador 2 (receptor)</label>
-            <SearchableSelect
-              value={transferPeer}
-              options={feederOptions.filter(
-                (option) => option.value.toUpperCase() !== (feederPick || feeder).toUpperCase()
-              )}
-              disabled={busy}
-              placeholder="Seleccionar alimentador de transferencia…"
-              emptyLabel="— elegir —"
-              onChange={(value) => {
-                setContext({
-                  transferPeer: value,
-                  scenarioId: scenarioIdFor("transfer", feederPick || feeder, value),
-                });
-                void extractTransferPeerCabecera(value);
-              }}
-            />
-            <p className="muted" style={{ marginTop: 5, fontSize: 12 }}>
-              Al confirmar 1.1 se cargarán en CYMDIST el origen y el receptor, cada uno con sus propios valores P/Q/S.
-            </p>
-          </div>
-        )}
       </div>
       <p className="muted" style={{ marginTop: 8 }}>
         Activo: <b>{feederPick || feeder || "—"}</b>
@@ -1674,23 +1704,25 @@ export function Step1Contexto() {
         <button
           type="button"
           className="secondary"
-          disabled={busy || !db || !feederPick || !study || selectedFeeder?.operational === false}
+          disabled={
+            busy ||
+            !db ||
+            !feederPick ||
+            (studyMode === "transfer" && !transferPeer) ||
+            !study ||
+            selectedFeeder?.operational === false
+          }
           onClick={applyContext}
           title={study ? "Verifica y activa la BD y el estudio seleccionados" : "Seleccione o cree un estudio antes de continuar"}
         >
           1.1 · Verificar y conectar en CYMDIST
         </button>
       </div>
-      {selectedFeeder && (
-        <div
-          className={`pathbox${
-            selectedReadiness.tone === "neutral" ? "" : ` ${selectedReadiness.tone}`
-          }`}
-        >
-          Contexto CYMDIST: {selectedReadiness.contextLabel}
-          {" · "}Entradas Excel: {selectedReadiness.inputsLabel}
-          {selectedFeeder.inputs_ready === false && selectedFeeder.input_errors?.length
-            ? ` · ${selectedFeeder.input_errors.map((e) => e.message || e.code).join(" · ")}`
+      {selectedFeeder?.inputs_ready === false && (
+        <div className="pathbox bad">
+          Entradas Excel con errores
+          {selectedFeeder.input_errors?.length
+            ? `: ${selectedFeeder.input_errors.map((e) => e.message || e.code).join(" · ")}`
             : ""}
         </div>
       )}
@@ -1699,23 +1731,6 @@ export function Step1Contexto() {
         <button type="button" className="ghost" disabled={busy}
           onClick={() => void callContextSuite("/api/suite/entorno", "Validar entorno")}>
           1.3a · Validar entorno
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy || !db || !study || !cymdistReady || !contextFingerprint}
-          title={cymdistReady && contextFingerprint ? "Prueba la conexión con el contexto activo" : "Complete 1.1 correctamente para generar la huella del contexto"}
-          onClick={() => void runContextSuite("suite_conexion", "Probar conexión CYMDIST")}>
-          1.3b · Probar conexión CYMDIST
-        </button>
-        <button type="button" className="ghost" disabled={busy || !db || !study}
-          onClick={() => void callContextSuite(
-            "/api/suite/validar_entradas",
-            "Validar entradas Excel",
-            "POST",
-            { feeder: feederPick || feeder }
-          )}>
-          1.3c · Validar entradas Excel
         </button>
       </div>
       {contextSuiteMsg && (

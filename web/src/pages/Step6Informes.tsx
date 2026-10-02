@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, downloadApiFile, getActiveFeeder, type Json } from "../api/client";
-import { ContextBind } from "../components/ContextBind";
+import { ContextBind, useHasSectionContext } from "../components/ContextBind";
 import { useFeeder } from "../state/feeder";
 
 type Delivery = {
@@ -86,6 +86,7 @@ function fmt(v: unknown, digits = 2): string {
 
 export function Step6Informes() {
   const { contextFingerprint } = useFeeder();
+  const hasCtx = useHasSectionContext();
   const [delivery, setDelivery] = useState<Delivery>({});
   const [paths, setPaths] = useState<Json>({});
   const [meta, setMeta] = useState<Record<string, string>>({});
@@ -110,16 +111,19 @@ export function Step6Informes() {
   }
 
   async function refreshStatus() {
+    if (!hasCtx) return;
     const j = await api<Delivery>("/api/informe/status");
     setDelivery(j);
   }
 
   async function refreshPaths() {
+    if (!hasCtx) return;
     const j = await api<Json>("/api/informe/rutas");
     setPaths(j);
   }
 
   async function loadMeta() {
+    if (!hasCtx) return;
     const j = await api<{ ok?: boolean; meta?: Record<string, unknown> }>("/api/informe/meta");
     const m = j.meta || {};
     const next: Record<string, string> = {};
@@ -128,6 +132,7 @@ export function Step6Informes() {
   }
 
   async function loadPreview() {
+    if (!hasCtx) throw new Error("Aplique 1.1 al contexto actual antes de cargar la vista preliminar");
     const j = await api<Preview>("/api/informe/preview");
     setPreview(j);
     if (j.closed) setValidated(true);
@@ -136,12 +141,23 @@ export function Step6Informes() {
   }
 
   useEffect(() => {
+    if (!hasCtx) {
+      setDelivery({});
+      setPaths({});
+      setPreview(null);
+      setValidated(false);
+      return;
+    }
     Promise.all([refreshStatus(), refreshPaths(), loadMeta(), loadPreview()]).catch((e) =>
       setMsg(String(e))
     );
-  }, []);
+  }, [hasCtx]);
 
   async function extractPdf() {
+    if (!hasCtx) {
+      setMsg("Aplique 1.1 al contexto actual antes de extraer datos del informe");
+      return;
+    }
     if (!pdf) return;
     setBusy(true);
     setMsg("OCR…");
@@ -178,6 +194,10 @@ export function Step6Informes() {
   }
 
   async function saveMeta() {
+    if (!hasCtx) {
+      setMsg("Aplique 1.1 al contexto actual antes de guardar la meta del informe");
+      return;
+    }
     setBusy(true);
     try {
       const body: Json = { ...meta };
@@ -198,6 +218,10 @@ export function Step6Informes() {
   }
 
   async function fill(mode: "completo" | "situacional" = "completo") {
+    if (!hasCtx) {
+      setMsg("Aplique 1.1 al contexto actual antes de generar informes");
+      return;
+    }
     setBusy(true);
     const label =
       mode === "situacional"
@@ -244,6 +268,10 @@ export function Step6Informes() {
   }
 
   async function regenMap() {
+    if (!hasCtx) {
+      setMsg("Aplique 1.1 al contexto actual antes de generar el mapa");
+      return;
+    }
     setBusy(true);
     setMsg("Generando mapa satélite de la carga nueva…");
     try {
@@ -273,6 +301,10 @@ export function Step6Informes() {
   }
 
   async function closeDelivery() {
+    if (!hasCtx) {
+      setMsg("Aplique 1.1 al contexto actual antes de cerrar la entrega");
+      return;
+    }
     if (!validated) {
       setMsg("Marque que validó la vista preliminar antes de cerrar.");
       return;
@@ -367,7 +399,7 @@ export function Step6Informes() {
           <li><span className={"dot " + (preview?.closed ? "ok" : "wait")} /> Entrega cerrada</li>
         </ul>
         <div className="actions">
-          <button type="button" className="ghost" onClick={() => refreshStatus()}>6.0 · Actualizar checklist</button>
+          <button type="button" className="ghost" disabled={!hasCtx} onClick={() => refreshStatus()}>6.0 · Actualizar checklist</button>
         </div>
         {(delivery.missing_situacional || []).length > 0 && (
           <div className="muted">Situacional falta: {(delivery.missing_situacional || []).join(", ")}</div>
@@ -380,11 +412,11 @@ export function Step6Informes() {
       <h3>6.1 Datos generales (PDF → OCR)</h3>
       <div className="actions">
         <input type="file" accept=".pdf,application/pdf" onChange={(e) => setPdf(e.target.files?.[0] || null)} />
-        <button type="button" className="secondary" disabled={busy || !pdf} onClick={extractPdf}>
+        <button type="button" className="secondary" disabled={busy || !hasCtx || !pdf} onClick={extractPdf}>
           Extraer datos generales (OCR)
         </button>
-        <button type="button" className="ghost" disabled={busy} onClick={loadMeta}>Cargar meta</button>
-        <button type="button" disabled={busy} onClick={saveMeta}>Guardar meta</button>
+        <button type="button" className="ghost" disabled={busy || !hasCtx} onClick={loadMeta}>Cargar meta</button>
+        <button type="button" disabled={busy || !hasCtx} onClick={saveMeta}>Guardar meta</button>
       </div>
       <div className="grid">
         {META_FIELDS.map((k) => (
@@ -406,10 +438,10 @@ export function Step6Informes() {
         Al rellenar también se intenta <code>topologia.png</code> (mapa satélite de la carga nueva §4, opcional en situacional).
       </p>
       <div className="actions">
-        <button type="button" className="ghost" onClick={refreshPaths}>Ver rutas</button>
+        <button type="button" className="ghost" disabled={!hasCtx} onClick={refreshPaths}>Ver rutas</button>
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || !hasCtx}
           title="Informe técnico diagnóstico estado situacional · Electro Dunas (LF §3.4 + 2 PNG)"
           onClick={() => fill("situacional")}
         >
@@ -418,13 +450,13 @@ export function Step6Informes() {
         <button
           type="button"
           className="secondary"
-          disabled={busy}
+          disabled={busy || !hasCtx}
           title="Entrega completa situacional + proyectado"
           onClick={() => fill("completo")}
         >
           Rellenar informes → doc
         </button>
-        <button type="button" className="secondary" disabled={busy} onClick={regenMap}>
+        <button type="button" className="secondary" disabled={busy || !hasCtx} onClick={regenMap}>
           Mapa ubicación carga nueva
         </button>
       </div>
@@ -439,7 +471,7 @@ export function Step6Informes() {
         {preview?.render?.pages ? ` · ${preview.render.pages} pág.` : ""}
       </p>
       <div className="actions">
-        <button type="button" className="ghost" disabled={busy} onClick={() => loadPreview().catch((e) => setMsg(String(e)))}>
+        <button type="button" className="ghost" disabled={busy || !hasCtx} onClick={() => loadPreview().catch((e) => setMsg(String(e)))}>
           Actualizar preliminar
         </button>
         {preview?.docs?.informe?.exists && (

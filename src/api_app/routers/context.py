@@ -45,6 +45,33 @@ class TransferLoadRequest(ContextApplyRequest):
 
 class TransferPrepareRequest(TransferLoadRequest):
     medicion_file: Optional[str] = None
+    peer_medicion_file: Optional[str] = None
+
+
+def summarize_transfer_preparation(result, network_ids):
+    """Un par de transferencia solo queda listo si ambas redes recibieron demanda."""
+    result = result if isinstance(result, dict) else {}
+    extraction = result.get("extraction") or {}
+    rows = list(extraction.get("networks") or result.get("networks") or [])
+    written = set(
+        str(w.get("network_id"))
+        for w in (result.get("writes") or [])
+        if w.get("ok")
+    )
+    missing = []
+    for net in network_ids:
+        row = next((r for r in rows if str(r.get("network_id")) == str(net)), None)
+        if row is None or not row.get("ok"):
+            missing.append(
+                "%s: %s" % (net, (row or {}).get("error") or "sin máxima demanda")
+            )
+        elif str(net) not in written:
+            missing.append("%s: no se escribió en CYMDIST" % net)
+    return {
+        "prepared": bool(result.get("ok")) and not missing,
+        "networks": rows,
+        "missing": missing,
+    }
 
 
 @router.get("/contexto/archivos")
@@ -218,13 +245,21 @@ def context_apply(body: ContextApplyRequest):
 @router.post("/contexto/cargar-transferencia")
 def context_load_transfer(body: TransferLoadRequest):
     """Open the selected study and ensure both transfer networks are loaded."""
+    if (
+        body.peer_feeder_id.strip().upper() == body.feeder_id.strip().upper()
+        or body.peer_network_id.strip() == body.network_id.strip()
+    ):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error_code": "TRANSFER_PAIR_SAME_FEEDER",
+                "error": "El alimentador receptor debe ser distinto del origen",
+            },
+            status_code=400,
+        )
     try:
         from core.feeder_context import load_settings
-        from core.cymdist_com import (
-            _loaded_feeder_ids,
-            acquire_cymdist_app,
-            activate_database_com,
-        )
+        from core.cymdist_com import load_transfer_pair_com
 
         settings = load_settings(
             feeder_id=body.feeder_id,
@@ -238,15 +273,11 @@ def context_load_transfer(body: TransferLoadRequest):
             "feeder_id": body.feeder_id,
             "network_id": body.network_id,
         })
-        app, attach_mode = acquire_cymdist_app(settings, show_window=True)
-        activate_database_com(app, body.database_mdb)
-        study = app.OpenStudy(body.study_path)
-        before = _loaded_feeder_ids(app)
-        if body.peer_network_id not in before:
-            study.LoadNetworkFromID(body.peer_network_id)
-        after = _loaded_feeder_ids(app)
-        ok = body.network_id in after and body.peer_network_id in after
-        return {
+        # Apartamento COM persistente: timeout, detección de Cyme caído y
+        # CYMDIST que permanece abierto (nunca COM en un hilo cualquiera).
+        loaded = load_transfer_pair_com(settings, peer_network_id=body.peer_network_id) or {}
+        ok = bool(loaded.get("ok"))
+        payload = {
             "ok": ok,
             "primary_feeder_id": body.feeder_id,
             "primary_network_id": body.network_id,
@@ -254,11 +285,20 @@ def context_load_transfer(body: TransferLoadRequest):
             "peer_network_id": body.peer_network_id,
             "study_path": body.study_path,
             "database_mdb": body.database_mdb,
-            "loaded_networks_before": before,
-            "loaded_networks": after,
-            "attach_mode": attach_mode,
-            "msg": "Par de transferencia cargado en CYMDIST" if ok else "No se pudieron cargar ambas redes",
+            "loaded_networks_before": loaded.get("loaded_networks_before") or [],
+            "loaded_networks": loaded.get("loaded_networks") or [],
+            "attach_mode": loaded.get("attach_mode"),
+            "error_code": loaded.get("error_code"),
+            "msg": (
+                "Par de transferencia cargado en CYMDIST"
+                if ok
+                else loaded.get("error") or "No se pudieron cargar ambas redes"
+            ),
         }
+        if not ok:
+            payload["error"] = payload["msg"]
+            return JSONResponse(payload, status_code=409)
+        return payload
     except Exception as ex:
         return JSONResponse({"ok": False, "error": str(ex)}, status_code=409)
 
@@ -273,7 +313,7 @@ def context_prepare_transfer(body: TransferPrepareRequest):
         return JSONResponse(loaded, status_code=409)
     try:
         from core.feeder_context import load_settings
-        from pipeline.apply_max_demand_multi import apply_max_demand_multi
+        from core.cympy_job import run_cympy_job
 
         settings = load_settings(
             feeder_id=body.feeder_id,
@@ -289,26 +329,52 @@ def context_prepare_transfer(body: TransferPrepareRequest):
             "network_ids": [body.network_id, body.peer_network_id],
             "transfer_pair": [body.feeder_id, body.peer_feeder_id],
         })
-        result = apply_max_demand_multi(
-            settings,
-            network_ids=settings["network_ids"],
-            medicion_file=body.medicion_file,
-            write_cymdist=True,
-            save=True,
-            run_allocation=True,
+        # Cada red usa su propio Excel; el receptor nunca hereda el del origen.
+        medicion_files = {}
+        if body.medicion_file:
+            medicion_files[body.network_id] = body.medicion_file
+        if body.peer_medicion_file:
+            medicion_files[body.peer_network_id] = body.peer_medicion_file
+        # CymPy en proceso hijo: un Access Violation no tumba la API.
+        result = run_cympy_job(
+            "max_demand_multi",
+            {
+                "feeder_id": body.feeder_id,
+                "database_mdb": body.database_mdb,
+                "study_path": body.study_path,
+                "ui_study_path": body.study_path,
+                "network_id": body.network_id,
+                "network_ids": settings["network_ids"],
+                "medicion_files": medicion_files,
+                "write_cymdist": True,
+                "save": True,
+                "run_allocation": True,
+            },
+            settings=settings,
+            timeout_sec=900,
         )
-        return {
+        summary = summarize_transfer_preparation(result, settings["network_ids"])
+        max_demand = dict(result or {})
+        max_demand["networks"] = summary["networks"]
+        payload = {
             **loaded,
-            "prepared": bool(result.get("ok")),
-            "max_demand": result,
+            "ok": summary["prepared"],
+            "prepared": summary["prepared"],
+            "max_demand": max_demand,
+            "missing": summary["missing"],
             "network_ids": settings["network_ids"],
             "transfer_pair": settings["transfer_pair"],
             "msg": (
                 "Par cargado y máxima demanda actualizada en ambos alimentadores"
-                if result.get("ok")
-                else result.get("error") or "No se pudo preparar la transferencia"
+                if summary["prepared"]
+                else "Transferencia incompleta · " + "; ".join(
+                    summary["missing"] or [result.get("error") or "sin detalle"]
+                )
             ),
         }
+        if not summary["prepared"]:
+            payload["error"] = payload["msg"]
+        return payload
     except Exception as ex:
         return JSONResponse(
             {"ok": False, "prepared": False, "error": str(ex)},

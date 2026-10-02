@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, runJob, type Json } from "../api/client";
 import { useFeeder } from "../state/feeder";
+import { canHydratePersistedContext } from "../context/selection";
 
 type DiagSnap = {
   total_messages?: number;
@@ -217,21 +218,25 @@ export function Step2CalidadTablero() {
 
   const refreshGate = useCallback(async () => {
     const j = await api<Json>("/api/calidad/estado");
+    const persistedContext = {
+      feeder: String(j?.feeder_id || ""),
+      network: String(j?.network_id || ""),
+      studyPath: String(j?.ui_study_path || j?.study_path || ""),
+      databaseMdb: String(j?.database_mdb || ""),
+    };
+    const localContext = { feeder, network, studyPath, databaseMdb };
+    if (!canHydratePersistedContext(localContext, persistedContext)) {
+      setGate(null);
+      return { ...j, ok: false, error_code: "LOCAL_CONTEXT_NOT_APPLIED" };
+    }
+    if (!contextFingerprint) {
+      setGate(null);
+      return { ...j, ok: false, error_code: "CONTEXT_NOT_APPLIED" };
+    }
     setGate(j);
-    // Hidratar contexto §1 desde servidor si la SPA aún no lo tiene
-    if (
-      (!feeder || !studyPath || !databaseMdb) &&
-      (j?.feeder_id || j?.study_path || j?.ui_study_path || j?.database_mdb)
-    ) {
-      setContext({
-        feeder: String(j.feeder_id || feeder || ""),
-        network: String(j.network_id || network || ""),
-        studyPath: String(j.ui_study_path || j.study_path || studyPath || ""),
-        databaseMdb: String(j.database_mdb || databaseMdb || ""),
-        contextFingerprint: String(j.context_fingerprint || ""),
-      });
-    } else if (!contextFingerprint && j?.context_fingerprint) {
-      setContext({ contextFingerprint: String(j.context_fingerprint) });
+    const hasLocalContext = Boolean(feeder || network || studyPath || databaseMdb);
+    if (!hasLocalContext) {
+      setContext(persistedContext);
     }
     return j;
   }, [contextFingerprint, feeder, network, studyPath, databaseMdb, setContext]);
@@ -288,15 +293,19 @@ export function Step2CalidadTablero() {
           context_fingerprint?: string;
         }>("/api/contexto/archivos", { timeoutMs: 30000 });
         if (j?.ok) {
-          setContext({
-            feeder: j.current_feeder || feeder || "",
-            network: j.current_network || "",
-            studyPath: j.current_study || studyPath || "",
-            databaseMdb: j.current_database || databaseMdb || "",
-            ...(j.context_fingerprint
-              ? { contextFingerprint: j.context_fingerprint }
-              : {}),
-          });
+          const persistedContext = {
+            feeder: String(j.current_feeder || ""),
+            network: String(j.current_network || ""),
+            studyPath: String(j.current_study || ""),
+            databaseMdb: String(j.current_database || ""),
+          };
+          const localContext = { feeder, network, studyPath, databaseMdb };
+          if (canHydratePersistedContext(localContext, persistedContext)) {
+            const hasLocalContext = Boolean(feeder || network || studyPath || databaseMdb);
+            if (!hasLocalContext) {
+              setContext(persistedContext);
+            }
+          }
         }
       } catch {
         /* gate/tablero abajo */
@@ -315,9 +324,13 @@ export function Step2CalidadTablero() {
       clientes: { n: 0, n_activos: 0, n_excluidos: 0, rows: [] },
     });
     setActivo({});
+    if (!hasCtx) {
+      setGate(null);
+      return;
+    }
     refreshGate().catch((e) => setMsg(String(e)));
     refreshBoard(1, false, false, true).catch((e) => setMsg(String(e)));
-  }, [feeder, refreshGate, refreshBoard]);
+  }, [feeder, hasCtx, refreshGate, refreshBoard]);
 
   async function job(action: string, label: string, payload: Json = {}) {
     if (!hasCtx) {
@@ -516,7 +529,7 @@ export function Step2CalidadTablero() {
 
   /** Solo el botón activo se marca .running; los demás se bloquean sin parecer en ejecución. */
   function btnProps(id: string, kind: "secondary" | "ghost" = "ghost") {
-    const needCtx = !["2.5", "2.7", "2.8", "tablero"].includes(id);
+    const needCtx = id !== "2.5";
     const active = busy === id;
     return {
       className: `${kind}${active ? " running" : ""}`,
@@ -550,7 +563,7 @@ export function Step2CalidadTablero() {
     ? (after.top_errors || before.top_errors || []).slice(0, 30)
     : [];
   const rows = board?.clientes?.rows || [];
-  const ready = Boolean(gate?.ready);
+  const ready = Boolean(hasCtx && gate?.ready);
   const nIncluidas = rows.filter((r) => activo[rowKey(r)] !== false).length;
   const vopt = (board?.voltage_opt || {}) as Json;
   const voptTriggered = Boolean(vopt.triggered);
@@ -617,7 +630,7 @@ export function Step2CalidadTablero() {
             }
             title="Resultado de 2.4 · Verificar convergencia"
           >
-            Converge: {String(gate?.converge || "—")}
+            Converge: {hasCtx ? String(gate?.converge || "—") : "—"}
           </span>
         </div>
         {!hasCtx ? (
@@ -637,7 +650,12 @@ export function Step2CalidadTablero() {
           <button type="button" {...btnProps("2.5")}
             onClick={() =>
               runLocal("2.5", async () => {
-                await refreshGate();
+                const result = await refreshGate();
+                if (result.error_code === "CONTEXT_NOT_APPLIED" ||
+                    result.error_code === "LOCAL_CONTEXT_NOT_APPLIED") {
+                  setMsg("Contexto no aplicado o distinto al seleccionado. Vuelva a §1 y complete 1.1.");
+                  return;
+                }
                 setMsg("Estado actualizado");
               })
             }>2.5 · Actualizar estado</button>
@@ -960,14 +978,14 @@ export function Step2CalidadTablero() {
           {" · "}Incluidas: <b>{nIncluidas}</b> / {rows.length}
         </p>
         <div className="actions">
-          <button type="button" className="ghost" disabled={!!busy || !rows.length}
+          <button type="button" className="ghost" disabled={!!busy || !hasCtx || !rows.length}
             onClick={() => markAll(true)}>Marcar todas</button>
-          <button type="button" className="ghost" disabled={!!busy || !rows.length}
+          <button type="button" className="ghost" disabled={!!busy || !hasCtx || !rows.length}
             onClick={() => markAll(false)}>Desmarcar todas</button>
           <button type="button" {...btnProps("guardar", "secondary")} onClick={saveActivo}>
             Guardar selección Incluir
           </button>
-          <button type="button" className="ghost" disabled={!!busy || !feeder}
+          <button type="button" className="ghost" disabled={!!busy || !hasCtx}
             onClick={() =>
               runLocal("seed", async () => {
                 const j = await refreshBoard(1, false, false, true);

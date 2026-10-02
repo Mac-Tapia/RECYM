@@ -1170,7 +1170,12 @@ class CymPyAdapter(object):
 
     def raise_load_connected_kva(self, load_id, min_kva=None):
         """
-        Corrige 260044: capacidad conectada < potencia aparente de la SpotLoad.
+        Revisa 260044: capacidad conectada < potencia aparente de la SpotLoad.
+
+        NO inventa/infla ConnectedKVA (dejaba de ser la placa real del
+        transformador y corrompía kVA_instalado en los reportes §3.3b). Solo
+        lee el valor real y reporta "needs_review" si S aparente lo supera;
+        la capacidad instalada real se corrige en campo/BD, no aquí.
 
         En CYME 9.x ConnectedKVA está en CustomerLoadValue:
           CustomerLoads[0].CustomerLoadModels[0].CustomerLoadValues[i].ConnectedKVA
@@ -1216,40 +1221,15 @@ class CymPyAdapter(object):
 
         s_kva = math.sqrt(float(p_sum) ** 2 + float(q_sum) ** 2)
         target = max(float(min_kva or 0), s_kva)
-        target = max(1.0, math.ceil(target * 1.05))
 
-        # Escribir ConnectedKVA en cada CustomerLoadValue (ruta confirmada en Cyme.Model)
-        written = []
+        # Solo lectura: comparar ConnectedKVA real contra S aparente, sin escribir.
+        readable = []
         last_err = None
-        for i in range(n_ph):
-            field = "%s[%d].ConnectedKVA" % (values_path, i)
-            try:
-                before = d.GetValue(field)
-                before_n = self._parse_load_number(before)
-                if before_n is not None and before_n + 1e-6 >= target:
-                    written.append((field, before, before, "already_ok"))
-                    continue
-                d.SetValue(float(target), field)
-                after = d.GetValue(field)
-                after_n = self._parse_load_number(after)
-                if after_n is not None and after_n + 1e-6 < target:
-                    last_err = RuntimeError("SetValue no retuvo %s->%s" % (target, after))
-                    continue
-                written.append((field, before, after, "raised"))
-            except Exception as ex:
-                last_err = ex
-                continue
-
-        if written:
-            field, before, after, how = written[0]
-            return before, after, field, how
-
-        # Fallback: rutas del api map (versiones antiguas / otros casilleros)
-        candidates = [cfg.get("connected_kva_field")]
+        candidates = [("%s[%d].ConnectedKVA" % (values_path, i)) for i in range(n_ph)]
+        candidates.append(cfg.get("connected_kva_field"))
         for alt in (cfg.get("connected_kva_field_alts") or []):
             if alt and alt not in candidates:
                 candidates.append(alt)
-        readable = []
         for field in candidates:
             if not field:
                 continue
@@ -1259,19 +1239,13 @@ class CymPyAdapter(object):
                 last_err = ex
                 continue
             readable.append(field)
-            try:
-                before_n = self._parse_load_number(before)
-                if before_n is not None and before_n >= target:
-                    return before, before, field, "already_ok"
-                d.SetValue(float(target), field)
-                after = d.GetValue(field)
-                return before, after, field, "raised"
-            except Exception as ex:
-                last_err = ex
-                continue
+            before_n = self._parse_load_number(before)
+            if before_n is not None and before_n + 1e-6 >= target:
+                return before, before, field, "already_ok"
+            return before, before, field, "needs_review"
 
         raise RuntimeError(
-            "No se pudo escribir capacidad conectada en SpotLoad %s (S=%.2f kVA). "
+            "No se pudo leer capacidad conectada en SpotLoad %s (S=%.2f kVA). "
             "Campos legibles=%s. Ultimo error: %s"
             % (load_id, s_kva, readable or "ninguno", last_err)
         )
@@ -1786,6 +1760,60 @@ class CymPyAdapter(object):
         )
         return cname
 
+    def _heal_broken_study(self, path):
+        """Regraba un .zxst mono-feeder inabrible por CymPy usando ELD.zxst + LoadNetworks.
+
+        Devuelve True si tras el proceso `path` quedó abierto en memoria (estudio
+        activo = network_id aislado) y se regrabó en disco en formato nativo CymPy.
+        No toca el estudio si falta network_id o no hay ELD.zxst usable: en ese
+        caso se propaga el error original sin encubrirlo.
+        """
+        net = str(self.settings.get("network_id") or "").strip()
+        if not net:
+            return False
+        try:
+            from core.feeder_context import resolve_eld_study_path, is_usable_study_file
+        except Exception:
+            return False
+        eld = resolve_eld_study_path(self.settings)
+        if not eld or not is_usable_study_file(eld) or os.path.normcase(os.path.abspath(eld)) == os.path.normcase(os.path.abspath(path)):
+            return False
+        print("AVISO: '%s' no abre en CymPy; reparando via ELD.zxst + LoadNetworks(%s)" % (path, net))
+        try:
+            self.cympy.study.Open(eld)
+            loaded = [str(n) for n in list(self.cympy.study.ListNetworks())]
+            if net not in loaded:
+                try:
+                    opt = self.cympy.enums.LoadNetworkOption.NoDependencies
+                    self.cympy.study.LoadNetworks([net], opt)
+                except Exception:
+                    self.cympy.study.LoadNetworks([net])
+                loaded = [str(n) for n in list(self.cympy.study.ListNetworks())]
+            if net not in loaded:
+                print("AVISO reparación: %s no cargó tras LoadNetworks" % net)
+                return False
+            # LoadNetworks(NoDependencies) a veces arrastra redes vinculadas
+            # (mismo patrón visto en isolate_feeder_sources). El .zxst mono-feeder
+            # original (LoadFeederFromID vía GUI) solo trae `net`: igualar eso
+            # para no romper LoadFlow COM, que abre este archivo sin aislar.
+            others = [n for n in loaded if n != net]
+            for o in others:
+                try:
+                    self.cympy.study.DeleteNetwork(o)
+                except Exception as ex_del:
+                    print("AVISO reparación: no se pudo quitar red extra %s: %s" % (o, ex_del))
+            loaded = [str(n) for n in list(self.cympy.study.ListNetworks())]
+            if loaded != [net]:
+                print("AVISO reparación: quedaron redes extra tras DeleteNetwork: %s" % loaded)
+            self.cympy.study.Save(path)
+        except Exception as ex_heal:
+            print("AVISO reparación de estudio falló:", ex_heal)
+            return False
+        if not os.path.isfile(path) or os.path.getsize(path) < 1024:
+            return False
+        print("Estudio reparado y regrabado (formato CymPy):", path)
+        return True
+
     def open_study(self, study_path=None, force_backup=None, connect_db=True):
         global _PROCESS_STUDY_PATH
         path = study_path or self.settings.get("study_path") or ""
@@ -1895,15 +1923,25 @@ class CymPyAdapter(object):
                 print("AVISO study.Open(%s): %s" % (cand, ex))
 
         if not opened:
-            tried = ", ".join(os.path.basename(c) for c in candidates) or os.path.basename(path)
-            raise RuntimeError(
-                "No pudo abrir el estudio '%s' (probados: %s)%s"
-                % (
-                    path,
-                    tried,
-                    (". %s" % last_err) if last_err else "",
+            # Fallback: el .zxst mono-feeder guardado por Cymdist.Application (GUI
+            # SaveAs) a veces queda en un formato que study.Open() de CymPy no
+            # reconoce (ok para la GUI, incompatible con el motor Python). Se
+            # repite el patrón ya probado en inventory_loads/isolate_feeder_sources:
+            # abrir ELD.zxst (vacío) + LoadNetworks(network_id) y regrabar el
+            # .zxst mono-feeder en formato nativo de CymPy.
+            healed = self._heal_broken_study(path)
+            if healed:
+                opened = path
+            else:
+                tried = ", ".join(os.path.basename(c) for c in candidates) or os.path.basename(path)
+                raise RuntimeError(
+                    "No pudo abrir el estudio '%s' (probados: %s)%s"
+                    % (
+                        path,
+                        tried,
+                        (". %s" % last_err) if last_err else "",
+                    )
                 )
-            )
 
         path_abs = os.path.normcase(os.path.abspath(opened))
         self._study_open = True

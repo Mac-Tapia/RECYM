@@ -10,6 +10,36 @@ export type StudyOption = {
   ext?: string;
 };
 
+export type ContextSelectionIdentity = {
+  feeder?: string;
+  network?: string;
+  studyPath?: string;
+  databaseMdb?: string;
+};
+
+export function canHydratePersistedContext(
+  local: ContextSelectionIdentity,
+  persisted: ContextSelectionIdentity
+): boolean {
+  const fields: Array<keyof ContextSelectionIdentity> = [
+    "feeder",
+    "network",
+    "studyPath",
+    "databaseMdb",
+  ];
+  const normalize = (field: keyof ContextSelectionIdentity, value?: string) => {
+    const clean = (value || "").trim();
+    return field === "studyPath" || field === "databaseMdb"
+      ? clean.replace(/\//g, "\\").toLowerCase()
+      : clean.toUpperCase();
+  };
+  const hasLocalSelection = fields.some((field) => normalize(field, local[field]) !== "");
+  if (!hasLocalSelection) return true;
+  return fields.every(
+    (field) => normalize(field, local[field]) === normalize(field, persisted[field])
+  );
+}
+
 export function studiesForFeeder(
   studies: Array<StudyOption | string>,
   feederId: string
@@ -27,6 +57,28 @@ export function studiesForFeeder(
     const family = owner.match(/^([A-Z]{1,3}\d{2,4})/)?.[1] || owner;
     return family === wanted;
   });
+}
+
+/**
+ * Transferencia: estudios de cualquiera de los dos alimentadores (p.ej. PE104
+ * vive dentro de CA101.sxst). 1.1 carga en él la red que falte del par.
+ */
+export function studiesForPair(
+  studies: Array<StudyOption | string>,
+  primary: string,
+  peer: string
+): Array<StudyOption | string> {
+  const seen = new Set<string>();
+  const out: Array<StudyOption | string> = [];
+  for (const feederId of [primary, peer]) {
+    for (const study of studiesForFeeder(studies, feederId)) {
+      const key = (typeof study === "string" ? study : study.path).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(study);
+    }
+  }
+  return out;
 }
 
 /** Estudio dedicado exacto del alimentador; nunca reutiliza otro por defecto. */

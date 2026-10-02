@@ -6,6 +6,8 @@ let activeDatabaseMdb = "";
 let activeNetwork = "";
 let activeContextFingerprint = "";
 let activeScenarioId = "";
+let activeTransferPeer = "";
+let activeTransferPeerNetwork = "";
 let apiKey = "";
 let bootstrapPromise: Promise<void> | null = null;
 
@@ -27,6 +29,8 @@ export function setActiveContext(opts: {
   databaseMdb?: string;
   contextFingerprint?: string;
   scenarioId?: string;
+  transferPeer?: string;
+  transferPeerNetwork?: string;
 }) {
   if (opts.feeder !== undefined) activeFeeder = (opts.feeder || "").trim();
   if (opts.network !== undefined) activeNetwork = (opts.network || "").trim();
@@ -36,6 +40,10 @@ export function setActiveContext(opts: {
     activeContextFingerprint = (opts.contextFingerprint || "").trim().toLowerCase();
   }
   if (opts.scenarioId !== undefined) activeScenarioId = (opts.scenarioId || "").trim();
+  if (opts.transferPeer !== undefined) activeTransferPeer = (opts.transferPeer || "").trim();
+  if (opts.transferPeerNetwork !== undefined) {
+    activeTransferPeerNetwork = (opts.transferPeerNetwork || "").trim();
+  }
 }
 
 export function getActiveContext() {
@@ -46,6 +54,8 @@ export function getActiveContext() {
     databaseMdb: activeDatabaseMdb,
     contextFingerprint: activeContextFingerprint,
     scenarioId: activeScenarioId,
+    transferPeer: activeTransferPeer,
+    transferPeerNetwork: activeTransferPeerNetwork,
   };
 }
 
@@ -121,6 +131,10 @@ function injectContextBody(body: BodyInit | null | undefined): BodyInit | null |
       obj.context_fingerprint = ctx.contextFingerprint;
     }
     if (!obj.scenario_id && ctx.scenarioId) obj.scenario_id = ctx.scenarioId;
+    if (!obj.transfer_peer && ctx.transferPeer) obj.transfer_peer = ctx.transferPeer;
+    if (!obj.transfer_peer_network_id && ctx.transferPeerNetwork) {
+      obj.transfer_peer_network_id = ctx.transferPeerNetwork;
+    }
     if (!obj.feeders && ctx.feeder) obj.feeders = [ctx.feeder];
     return JSON.stringify(obj);
   } catch {
@@ -223,10 +237,11 @@ export async function downloadApiFile(path: string, filename: string): Promise<v
 const PROTECTED_JOB_ACTIONS = new Set([
   "calidad_diagnosticar", "calidad_proponer", "calidad_aplicar",
   "calidad_convergencia", "calidad_hasta_limpio", "calidad_sistema",
-  "calidad_eld", "distribucion", "flujo_situacional_34", "flujo", "clientes_activo_cymdist",
+  "calidad_eld", "distribucion", "flujo_situacional_34", "flujo", "reportes_informe", "cargas_verificar_cymdist", "clientes_activo_cymdist",
   "optimizacion_reclosers", "optimizacion_regulators", "optimizacion_capacitors",
   "suite_conexion", "suite_inventario_cargas", "suite_sync_equipos",
   "suite_fix_default", "suite_export_ascii", "suite_pipeline",
+  "clientes_aplicar", "distribucion_reporte",
 ]);
 
 export function verifyProtectedJobContext(
@@ -262,6 +277,9 @@ export async function runJob(
     context_fingerprint:
       payload.context_fingerprint || ctx.contextFingerprint || undefined,
     scenario_id: payload.scenario_id || ctx.scenarioId || undefined,
+    transfer_peer: payload.transfer_peer || ctx.transferPeer || undefined,
+    transfer_peer_network_id:
+      payload.transfer_peer_network_id || ctx.transferPeerNetwork || undefined,
   };
   if (PROTECTED_JOB_ACTIONS.has(action) && !ctx.contextFingerprint) {
     throw new Error("Contexto CYMDIST sin huella: complete y aplique §1.1");
@@ -277,59 +295,89 @@ export async function runJob(
   if (!created.ok || !created.job_id) {
     throw new Error(created.error || "No se pudo crear job");
   }
-  const jobId = created.job_id;
+  const result = await waitForJob(
+    created.job_id,
+    () => api<{ job: Json }>(`/api/jobs/${created.job_id}`).then((j) => j.job || {}),
+    onUpdate
+  );
+  return verifyProtectedJobContext(action, result, ctx.contextFingerprint);
+}
 
+function jobOutcome(job: Json): { done: boolean; result?: Json; error?: Error } {
+  const status = String(job.status || "");
+  if (status === "ok") return { done: true, result: (job.result as Json) || job };
+  if (status === "error") {
+    const res = (job.result as Json) || {};
+    return {
+      done: true,
+      error: new Error(String(res.error || res.msg || job.message || "Job falló")),
+    };
+  }
+  return { done: false };
+}
+
+/**
+ * Sondea un job hasta estado terminal. Un job en curso nunca se da por fallido
+ * por un corte de red: solo tras `maxFailures` consultas consecutivas fallidas.
+ */
+export async function pollJobUntilDone(
+  fetchJob: () => Promise<Json>,
+  onUpdate?: (job: Json) => void,
+  opts: { intervalMs?: number; maxFailures?: number; sleep?: (ms: number) => Promise<void> } = {}
+): Promise<Json> {
+  const { intervalMs = 2000, maxFailures = 5 } = opts;
+  const sleep = opts.sleep || ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let failures = 0;
+  for (;;) {
+    let job: Json | null = null;
+    try {
+      job = await fetchJob();
+      failures = 0;
+    } catch (e) {
+      failures += 1;
+      if (failures >= maxFailures) throw e;
+    }
+    if (job) {
+      onUpdate?.(job);
+      const outcome = jobOutcome(job);
+      if (outcome.error) throw outcome.error;
+      if (outcome.done) return outcome.result as Json;
+    }
+    await sleep(intervalMs);
+  }
+}
+
+/** SSE para progreso en vivo; si el stream se corta, continúa por sondeo. */
+function waitForJob(
+  jobId: string,
+  fetchJob: () => Promise<Json>,
+  onUpdate?: (job: Json) => void
+): Promise<Json> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const es = new EventSource(eventsUrl(jobId));
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      es.close();
+      fn();
+    };
     es.onmessage = (ev) => {
       try {
         const job = JSON.parse(ev.data) as Json;
         onUpdate?.(job);
-        const st = String(job.status || "");
-        if (st === "ok") {
-          es.close();
-          resolve(
-            verifyProtectedJobContext(
-              action,
-              (job.result as Json) || job,
-              ctx.contextFingerprint
-            )
-          );
-        } else if (st === "error") {
-          es.close();
-          const res = (job.result as Json) || {};
-          reject(
-            new Error(String(res.error || res.msg || job.message || "Job falló"))
-          );
-        }
+        const outcome = jobOutcome(job);
+        if (outcome.error) finish(() => reject(outcome.error));
+        else if (outcome.done) finish(() => resolve(outcome.result as Json));
       } catch (e) {
-        es.close();
-        reject(e);
+        finish(() => reject(e));
       }
     };
     es.onerror = () => {
+      if (settled) return;
+      settled = true;
       es.close();
-      api<{ job: Json }>(`/api/jobs/${jobId}`)
-        .then((j) => {
-          const job = j.job || {};
-          onUpdate?.(job);
-          if (job.status === "ok") {
-            resolve(
-              verifyProtectedJobContext(
-                action,
-                (job.result as Json) || job,
-                ctx.contextFingerprint
-              )
-            );
-          }
-          else {
-            const res = (job.result as Json) || {};
-            reject(
-              new Error(String(res.error || res.msg || job.message || "SSE error"))
-            );
-          }
-        })
-        .catch(reject);
+      pollJobUntilDone(fetchJob, onUpdate).then(resolve, reject);
     };
   });
 }
@@ -360,40 +408,12 @@ export async function runDetachedJob(
     throw new Error(created.error || "No se pudo crear job desacoplado");
   }
   const jobId = created.job_id;
-  return new Promise((resolve, reject) => {
-    const es = new EventSource(eventsUrl(jobId));
-    es.onmessage = (ev) => {
-      try {
-        const job = JSON.parse(ev.data) as Json;
-        onUpdate?.(job);
-        const status = String(job.status || "");
-        if (status === "ok") {
-          es.close();
-          resolve((job.result as Json) || job);
-        } else if (status === "error") {
-          es.close();
-          const result = (job.result as Json) || {};
-          reject(new Error(String(result.error || result.msg || job.message || "Job falló")));
-        }
-      } catch (error) {
-        es.close();
-        reject(error);
-      }
-    };
-    es.onerror = () => {
-      es.close();
-      api<{ job: Json }>(`/api/jobs/${jobId}`, { detachedContext: true })
-        .then(({ job }) => {
-          onUpdate?.(job || {});
-          if (job?.status === "ok") resolve((job.result as Json) || job);
-          else {
-            const result = (job?.result as Json) || {};
-            reject(
-              new Error(String(result.error || result.msg || job?.message || "SSE error"))
-            );
-          }
-        })
-        .catch(reject);
-    };
-  });
+  return waitForJob(
+    jobId,
+    () =>
+      api<{ job: Json }>(`/api/jobs/${jobId}`, { detachedContext: true }).then(
+        (j) => j.job || {}
+      ),
+    onUpdate
+  );
 }

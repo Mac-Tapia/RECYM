@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { api, runJob, type Json } from "../api/client";
+import { api, downloadApiFile, runJob, type Json } from "../api/client";
 import { useFeeder } from "../state/feeder";
+import { sortByPeriodDesc } from "../context/periodFiles";
 import { ContextBind, useHasSectionContext } from "../components/ContextBind";
 
-type ActionId = "" | "3.1" | "3.2" | "3.3" | "3.4" | "files" | "incluir";
+type ActionId = "" | "3.1" | "3.2" | "3.3" | "3.3b" | "3.4" | "3.4b" | "files" | "incluir";
 
 function truthy(v: unknown) {
   return v === true || v === "True" || v === "true" || v === "1" || v === 1;
@@ -87,9 +88,12 @@ export function Step3Clientes() {
     const j = await api<{ ok?: boolean; suministro?: string[]; clientesimportantes?: string[] }>(
       "/api/clientes/archivos"
     );
-    setFiles(j);
-    if (!suministro && j.suministro?.[0]) setSuministro(j.suministro[0]);
-    if (!clientesFile && j.clientesimportantes?.[0]) setClientesFile(j.clientesimportantes[0]);
+    // Al iniciar o tras Actualizar: lectura del periodo más reciente (MMAA).
+    const sum = sortByPeriodDesc(j.suministro || []);
+    const ci = sortByPeriodDesc(j.clientesimportantes || []);
+    setFiles({ ...j, suministro: sum, clientesimportantes: ci });
+    if (!suministro && sum[0]) setSuministro(sum[0]);
+    if (!clientesFile && ci[0]) setClientesFile(ci[0]);
   }
 
   useEffect(() => {
@@ -97,6 +101,10 @@ export function Step3Clientes() {
   }, []);
 
   async function buildTable() {
+    if (!hasCtx) {
+      setMsg("Seleccione MDB, alimentador y estudio; aplique 1.1 antes de armar la tabla");
+      return;
+    }
     const fid = (feeder || "").trim();
     if (!fid) {
       setMsg("Defina el alimentador en §1 (1.1 · Aplicar) antes de armar la tabla.");
@@ -148,6 +156,10 @@ export function Step3Clientes() {
 
   async function saveIncluir(applyCymdist = false) {
     const fid = (feeder || "").trim();
+    if (!hasCtx) {
+      setMsg("Aplique 1.1 al contexto actual antes de guardar Incluir");
+      return;
+    }
     if (!fid) {
       setMsg("Defina el alimentador en §1.");
       return;
@@ -204,6 +216,10 @@ export function Step3Clientes() {
 
   async function applyClientes() {
     const fid = (feeder || "").trim();
+    if (!hasCtx) {
+      setMsg("Aplique 1.1 al contexto actual antes de cargar EA/Pot en CYMDIST");
+      return;
+    }
     if (!fid) {
       setMsg("Defina el alimentador en §1 antes de cargar EA/Pot.");
       return;
@@ -213,7 +229,25 @@ export function Step3Clientes() {
       `3.2 · ${fid} · liberando CI previos y cargando EA/Pot · ${nIncluidas} incluidas · ${nExcluidas} se desconectan…`
     );
     try {
-      const j = await api<{
+      // Job aislado: CymPy corre en proceso hijo (un crash de Cyme no tumba la API)
+      // y el progreso llega por SSE; la GUI se reabre desde la API al terminar.
+      const j = (await runJob(
+        "clientes_aplicar",
+        {
+          suministro_file: suministro,
+          clientes_file: clientesFile,
+          feeders: [fid],
+          feeder: fid,
+          open_gui: true,
+          rebuild: false,
+          activo: activoMapFromUi(),
+          restar_cabecera: restarCabMapFromUi(),
+        },
+        (job) => {
+          const m = String(job.message || "");
+          if (m) setMsg(`3.2 · ${m}`);
+        }
+      )) as {
         ok?: boolean;
         error?: string;
         msg?: string;
@@ -231,20 +265,8 @@ export function Step3Clientes() {
         P_kW_medicion?: number;
         P_kW_excluidas_restadas?: number;
         cabecera_ajustada?: Json;
-      }>("/api/clientes/aplicar", {
-        method: "POST",
-        body: JSON.stringify({
-          suministro_file: suministro,
-          clientes_file: clientesFile,
-          feeders: [fid],
-          feeder: fid,
-          open_gui: true,
-          rebuild: false,
-          activo: activoMapFromUi(),
-          restar_cabecera: restarCabMapFromUi(),
-        }),
-        timeoutMs: 300000,
-      });
+        plantilla_distribucion?: { ok?: boolean; error?: string; errors?: string[] };
+      };
       if (!j.ok) throw new Error(j.error || "Error aplicar");
       if (j.rows?.length) {
         setRows(j.rows);
@@ -260,6 +282,10 @@ export function Step3Clientes() {
         })
         .join("\n");
       const nLib = Number(j.n_liberados ?? 0);
+      const tpl = j.plantilla_distribucion || {};
+      const tplLine = tpl.ok
+        ? "\nDistribución lista para 3.3: Consumo (kWh) · modelo y parámetros DEFAULT · demanda sin «Conectado»"
+        : `\nAVISO plantilla de distribución: ${tpl.error || (tpl.errors || []).join("; ") || "no verificada"}`;
       setMsg(
         (j.msg ||
           `3.2 OK · EA→Consumo(KWH) ${j.ok_count} · excluidas ${j.excluido_count ?? 0} · sin SED ${j.sin_sed_count ?? 0} · KWH verificado ${j.kwh_verified ?? 0}`) +
@@ -269,7 +295,40 @@ export function Step3Clientes() {
             ? `\n→ Cabecera lista para 3.3: P=${j.P_kW} kW` +
               (j.Q_kvar != null ? ` · Q=${j.Q_kvar} kvar` : "")
             : "") +
+          tplLine +
           (rep ? `\n${rep}` : "")
+      );
+    } catch (e) {
+      setMsg(String(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  /** 3.3b · Excel de verificación: lee el estudio guardado tras 3.3 (solo lectura). */
+  async function downloadDistribution() {
+    const fid = (feeder || "").trim();
+    if (!hasCtx || !fid) {
+      setMsg("Aplique 1.1 y ejecute 3.3 antes de descargar la distribución");
+      return;
+    }
+    setBusy("3.3b");
+    setMsg(`3.3b · ${fid} · leyendo cargas del estudio…`);
+    try {
+      const j = await runJob("distribucion_reporte", {}, (job) => {
+        const m = String(job.message || "");
+        if (m) setMsg(`3.3b · ${m}`);
+      });
+      if (!j.ok) throw new Error(String(j.error || "No se pudo generar el reporte"));
+      const fileName = String(j.file_name || `distribucion_carga_${fid}.xlsx`);
+      await downloadApiFile(
+        `/api/clientes/distribucion/archivo?feeder=${encodeURIComponent(fid)}`,
+        fileName
+      );
+      const s = (j.summary as Json) || {};
+      setMsg(
+        `3.3b OK · ${fileName} · ${s.n_cargas ?? "?"} cargas · ${s.n_clientes_importantes ?? 0} clientes importantes · ` +
+          `${s.n_revisar ?? 0} a REVISAR · Σ cargas ${s.P_total_cargas_kW ?? "?"} kW vs cabecera ${s.P_cabecera_kW ?? "?"} kW`
       );
     } catch (e) {
       setMsg(String(e));
@@ -399,6 +458,30 @@ export function Step3Clientes() {
     }
   }
 
+  /** 3.4b · Reportes CYMDIST (sin proyecto): misma seleccion RECYM_Informe de §5.1b, pero
+   * sobre el estado situacional (sin la carga nueva de §4) · alimenta el informe. */
+  async function runReportesInformeSinProyecto() {
+    setBusy("3.4b");
+    setMsg("3.4b · generando reportes CYMDIST (RECYM_Informe, sin proyecto)…");
+    try {
+      const j = await runJob(
+        "reportes_informe",
+        { scenario: "situacional" },
+        (job) => setMsg(String(job.message || "3.4b"))
+      );
+      setMsg(
+        j.ok
+          ? `3.4b OK · ${String(j.xlsx_target || "")}`
+          : `3.4b · ${String(j.error || "No se pudo confirmar el metodo de reportes")}` +
+            (j.discovery ? `\nAPI encontrada: ${JSON.stringify(j.discovery, null, 2).slice(0, 2000)}` : "")
+      );
+    } catch (error) {
+      setMsg(String(error));
+    } finally {
+      setBusy("");
+    }
+  }
+
   return (
     <section className="panel">
       <h2>3 · Clientes importantes → SED + distribución</h2>
@@ -432,22 +515,30 @@ export function Step3Clientes() {
       </div>
 
       <div className="actions">
-        <button type="button" {...btnProps("3.1")} disabled={Boolean(busy) || !feeder} onClick={buildTable}>
+        <button type="button" {...btnProps("3.1")} disabled={Boolean(busy) || !hasCtx || !feeder} onClick={buildTable}>
           3.1 · Armar tabla (cruzar NIS)
         </button>
         <button
           type="button"
           {...btnProps("3.2", "secondary")}
-          disabled={Boolean(busy) || !feeder}
+          disabled={Boolean(busy) || !hasCtx || !feeder}
           onClick={applyClientes}
         >
           3.2 · Cargar EA/Pot en CYMDIST
         </button>
-        <button type="button" {...btnProps("3.3")} disabled={Boolean(busy)} onClick={runDistrib}>
+        <button type="button" {...btnProps("3.3")} disabled={Boolean(busy) || !hasCtx} onClick={runDistrib}>
           3.3 · Ejecutar módulo Load Allocation (CYMDIST)
+        </button>
+        <button type="button" {...btnProps("3.3b", "ghost")} disabled={Boolean(busy) || !hasCtx} onClick={downloadDistribution}
+          title="Excel por SED: esperado vs actual en CYMDIST (clientes importantes y distribución por kWh)">
+          3.3b · Descargar distribución (Excel)
         </button>
         <button type="button" {...btnProps("3.4", "secondary")} disabled={Boolean(busy) || !hasCtx} onClick={runSituacional34}>
           3.4 · Estado situacional + capturas nativas
+        </button>
+        <button type="button" {...btnProps("3.4b", "ghost")} disabled={Boolean(busy) || !hasCtx} onClick={runReportesInformeSinProyecto}
+          title="Ejecuta la selección guardada en CYMDIST 'RECYM_Informe' (Barras/Cables/Cargas + Flujo de carga) sobre el estado situacional (sin la carga nueva de §4) y exporta a Excel">
+          3.4b · Reportes CYMDIST (sin proyecto)
         </button>
         <button
           type="button"
@@ -479,16 +570,16 @@ export function Step3Clientes() {
         EA/Pot, desmarque Incluir y deje Restar cab. off.
       </p>
       <div className="actions">
-        <button type="button" className="ghost" disabled={Boolean(busy) || !rows.length} onClick={() => markAll(true)}>
+        <button type="button" className="ghost" disabled={Boolean(busy) || !hasCtx || !rows.length} onClick={() => markAll(true)}>
           Marcar todas
         </button>
-        <button type="button" className="ghost" disabled={Boolean(busy) || !rows.length} onClick={() => markAll(false)}>
+        <button type="button" className="ghost" disabled={Boolean(busy) || !hasCtx || !rows.length} onClick={() => markAll(false)}>
           Desmarcar todas
         </button>
         <button
           type="button"
           className="ghost"
-          disabled={Boolean(busy) || !rows.length}
+          disabled={Boolean(busy) || !hasCtx || !rows.length}
           onClick={() => markAllRestar(true)}
         >
           Restar cab. todas
@@ -496,7 +587,7 @@ export function Step3Clientes() {
         <button
           type="button"
           className="ghost"
-          disabled={Boolean(busy) || !rows.length}
+          disabled={Boolean(busy) || !hasCtx || !rows.length}
           onClick={() => markAllRestar(false)}
         >
           Restar cab. ninguna
@@ -504,7 +595,7 @@ export function Step3Clientes() {
         <button
           type="button"
           {...btnProps("incluir", "secondary")}
-          disabled={Boolean(busy) || !rows.length}
+          disabled={Boolean(busy) || !hasCtx || !rows.length}
           onClick={() => saveIncluir(true)}
         >
           Guardar Incluir → desconectar en CYMDIST

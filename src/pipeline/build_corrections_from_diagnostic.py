@@ -77,7 +77,16 @@ def main():
 
     diag_after = output_path(s, "diagnostics", "cymdist_diagnostic_errors_after.csv")
     diag = output_path(s, "diagnostics", "cymdist_diagnostic_errors.csv")
-    if os.path.isfile(diag_after):
+    # El archivo "after" solo es confiable si es mas reciente que "diag": un
+    # "after" limpio de una corrida anterior (otro ciclo/feeder) puede quedar
+    # en disco y enmascarar los 59 problemas recien diagnosticados (bug: 2.6
+    # proponia 0 correcciones aunque el diagnostico actual seguia sucio).
+    after_is_fresh = (
+        os.path.isfile(diag_after)
+        and os.path.isfile(diag)
+        and os.path.getmtime(diag_after) >= os.path.getmtime(diag)
+    )
+    if after_is_fresh:
         rows_after = _read_diag_csv(diag_after)
         n_prob = sum(1 for r in rows_after if _row_needs_fix(r))
         if n_prob == 0:

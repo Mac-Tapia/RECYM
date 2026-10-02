@@ -29,6 +29,7 @@ _LEGACY_JOB_ROUTES = {
     "suite_export_ascii": "/api/suite/export_ascii",
     "suite_pipeline": "/api/suite/pipeline",
     "clientes_activo_cymdist": "/api/clientes/activo",
+    "clientes_aplicar": "/api/clientes/aplicar",
 }
 
 _INPUT_REQUIRED_JOB_ACTIONS = frozenset(["suite_sync_equipos", "suite_pipeline"])
@@ -46,9 +47,31 @@ PROTECTED_CONTEXT_ACTIONS = frozenset(
         "flujo_situacional_34",
         "flujo",
         "clientes_activo_cymdist",
+        "clientes_aplicar",
+        "distribucion_reporte",
+        "reportes_informe",
+        "cargas_verificar_cymdist",
     ]
     + list(_LEGACY_JOB_ROUTES.keys())
 )
+
+
+def apply_transfer_scenario(settings, source):
+    """Propaga el par origen→receptor de §1 a la configuración del job.
+
+    Solo aplica cuando el escenario es de transferencia y el receptor es otro
+    alimentador; el alimentador único queda intacto.
+    """
+    scenario = str(source.get("scenario_id") or "").strip().lower()
+    peer = str(source.get("transfer_peer") or "").strip().upper()
+    primary = str(settings.get("feeder_id") or "").strip().upper()
+    if not scenario.startswith("transfer_") or not peer or peer == primary:
+        return settings
+    settings["transfer_pair"] = [primary, peer]
+    peer_network = str(source.get("transfer_peer_network_id") or "").strip()
+    if peer_network:
+        settings["transfer_peer_network_id"] = peer_network
+    return settings
 
 
 def _settings_from_explicit_context(payload, feeder=None):
@@ -90,6 +113,7 @@ def _settings_from_explicit_context(payload, feeder=None):
     )[0]
     settings["context_fingerprint"] = fingerprint
     settings["scenario_id"] = str(source.get("scenario_id") or "").strip()
+    apply_transfer_scenario(settings, source)
     settings["run_id"] = str(source.get("run_id") or ("interactive-" + fingerprint))
     return settings
 
@@ -457,6 +481,12 @@ def _run_action(action, payload, feeder, job_id=None):
                     "inputs": inputs,
                 }
         return _annotate_study(_run_legacy_api_action(action, payload, fid))
+
+    if action == "distribucion_reporte":
+        def _report():
+            return build_distribution_report_for_settings(s)
+
+        return _annotate_study(with_cympy_lock(action, _report, timeout_sec=300.0))
 
     if action == "calidad_diagnosticar":
         from pipeline.model_quality_gate import run_network_diagnostic
@@ -865,7 +895,11 @@ def _run_action(action, payload, feeder, job_id=None):
         import uuid
 
         def _situational_34():
-            run_id = str(payload.get("run_id") or uuid.uuid4().hex)
+            # tag_context() siempre normaliza "run_id" a s["run_id"] (prioridad fija
+            # en core/report_provenance.py), asi que el run_id usado para las
+            # capturas debe coincidir con ese valor o validate_native_color_evidence
+            # siempre falla con RUN_ID_MISMATCH aunque la captura sea correcta.
+            run_id = str(s.get("run_id") or payload.get("run_id") or uuid.uuid4().hex)
             commits = load_active_commits(s)
             gates = validate_situational_34_gates(commits, s.get("context_fingerprint"))
             if not gates.get("ok"):
@@ -885,9 +919,15 @@ def _run_action(action, payload, feeder, job_id=None):
                 "stage": "3.4",
                 "loadflow": lf,
                 "captures": evidence,
+                # Diagnostico de por que fallo la captura (ej. hwnd de Cyme no
+                # encontrado): sin esto, "capturas verificadas=0/2" no se puede
+                # investigar despues sin volver a correr 3.4 en vivo.
+                "capture_notes": (pair.get("capture_result") or {}).get("notes"),
+                "capture_errors": (pair.get("capture_result") or {}).get("errors"),
                 "commit_gates": gates,
                 "temporary_backup": pair.get("temporary_backup"),
                 "state_restored": pair.get("state_restored"),
+                "state_committed": pair.get("state_committed"),
                 "restore_error": pair.get("restore_error"),
                 "native_capture_warning": None if capture_ok else (
                     "Captura nativa no disponible; LoadFlow situacional conservado"
@@ -902,6 +942,28 @@ def _run_action(action, payload, feeder, job_id=None):
             return result
 
         return _calidad(_situational_34, timeout_sec=900.0)
+
+    if action == "reportes_informe":
+        from pipeline.generate_cymdist_reports import generate_reports
+
+        def _reportes():
+            with_captures = payload.get("with_captures")
+            return generate_reports(
+                s,
+                selection_name=payload.get("selection_name"),
+                scenario=payload.get("scenario") or "situacional",
+                with_captures=with_captures if with_captures is not None else None,
+            )
+
+        return _calidad(_reportes, timeout_sec=600.0)
+
+    if action == "cargas_verificar_cymdist":
+        from pipeline.add_spot_load import verify_spot_loads_live
+
+        def _verify():
+            return verify_spot_loads_live(s)
+
+        return _calidad(_verify, timeout_sec=180.0)
 
     if action == "flujo":
         from pipeline.run_load_flow import run_load_flow
@@ -1001,6 +1063,143 @@ def run_action_inprocess(action, payload, feeder, job_id=None):
     return _run_action(action, payload, feeder, job_id=job_id)
 
 
+def build_distribution_report_for_settings(s):
+    """§3 · Excel de verificación de distribución (lee el estudio guardado tras 3.3).
+
+    Solo lectura: abre el estudio con CymPy y nunca lo guarda.
+    """
+    from core.common import load_json, require_cympy
+    from core.cympy_adapter import CymPyAdapter
+    from core.feeder_context import output_path
+    from pipeline.distribution_report import (
+        build_distribution_report,
+        digsilent_rows,
+        read_feeder_loads,
+        write_distribution_xlsx,
+    )
+    from pipeline.inventory_loads import inventory_row, write_inventory_json
+    from pipeline.run_demand_allocation import load_session
+
+    fid = str(s.get("feeder_id") or "").strip()
+    net = str(s.get("network_id") or "").strip()
+
+    # Si 3.4 ya corrio para este alimentador y no logro restaurar el estudio
+    # (restore_error / state_restored=False), el .zxst puede estar en un
+    # estado temporal (coloreado/escenario) — no se lee hasta corregirlo.
+    sit34_path = output_path(s, "demand", "loadflow_situacional_34.json")
+    if os.path.isfile(sit34_path):
+        try:
+            with open(sit34_path, "r", encoding="utf-8") as handle:
+                sit34 = json.load(handle) or {}
+        except Exception:
+            sit34 = {}
+        if sit34.get("state_restored") is False:
+            return {
+                "ok": False,
+                "error": (
+                    "3.4 no restauro el estudio tras la ultima corrida "
+                    "(state_restored=False, restore_error=%s). Reabra/restaure "
+                    "el estudio antes de leer la distribucion de 3.3b."
+                    % (sit34.get("restore_error") or "desconocido")
+                ),
+                "error_code": "STUDY_NOT_RESTORED_AFTER_34",
+                "situacional_34": sit34,
+            }
+
+    sw = dict(s)
+    sw["skip_db_project_save"] = True
+    cympy = require_cympy(sw)
+    adapter = CymPyAdapter(cympy, load_json("config/cympy_api_map.json"), sw)
+    adapter.open_study(force_backup=False)
+    try:
+        loads = read_feeder_loads(cympy, net, ("SpotLoad", "DistributedLoad"))
+    finally:
+        try:
+            adapter.close_study(save=False)
+        except Exception:
+            pass
+
+    clientes_rows = []
+    table = output_path(s, "clientes", "clientes_alimentador.json")
+    if os.path.isfile(table):
+        with open(table, "r", encoding="utf-8") as handle:
+            data = json.load(handle) or {}
+        meta_fid = str((data.get("meta") or {}).get("feeder_id") or "").strip().upper()
+        # Tabla 3.1 de otro radial no se mezcla con este alimentador.
+        if not meta_fid or meta_fid == fid.upper():
+            clientes_rows = list(data.get("rows") or [])
+    try:
+        cabecera = load_session(s) or {}
+    except Exception:
+        cabecera = {}
+    rows, summary = build_distribution_report(
+        loads,
+        clientes_rows,
+        cabecera=cabecera,
+        fp_ci=float(s.get("clientes_fp") or 0.95),
+    )
+    dg_rows = digsilent_rows(loads, clientes_rows, feeder_id=fid)
+    path = output_path(s, "clientes", "distribucion_carga_%s.xlsx" % fid)
+    write_distribution_xlsx(path, rows, summary, feeder_id=fid, digsilent=dg_rows)
+    # Inventario trifásico del alimentador con la misma lectura (sin 2.ª apertura).
+    inventory_path = None
+    if loads:
+        inventory_path = write_inventory_json(
+            output_path(s, "inventory", "loads.json"),
+            fid,
+            net,
+            [inventory_row(load, net) for load in loads],
+        )
+    return {
+        "ok": bool(loads),
+        "error": None if loads else "La red %s no tiene cargas SpotLoad en el estudio" % net,
+        "msg": "Distribución %s · %d cargas · %d clientes importantes · %d a REVISAR"
+        % (fid, summary["n_cargas"], summary["n_clientes_importantes"], summary["n_revisar"]),
+        "summary": summary,
+        "n_digsilent": len(dg_rows),
+        "inventory": inventory_path,
+        "artifact": path,
+        "file_name": os.path.basename(path),
+        "feeder_id": fid,
+        "network_id": net,
+    }
+
+
+def reopen_cymdist_gui_after_job(action, payload, feeder, opener=None, delay_sec=2.5):
+    """Reabre CYMDIST desde la API cuando el job aislado ya soltó CymPy.
+
+    El hilo vive en el proceso padre (persistente); en el hijo moriría con él.
+    """
+    def _run():
+        try:
+            time.sleep(float(delay_sec))
+            settings = _settings_from_explicit_context(payload, feeder)
+            if opener is not None:
+                opener(settings)
+                return
+            # Apartamento COM persistente de la API (igual que §1.1): conserva
+            # la referencia y Cyme.exe queda abierto. Un hilo propio la soltaría
+            # al terminar y CYMDIST se cerraría solo.
+            from core.cymdist_com import ensure_feeder_study_com
+
+            study = settings.get("ui_study_path") or settings.get("study_path") or ""
+            result = {}
+            for attempt in (1, 2):
+                # El job cerró el Cyme anterior: la 1.ª llamada puede dar con una
+                # referencia muerta; el apartamento la descarta y la 2.ª reabre.
+                result = ensure_feeder_study_com(settings, selected_study=study) or {}
+                if result.get("ok"):
+                    break
+            if not result.get("ok"):
+                print("AVISO reabrir CYMDIST tras %s: %s" % (action, result.get("error")))
+        except Exception as ex_gui:
+            print("AVISO reabrir CYMDIST tras %s: %s" % (action, ex_gui))
+
+    thread = threading.Thread(target=_run, name="reopen-cyme-%s" % action, daemon=True)
+    thread.start()
+    return thread
+
+
 def _worker(job_id, action, payload, feeder):
     _set_job(job_id, status="running", message="Ejecutando %s…" % action)
     try:
@@ -1046,6 +1245,8 @@ def _worker(job_id, action, payload, feeder):
         ok = True
         if isinstance(result, dict) and result.get("ok") is False:
             ok = False
+        if ok and isinstance(result, dict) and result.get("reopen_gui_in_parent"):
+            reopen_cymdist_gui_after_job(action, payload, feeder)
         msg = "Listo"
         if isinstance(result, dict):
             msg = result.get("msg") or result.get("error") or ("Listo" if ok else "Error")
@@ -1121,12 +1322,18 @@ def job_events(job_id: str):
 
     def event_stream():
         last = None
+        last_sent = time.time()
         while True:
             job = get_job(job_id)
             payload = json.dumps(job, ensure_ascii=False, default=str)
             if payload != last:
                 last = payload
+                last_sent = time.time()
                 yield "data: %s\n\n" % payload
+            elif time.time() - last_sent >= 15.0:
+                # Latido: jobs CymPy largos no deben cortar el EventSource.
+                last_sent = time.time()
+                yield ": keepalive\n\n"
             if job.get("status") in ("ok", "error"):
                 yield "event: done\ndata: %s\n\n" % payload
                 break

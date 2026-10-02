@@ -51,6 +51,13 @@ def _live_com_worker(requests):
                     app=app,
                     access_version=access_version,
                 )
+            elif operation == "load_transfer_pair":
+                result = load_transfer_pair_com(
+                    settings,
+                    peer_network_id=settings.get("_peer_network_id") or "",
+                    app=app,
+                    access_version=access_version,
+                )
             else:
                 raise RuntimeError("Operación COM persistente desconocida: %s" % operation)
             if isinstance(result, dict):
@@ -66,14 +73,102 @@ def _live_com_worker(requests):
                 {
                     "ok": False,
                     "error_code": "CYMDIST_COM_DISCOVERY_FAILED",
-                    "error": "No se pudieron leer alimentadores desde CYMDIST: %s" % ex,
+                    "error": (
+                        "No se pudieron leer alimentadores desde CYMDIST: %s" % ex
+                        if operation == "list_database_feeders"
+                        else "CYMDIST falló en %s: %s" % (operation, ex)
+                    ),
                     "engine": "COM",
                 }
             )
 
 
+_CYME_CRASH_MARKERS = (
+    "0xc0000005",
+    "access violation",
+    "encontró un problema",
+    "encountered a problem",
+)
+
+
+def detect_cyme_crash_dialog():
+    """Texto del cuadro de error de Windows de un Cyme.exe caído, o None.
+
+    Tras un Access Violation, Cyme deja visible «Cyme.exe encontró un
+    problema…» y cualquier llamada COM queda colgada indefinidamente.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        proto = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        found = []
+
+        def _text(hwnd):
+            buf = ctypes.create_unicode_buffer(1024)
+            user32.GetWindowTextW(hwnd, buf, 1024)
+            return buf.value or ""
+
+        def _class(hwnd):
+            buf = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(hwnd, buf, 64)
+            return buf.value or ""
+
+        def _child(hwnd, _lparam):
+            text = _text(hwnd)
+            if any(m in text.lower() for m in _CYME_CRASH_MARKERS):
+                found.append(text)
+            return True
+
+        def _top(hwnd, _lparam):
+            if (
+                user32.IsWindowVisible(hwnd)
+                and _class(hwnd) == "#32770"
+                and _text(hwnd).strip().lower() == "cyme"
+            ):
+                user32.EnumChildWindows(hwnd, proto(_child), 0)
+            return True
+
+        user32.EnumWindows(proto(_top), 0)
+        return found[0] if found else None
+    except Exception:
+        return None
+
+
+def _abandon_live_com_worker(worker=None):
+    """Descarta un apartamento COM bloqueado; el próximo pedido crea otro."""
+    global _LIVE_COM_QUEUE, _LIVE_COM_THREAD, _LIVE_CYMDIST_APP
+    with _LIVE_COM_LOCK:
+        if worker is not None and _LIVE_COM_THREAD is not worker:
+            return
+        _LIVE_COM_THREAD = None
+        _LIVE_COM_QUEUE = None
+        _LIVE_CYMDIST_APP = None
+
+
+def _cyme_crashed_response(crash_text):
+    return {
+        "ok": False,
+        "error_code": "CYMDIST_CRASHED",
+        "error": (
+            "CYMDIST se cerró por un error interno (Access violation). Pulse «Aceptar» "
+            "en el aviso de Cyme.exe (o ciérrelo) y vuelva a intentar."
+        ),
+        "detail": (crash_text or "")[:500],
+        "engine": "COM",
+    }
+
+
 def _run_live_com(operation, settings, access_version=None, timeout=120.0):
     global _LIVE_COM_QUEUE, _LIVE_COM_THREAD
+    crash = detect_cyme_crash_dialog()
+    if crash:
+        # No encolar sobre un Cyme muerto: el hilo COM quedaría colgado.
+        _abandon_live_com_worker()
+        return _cyme_crashed_response(crash)
     with _LIVE_COM_LOCK:
         if _LIVE_COM_THREAD is None or not _LIVE_COM_THREAD.is_alive():
             _LIVE_COM_QUEUE = queue.Queue()
@@ -85,15 +180,25 @@ def _run_live_com(operation, settings, access_version=None, timeout=120.0):
             )
             _LIVE_COM_THREAD.start()
         requests = _LIVE_COM_QUEUE
+        worker = _LIVE_COM_THREAD
     response = queue.Queue(maxsize=1)
     requests.put((operation, dict(settings or {}), access_version, response))
     try:
         return response.get(True, float(timeout))
     except queue.Empty:
+        # El hilo COM sigue bloqueado dentro de Cyme: no reutilizarlo, o todos
+        # los pedidos siguientes harían cola detrás y expirarían también.
+        _abandon_live_com_worker(worker)
+        crash = detect_cyme_crash_dialog()
+        if crash:
+            return _cyme_crashed_response(crash)
         return {
             "ok": False,
             "error_code": "CYMDIST_COM_TIMEOUT",
-            "error": "CYMDIST no respondió en %.0f s" % float(timeout),
+            "error": (
+                "CYMDIST no respondió en %.0f s. Revise si Cyme muestra un diálogo "
+                "abierto y vuelva a intentar." % float(timeout)
+            ),
             "engine": "COM",
         }
 
@@ -790,6 +895,45 @@ def _loaded_feeder_ids(app):
         if network_id:
             ids.append(network_id)
     return sorted(set(ids))
+
+
+def load_transfer_pair_com(settings, peer_network_id="", app=None, access_version=None):
+    """Abre el estudio §1 y garantiza origen + receptor cargados en CYMDIST.
+
+    Corre en el apartamento COM persistente de la API (timeout, detección de
+    Cyme caído y Cyme.exe que permanece abierto), nunca en un hilo cualquiera.
+    """
+    settings = dict(settings or {})
+    mdb = str(settings.get("database_mdb") or "").strip()
+    study = str(settings.get("study_path") or "").strip()
+    net = str(settings.get("network_id") or "").strip()
+    peer = str(peer_network_id or "").strip()
+    if not mdb or not os.path.isfile(mdb):
+        return {"ok": False, "error_code": "FILE_NOT_FOUND", "error": "MDB no encontrada: %s" % mdb}
+    if not study or not os.path.isfile(study):
+        return {"ok": False, "error_code": "FILE_NOT_FOUND", "error": "Estudio no encontrado: %s" % study}
+    if not net or not peer:
+        return {"ok": False, "error_code": "CONTEXT_INCOMPLETE", "error": "Falta NetworkID de origen o receptor"}
+
+    if app is None:
+        settings["_peer_network_id"] = peer
+        return _run_live_com("load_transfer_pair", settings, access_version=access_version)
+
+    app.ShowWindow(1)
+    activate_database_com(app, mdb, access_version=access_version)
+    study_obj = app.OpenStudy(study)
+    before = _loaded_feeder_ids(app)
+    if peer not in before:
+        study_obj.LoadNetworkFromID(peer)
+    after = _loaded_feeder_ids(app)
+    ok = net in after and peer in after
+    return {
+        "ok": ok,
+        "loaded_networks_before": before,
+        "loaded_networks": after,
+        "engine": "COM",
+        "error": None if ok else "No se pudieron cargar ambas redes (%s, %s)" % (net, peer),
+    }
 
 
 def ensure_feeder_study_com(
@@ -1705,6 +1849,21 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
                             topo.get(loss_kw) or ""
                         ).startswith(("$", "ERR:")):
                             break
+                # Calidad de tensión de toda la red (no solo la fuente), requerida
+                # por §5.2. CYME 9.2 COM no expone Vmin/Vmax de red; sí las
+                # listas de equipos fuera de banda nominal (GetNominal*VoltageFlag %).
+                for vkw, getter_name in (
+                    ("LOW_VOLTAGE_COUNT", "GetLowVoltageEquipments"),
+                    ("HIGH_VOLTAGE_COUNT", "GetHighVoltageEquipments"),
+                ):
+                    try:
+                        topo[vkw] = int(getattr(lf, getter_name)().Count)
+                    except Exception as ex_v:
+                        topo[vkw] = "ERR:%s" % ex_v
+                try:
+                    topo["VOLTAGE_FLAG_PCT"] = float(lf.GetNominalLowVoltageFlag())
+                except Exception:
+                    pass
                 if _topo_ok(topo):
                     method_used = method
                     break
@@ -1838,11 +1997,25 @@ def run_loadflow_com(settings, network_id=None, leave_open=None, kill_existing=N
             _kill_cyme()
 
 
+def allocation_unlock_loads_flag(settings):
+    """UnlockLoads del módulo LoadAllocation: 0 salvo pedido explícito.
+
+    Con 1, CYMDIST libera los clientes importantes Locked de §3.2 y los
+    reparte como carga normal (verificado en TM105 con el reporte 3.3b).
+    """
+    return 1 if (settings or {}).get("loadallocation_unlock_loads") else 0
+
+
 def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
                            method="KWH", kill_existing=False,
                            disconnect_load_ids=None, leave_open=True):
     """
     Distribucion de carga via COM (Cymdist.LoadAllocation).
+
+    Regla fija RECYM: SIEMPRE Consumo (kWh) = cymKWH. `method` se ignora si
+    pide otra cosa (KVA/ConnectedKVA/ActualKVA/REA) — no es un parametro
+    configurable, evita que un payload distinto cambie silenciosamente como
+    se reparte la carga (energia real, nunca capacidad instalada).
 
     CymPy standalone en esta instalacion falla con 130013 (complementos de
     simulacion no autenticados). El motor COM de Cyme.exe si ejecuta
@@ -1879,15 +2052,12 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
     q_kvar = float(q_kvar or 0.0)
     disc_ids = [str(x).strip() for x in (disconnect_load_ids or []) if str(x).strip()]
 
-    method_map = {
-        "KWH": lib.CymLoadAllocationMethod.cymKWH,
-        "KWHMethod": lib.CymLoadAllocationMethod.cymKWH,
-        "KVA": lib.CymLoadAllocationMethod.cymKVA,
-        "ConnectedKVA": lib.CymLoadAllocationMethod.cymKVA,
-        "ActualKVA": lib.CymLoadAllocationMethod.cymActualKVA,
-        "REA": lib.CymLoadAllocationMethod.cymREA,
-    }
-    method_enum = method_map.get(str(method or "KWH"), lib.CymLoadAllocationMethod.cymKWH)
+    if str(method or "KWH").strip().upper() not in ("KWH", "KWHMETHOD"):
+        print(
+            "AVISO metodo de reparto '%s' ignorado: regla fija RECYM = Consumo (kWh)"
+            % method
+        )
+    method_enum = lib.CymLoadAllocationMethod.cymKWH
 
     # Solo matar si el caller lo pide explicitamente (rompe sync GUI)
     if kill_existing:
@@ -1997,10 +2167,14 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
             la.RunVoltageDrop = 0
         except Exception:
             pass
+        # UnlockLoads=1 libera TODAS las cargas Locked antes de repartir: los
+        # clientes importantes de 3.2 terminaban escalados con el FP del
+        # alimentador (verificado con el reporte 3.3b en TM105: Exalmar +37 %,
+        # Cfg −73 %). 3.2 ya deja Unlocked lo que no es cliente importante, así
+        # que por defecto se respetan los Locked.
+        unlock_loads = allocation_unlock_loads_flag(settings)
         try:
-            # Unlock residuales Locked de corridas previas para que KWH pueda
-            # prorratear. Los fijos 3.2 se preservan con UnlockAllInitiallyFixedLoads=0.
-            la.UnlockLoads = 1
+            la.UnlockLoads = unlock_loads
         except Exception:
             pass
         try:
@@ -2069,6 +2243,7 @@ def run_loadallocation_com(settings, network_id=None, p_kw=None, q_kvar=None,
             "P_sum_kW": demand_info.get("P_sum_kW"),
             "demand_mode": demand_mode,
             "InitialLosses": initial_losses,
+            "unlock_loads": unlock_loads,
             "disconnected": disconnected,
             "attach_mode": attach_mode,
             "study_path": study,

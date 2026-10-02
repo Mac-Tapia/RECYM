@@ -39,6 +39,10 @@ ISOLATED_ACTIONS = frozenset(
         "suite_export_ascii",
         "suite_pipeline",
         "clientes_activo_cymdist",
+        "clientes_aplicar",
+        "distribucion_reporte",
+        "reportes_informe",
+        "cargas_verificar_cymdist",
     ]
 )
 

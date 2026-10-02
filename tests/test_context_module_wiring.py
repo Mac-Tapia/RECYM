@@ -3,6 +3,7 @@ from __future__ import print_function
 
 import os
 import sys
+import types
 import unittest
 from unittest import mock
 
@@ -22,13 +23,95 @@ CONTEXT = {
 
 
 class TestContextModuleWiring(unittest.TestCase):
+    def test_loadflow_selection_clears_stale_networks_and_selects_one_dynamic_id(self):
+        from core.sim_params import ensure_loadflow_networks
+
+        class SelectedNetworks(object):
+            def __init__(self):
+                self.values = ["NET_OLD_A", "NET_OLD_B"]
+
+            def GetValues(self):
+                return list(self.values)
+
+            def Clear(self):
+                self.values = []
+
+            def Add(self, value):
+                self.values.append(value)
+
+        selected = SelectedNetworks()
+
+        class LoadFlow(object):
+            def __init__(self):
+                self.AnalysisNetworks = types.SimpleNamespace(SelectedNetworks=selected)
+                self.ActiveConfigurationID = ""
+
+                class CympyObject(object):
+                    def Execute(self, command):
+                        if command.endswith(".Clear()"):
+                            selected.Clear()
+                        elif ".Add('" in command:
+                            value = command.split(".Add('", 1)[1].split("'", 1)[0]
+                            selected.Add(value)
+                        else:
+                            raise RuntimeError("unsupported fake command")
+
+                self._cympyObject = CympyObject()
+
+        load_flow = LoadFlow()
+        cympy_module = types.ModuleType("cympy")
+        properties_module = types.ModuleType("cympy.properties")
+        properties_module.properties = types.SimpleNamespace(LoadFlow=lambda: load_flow)
+        cympy_module.properties = properties_module
+        with mock.patch.dict(sys.modules, {
+            "cympy": cympy_module,
+            "cympy.properties": properties_module,
+        }):
+            result = ensure_loadflow_networks(None, "NET_CUSTOM_999")
+
+        self.assertEqual(result, ["NET_CUSTOM_999"])
+        self.assertEqual(selected.GetValues(), ["NET_CUSTOM_999"])
+        self.assertEqual(load_flow.ActiveConfigurationID, "DEFAULT")
+
+    def test_loadflow_selection_fails_closed_when_stale_networks_cannot_be_cleared(self):
+        from core.sim_params import ensure_loadflow_networks
+
+        class StuckSelectedNetworks(object):
+            def GetValues(self):
+                return ["NET_OLD"]
+
+            def Clear(self):
+                raise RuntimeError("clear unavailable")
+
+        class LoadFlow(object):
+            AnalysisNetworks = types.SimpleNamespace(
+                SelectedNetworks=StuckSelectedNetworks()
+            )
+
+            class CympyObject(object):
+                def Execute(self, command):
+                    raise RuntimeError("execute unavailable")
+
+            _cympyObject = CympyObject()
+
+        cympy_module = types.ModuleType("cympy")
+        properties_module = types.ModuleType("cympy.properties")
+        properties_module.properties = types.SimpleNamespace(LoadFlow=LoadFlow)
+        cympy_module.properties = properties_module
+        with mock.patch.dict(sys.modules, {
+            "cympy": cympy_module,
+            "cympy.properties": properties_module,
+        }):
+            with self.assertRaisesRegex(RuntimeError, "No se pudieron limpiar redes LoadFlow previas"):
+                ensure_loadflow_networks(None, "NET_CUSTOM_999")
+
     def test_all_cymdist_actions_are_protected(self):
         from api_app.jobs import PROTECTED_CONTEXT_ACTIONS
 
         expected = {
             "calidad_diagnosticar", "calidad_proponer", "calidad_aplicar",
             "calidad_convergencia", "calidad_hasta_limpio", "calidad_sistema",
-            "calidad_eld", "distribucion", "flujo_situacional_34", "flujo", "clientes_activo_cymdist",
+            "calidad_eld", "distribucion", "flujo_situacional_34", "flujo", "reportes_informe", "cargas_verificar_cymdist", "clientes_activo_cymdist",
             "optimizacion_reclosers", "optimizacion_regulators",
             "optimizacion_capacitors", "suite_conexion", "suite_inventario_cargas",
             "suite_sync_equipos", "suite_fix_default", "suite_export_ascii",
